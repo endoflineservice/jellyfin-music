@@ -774,8 +774,7 @@ private fun JellyfinMusicApp() {
                                     isBusy = isBusy,
                                     statusText = statusText,
                                     onSearchQueryChange = { searchQuery = it },
-                                    onRefresh = { loadLibrary(connectedSession) },
-                                    onSignOut = ::signOut
+                                    onRefresh = { loadLibrary(connectedSession) }
                                 )
                             }
                             item {
@@ -1195,8 +1194,7 @@ private fun LibraryHeader(
     isBusy: Boolean,
     statusText: String?,
     onSearchQueryChange: (String) -> Unit,
-    onRefresh: () -> Unit,
-    onSignOut: () -> Unit
+    onRefresh: () -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(
@@ -1220,9 +1218,6 @@ private fun LibraryHeader(
             }
             TextButton(onClick = onRefresh, enabled = !isBusy) {
                 Text("Refresh")
-            }
-            TextButton(onClick = onSignOut) {
-                Text("Sign out")
             }
         }
         OutlinedTextField(
