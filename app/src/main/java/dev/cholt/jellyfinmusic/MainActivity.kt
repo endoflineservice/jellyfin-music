@@ -123,6 +123,7 @@ import ir.mahozad.multiplatform.wavyslider.material3.WavySlider
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        setTheme(R.style.AppTheme)
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         setContent {
