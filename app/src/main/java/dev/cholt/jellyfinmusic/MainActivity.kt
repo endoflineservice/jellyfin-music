@@ -1954,12 +1954,12 @@ private fun RoundedPlaybackButton(
     val colorScheme = MaterialTheme.colorScheme
     val backgroundColor = when {
         prominent -> colorScheme.primary
-        active -> colorScheme.secondaryContainer
+        active -> colorScheme.primaryContainer
         else -> colorScheme.surfaceContainerHigh
     }
     val contentColor = when {
         prominent -> colorScheme.onPrimary
-        active -> colorScheme.onSecondaryContainer
+        active -> colorScheme.onPrimaryContainer
         else -> colorScheme.onSurfaceVariant
     }
     Surface(
@@ -1976,11 +1976,18 @@ private fun RoundedPlaybackButton(
                 imageVector = icon.imageVector(),
                 contentDescription = null,
                 tint = contentColor,
-                modifier = Modifier.size(if (prominent) 32.dp else 27.dp)
+                modifier = Modifier.size(icon.playbackIconSize(prominent))
             )
         }
     }
 }
+
+private fun PlayerGlyph.playbackIconSize(prominent: Boolean): Dp =
+    when {
+        prominent -> 32.dp
+        this == PlayerGlyph.Shuffle || this == PlayerGlyph.Repeat -> 24.dp
+        else -> 27.dp
+    }
 
 private fun PlayerGlyph.imageVector(): ImageVector = when (this) {
     PlayerGlyph.Shuffle -> PlayerIconVectors.Shuffle
@@ -2067,29 +2074,28 @@ private object PlayerIconVectors {
         viewportWidth = 24f,
         viewportHeight = 24f
     ).apply {
-        path(
-            fill = null,
-            stroke = stroke,
-            strokeLineWidth = 2f,
-            strokeLineCap = StrokeCap.Round,
-            strokeLineJoin = StrokeJoin.Round
-        ) {
-            moveTo(4f, 7f)
-            lineTo(7.4f, 7f)
-            lineTo(16.4f, 17f)
-            lineTo(20f, 17f)
-            moveTo(18f, 15f)
-            lineTo(20f, 17f)
-            lineTo(18f, 19f)
-            moveTo(4f, 17f)
-            lineTo(7.4f, 17f)
-            lineTo(10f, 14.1f)
-            moveTo(14f, 9.9f)
-            lineTo(16.4f, 7f)
-            lineTo(20f, 7f)
-            moveTo(18f, 5f)
-            lineTo(20f, 7f)
-            lineTo(18f, 9f)
+        path(fill = stroke) {
+            moveTo(10.59f, 9.17f)
+            lineTo(5.41f, 4f)
+            lineTo(4f, 5.41f)
+            lineTo(9.17f, 10.59f)
+            close()
+            moveTo(14.5f, 4f)
+            lineTo(16.54f, 6.04f)
+            lineTo(4f, 18.59f)
+            lineTo(5.41f, 20f)
+            lineTo(17.96f, 7.46f)
+            lineTo(20f, 9.5f)
+            verticalLineTo(4f)
+            close()
+            moveTo(14.83f, 13.41f)
+            lineTo(13.41f, 14.83f)
+            lineTo(16.54f, 17.96f)
+            lineTo(14.5f, 20f)
+            horizontalLineTo(20f)
+            verticalLineTo(14.5f)
+            lineTo(17.96f, 16.54f)
+            close()
         }
     }.build()
 
@@ -2100,25 +2106,27 @@ private object PlayerIconVectors {
         viewportWidth = 24f,
         viewportHeight = 24f
     ).apply {
-        path(
-            fill = null,
-            stroke = stroke,
-            strokeLineWidth = 2f,
-            strokeLineCap = StrokeCap.Round,
-            strokeLineJoin = StrokeJoin.Round
-        ) {
+        path(fill = stroke) {
             moveTo(7f, 7f)
             horizontalLineTo(17f)
             verticalLineTo(10f)
-            moveTo(15f, 5f)
-            lineTo(17f, 7f)
-            lineTo(15f, 9f)
+            lineTo(21f, 6f)
+            lineTo(17f, 2f)
+            verticalLineTo(5f)
+            horizontalLineTo(5f)
+            verticalLineTo(11f)
+            horizontalLineTo(7f)
+            close()
             moveTo(17f, 17f)
             horizontalLineTo(7f)
             verticalLineTo(14f)
-            moveTo(9f, 19f)
-            lineTo(7f, 17f)
-            lineTo(9f, 15f)
+            lineTo(3f, 18f)
+            lineTo(7f, 22f)
+            verticalLineTo(19f)
+            horizontalLineTo(19f)
+            verticalLineTo(13f)
+            horizontalLineTo(17f)
+            close()
         }
     }.build()
 
