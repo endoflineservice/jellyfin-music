@@ -176,15 +176,49 @@ private fun Header() {
                 fontSize = 14.sp
             )
         }
-        Box(
-            modifier = Modifier
-                .size(48.dp)
-                .clip(CircleShape)
-                .background(Accent),
-            contentAlignment = Alignment.Center
-        ) {
-            Text("J", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        TopBarSineVisualizer()
+    }
+}
+
+@Composable
+private fun TopBarSineVisualizer() {
+    val transition = rememberInfiniteTransition(label = "top-bar-sine")
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = (PI * 2).toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "top-bar-phase"
+    )
+
+    Canvas(
+        modifier = Modifier
+            .width(76.dp)
+            .height(48.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .background(Accent)
+            .padding(horizontal = 10.dp, vertical = 10.dp)
+    ) {
+        val centerY = size.height / 2f
+        val amplitude = size.height * 0.26f
+        val wavelength = size.width / 1.7f
+        val path = Path()
+        var x = 0f
+
+        path.moveTo(0f, centerY)
+        while (x <= size.width) {
+            val y = centerY + sin((x / wavelength) * PI.toFloat() * 2f + phase) * amplitude
+            path.lineTo(x, y)
+            x += 3f
         }
+
+        drawPath(
+            path = path,
+            color = Color.White,
+            style = Stroke(width = 5.dp.toPx(), cap = StrokeCap.Round)
+        )
     }
 }
 
