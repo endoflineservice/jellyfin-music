@@ -46,7 +46,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -2115,67 +2114,61 @@ private fun FullPlayerScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Spacer(Modifier.weight(1f))
-            Row(
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(82.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .weight(1f),
+                contentAlignment = Alignment.Center
             ) {
-                PlaybackButtonSlot {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(108.dp),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterHorizontally),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     RoundedPlaybackButton(
                         icon = PlayerGlyph.Shuffle,
                         contentDescription = if (shuffleEnabled) "Shuffle on" else "Shuffle",
                         active = shuffleEnabled,
                         onClick = onToggleShuffle,
-                        modifier = Modifier.size(56.dp)
+                        modifier = Modifier.size(58.dp)
                     )
-                }
-                PlaybackButtonSlot {
                     RoundedPlaybackButton(
                         icon = PlayerGlyph.Previous,
                         contentDescription = "Previous track",
                         onClick = onPrevious,
-                        modifier = Modifier.size(56.dp)
+                        modifier = Modifier.size(58.dp)
                     )
-                }
-                PlaybackButtonSlot(weight = 1.35f) {
                     RoundedPlaybackButton(
                         icon = if (isPlaying) PlayerGlyph.Pause else PlayerGlyph.Play,
                         contentDescription = if (isPlaying) "Pause" else "Play",
                         onClick = if (!isPlaying && status == "Ended") onReplay else onToggle,
                         prominent = true,
-                        modifier = Modifier.size(78.dp)
+                        modifier = Modifier.size(88.dp)
                     )
-                }
-                PlaybackButtonSlot {
                     RoundedPlaybackButton(
                         icon = PlayerGlyph.Next,
                         contentDescription = "Next track",
                         onClick = onNext,
-                        modifier = Modifier.size(56.dp)
+                        modifier = Modifier.size(58.dp)
                     )
-                }
-                PlaybackButtonSlot {
                     RoundedPlaybackButton(
                         icon = PlayerGlyph.Repeat,
                         contentDescription = if (repeatEnabled) "Repeat on" else "Repeat",
                         active = repeatEnabled,
                         onClick = onToggleRepeat,
-                        modifier = Modifier.size(56.dp)
+                        modifier = Modifier.size(58.dp)
                     )
-                }
-                PlaybackButtonSlot {
                     RoundedPlaybackButton(
                         icon = PlayerGlyph.Favorite,
                         contentDescription = "Favorite track",
                         onClick = {},
-                        modifier = Modifier.size(56.dp)
+                        modifier = Modifier.size(58.dp)
                     )
                 }
             }
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(8.dp))
             QueuePullHandle(
                 queueCount = (displayQueue.size - 1).coerceAtLeast(0),
                 onOpen = { showQueue = true }
@@ -2194,21 +2187,6 @@ private fun FullPlayerScreen(
                 modifier = Modifier.align(Alignment.BottomCenter)
             )
         }
-    }
-}
-
-@Composable
-private fun RowScope.PlaybackButtonSlot(
-    weight: Float = 1f,
-    content: @Composable () -> Unit
-) {
-    Box(
-        modifier = Modifier
-            .fillMaxHeight()
-            .weight(weight),
-        contentAlignment = Alignment.Center
-    ) {
-        content()
     }
 }
 
