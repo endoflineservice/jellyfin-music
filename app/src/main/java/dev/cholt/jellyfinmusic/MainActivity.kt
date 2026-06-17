@@ -1,6 +1,7 @@
 package dev.cholt.jellyfinmusic
 
 import android.content.Context
+import android.graphics.Color as AndroidColor
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
@@ -14,6 +15,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.core.LinearEasing
@@ -124,7 +126,10 @@ import ir.mahozad.multiplatform.wavyslider.material3.WavySlider
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         setTheme(R.style.AppTheme)
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.light(AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.light(AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT)
+        )
         super.onCreate(savedInstanceState)
         setContent {
             JellyfinMusicTheme {
@@ -719,11 +724,12 @@ private fun BottomTabsBar(
             verticalAlignment = Alignment.CenterVertically
         ) {
             AppDestination.entries.forEach { destination ->
+                val selected = selectedDestination == destination
                 BottomTabItem(
                     destination = destination,
-                    selected = selectedDestination == destination,
+                    selected = selected,
                     onClick = { onDestinationSelected(destination) },
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(if (selected) 1.35f else 1f)
                 )
             }
         }
@@ -754,19 +760,19 @@ private fun BottomTabItem(
                 contentColor = MaterialTheme.colorScheme.onPrimary
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 8.dp),
+                    modifier = Modifier.padding(horizontal = 6.dp),
                     horizontalArrangement = Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
                         imageVector = destinationIcon(destination),
                         contentDescription = destination.label,
-                        modifier = Modifier.size(19.dp)
+                        modifier = Modifier.size(18.dp)
                     )
-                    Spacer(Modifier.width(4.dp))
+                    Spacer(Modifier.width(3.dp))
                     Text(
                         text = destination.label,
-                        style = MaterialTheme.typography.labelMedium,
+                        style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1
                     )
@@ -1298,47 +1304,55 @@ private fun PlaybackGlyph(icon: PlayerGlyph, color: Color, modifier: Modifier = 
             }
 
             PlayerGlyph.Shuffle -> {
-                drawPath(
-                    path = Path().apply {
-                        moveTo(w * 0.16f, h * 0.32f)
-                        cubicTo(w * 0.34f, h * 0.32f, w * 0.43f, h * 0.5f, w * 0.6f, h * 0.5f)
-                        cubicTo(w * 0.72f, h * 0.5f, w * 0.78f, h * 0.4f, w * 0.86f, h * 0.28f)
-                    },
+                drawLine(
                     color = color,
-                    style = Stroke(width = stroke * 0.72f, cap = StrokeCap.Round)
+                    start = Offset(w * 0.16f, h * 0.32f),
+                    end = Offset(w * 0.78f, h * 0.68f),
+                    strokeWidth = stroke * 0.72f,
+                    cap = StrokeCap.Round
                 )
-                drawPath(
-                    path = Path().apply {
-                        moveTo(w * 0.16f, h * 0.68f)
-                        cubicTo(w * 0.34f, h * 0.68f, w * 0.43f, h * 0.5f, w * 0.6f, h * 0.5f)
-                        cubicTo(w * 0.72f, h * 0.5f, w * 0.78f, h * 0.6f, w * 0.86f, h * 0.72f)
-                    },
+                drawLine(
                     color = color,
-                    style = Stroke(width = stroke * 0.72f, cap = StrokeCap.Round)
+                    start = Offset(w * 0.16f, h * 0.68f),
+                    end = Offset(w * 0.78f, h * 0.32f),
+                    strokeWidth = stroke * 0.72f,
+                    cap = StrokeCap.Round
                 )
-                drawArrowHead(color, Offset(w * 0.86f, h * 0.28f), -0.85f, stroke)
-                drawArrowHead(color, Offset(w * 0.86f, h * 0.72f), 0.85f, stroke)
+                drawArrowHead(color, Offset(w * 0.78f, h * 0.68f), 0.52f, stroke)
+                drawArrowHead(color, Offset(w * 0.78f, h * 0.32f), -0.52f, stroke)
             }
 
             PlayerGlyph.Repeat -> {
-                drawPath(
-                    path = Path().apply {
-                        moveTo(w * 0.24f, h * 0.36f)
-                        cubicTo(w * 0.34f, h * 0.2f, w * 0.68f, h * 0.2f, w * 0.78f, h * 0.36f)
-                    },
+                drawLine(
                     color = color,
-                    style = Stroke(width = stroke * 0.72f, cap = StrokeCap.Round)
+                    start = Offset(w * 0.24f, h * 0.34f),
+                    end = Offset(w * 0.76f, h * 0.34f),
+                    strokeWidth = stroke * 0.72f,
+                    cap = StrokeCap.Round
                 )
-                drawPath(
-                    path = Path().apply {
-                        moveTo(w * 0.76f, h * 0.64f)
-                        cubicTo(w * 0.66f, h * 0.8f, w * 0.32f, h * 0.8f, w * 0.22f, h * 0.64f)
-                    },
+                drawLine(
                     color = color,
-                    style = Stroke(width = stroke * 0.72f, cap = StrokeCap.Round)
+                    start = Offset(w * 0.76f, h * 0.34f),
+                    end = Offset(w * 0.76f, h * 0.5f),
+                    strokeWidth = stroke * 0.72f,
+                    cap = StrokeCap.Round
                 )
-                drawArrowHead(color, Offset(w * 0.78f, h * 0.36f), 0.5f, stroke)
-                drawArrowHead(color, Offset(w * 0.22f, h * 0.64f), 3.65f, stroke)
+                drawLine(
+                    color = color,
+                    start = Offset(w * 0.76f, h * 0.66f),
+                    end = Offset(w * 0.24f, h * 0.66f),
+                    strokeWidth = stroke * 0.72f,
+                    cap = StrokeCap.Round
+                )
+                drawLine(
+                    color = color,
+                    start = Offset(w * 0.24f, h * 0.66f),
+                    end = Offset(w * 0.24f, h * 0.5f),
+                    strokeWidth = stroke * 0.72f,
+                    cap = StrokeCap.Round
+                )
+                drawArrowHead(color, Offset(w * 0.76f, h * 0.34f), 0f, stroke)
+                drawArrowHead(color, Offset(w * 0.24f, h * 0.66f), PI.toFloat(), stroke)
             }
 
             PlayerGlyph.Replay -> {
