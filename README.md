@@ -5,9 +5,11 @@ A small native Android prototype for a clean Jellyfin-focused music player.
 ## Current Prototype
 
 - Kotlin and Jetpack Compose Android app.
-- Simple library screen with mocked tracks.
-- Rounded, quiet UI aimed at fast scanning.
-- Animated wiggly progress bar in the mini player.
+- Material You themed UI with dynamic color on Android 12+.
+- Jellyfin server login with saved session.
+- Real song library loading from the Jellyfin API.
+- Search plus songs, albums, and artists library views.
+- Basic network music streaming with play, pause, replay, and an animated wiggly progress bar.
 - App label and package identity set to `Jellyfin Music`.
 
 ## Study Plan

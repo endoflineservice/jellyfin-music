@@ -6,6 +6,7 @@
     <application
         android:allowBackup="true"
         android:label="Jellyfin Music"
+        android:usesCleartextTraffic="true"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
         <activity

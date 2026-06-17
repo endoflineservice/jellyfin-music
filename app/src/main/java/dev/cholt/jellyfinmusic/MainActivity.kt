@@ -1,8 +1,16 @@
 package dev.cholt.jellyfinmusic
 
+import android.content.Context
+import android.media.MediaPlayer
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -21,6 +29,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -32,11 +42,23 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.dynamicLightColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -51,15 +73,26 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.IOException
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
+import java.util.Locale
+import kotlin.concurrent.thread
 import kotlin.math.PI
 import kotlin.math.sin
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         setContent {
             JellyfinMusicTheme {
@@ -69,119 +102,633 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private val Ink = Color(0xFF171513)
-private val Paper = Color(0xFFF6F8F7)
-private val SurfaceWarm = Color(0xFFFFFFFF)
-private val Accent = Color(0xFF1F6F64)
-private val AccentSoft = Color(0xFFDDEEEA)
-private val Clay = Color(0xFFE8795F)
-private val Slate = Color(0xFF66768C)
+private val SeedPrimary = Color(0xFF006B5B)
+private val SeedSecondary = Color(0xFF7D5260)
+private val SeedTertiary = Color(0xFF745B00)
+private val AlbumTints = listOf(
+    Color(0xFF006B5B),
+    Color(0xFF52606D),
+    Color(0xFF9A5448),
+    Color(0xFF6E5B95),
+    Color(0xFF2F6B83),
+    Color(0xFF8A5B2D)
+)
 
-private data class Track(
+private const val PREFS_NAME = "jellyfin_music"
+
+private data class JellyfinSession(
+    val serverUrl: String,
+    val username: String,
+    val userId: String,
+    val token: String
+)
+
+private data class MusicTrack(
+    val id: String,
     val title: String,
     val artist: String,
     val album: String,
-    val duration: String,
+    val durationMs: Long,
     val tint: Color
-)
+) {
+    fun streamUrl(session: JellyfinSession): String {
+        val encodedId = encode(id)
+        val encodedToken = encode(session.token)
+        return "${session.serverUrl}/Audio/$encodedId/stream?Static=true&api_key=$encodedToken"
+    }
+}
 
-private val tracks = listOf(
-    Track("Night Drive", "Local Library", "Soft Signals", "3:42", Accent),
-    Track("Quiet Current", "Jellyfin Mix", "Clean Room", "4:08", Slate),
-    Track("Round Corners", "Design Notes", "Material Sketches", "2:57", Clay),
-    Track("Offline Cache", "Server Room", "Low Bandwidth", "5:14", Color(0xFF8B6FB2)),
-    Track("Gapless Morning", "Playback Lab", "Album Flow", "3:25", Color(0xFF4E8BA6))
+private enum class LibraryTab(val label: String) {
+    Songs("Songs"),
+    Albums("Albums"),
+    Artists("Artists")
+}
+
+private data class LibraryGroup(
+    val title: String,
+    val subtitle: String,
+    val tint: Color,
+    val tracks: List<MusicTrack>
 )
 
 @Composable
 private fun JellyfinMusicTheme(content: @Composable () -> Unit) {
+    val context = LocalContext.current
+    val colorScheme = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        dynamicLightColorScheme(context)
+    } else {
+        lightColorScheme(
+            primary = SeedPrimary,
+            secondary = SeedSecondary,
+            tertiary = SeedTertiary,
+            background = Color(0xFFFBFCFA),
+            surface = Color(0xFFFBFCFA),
+            surfaceVariant = Color(0xFFE5ECE8),
+            primaryContainer = Color(0xFFD8EDE7),
+            secondaryContainer = Color(0xFFFFD9E3),
+            tertiaryContainer = Color(0xFFFFDF9A)
+        )
+    }
+
     MaterialTheme(
-        colorScheme = darkColorScheme(
-            primary = Accent,
-            secondary = Clay,
-            background = Paper,
-            surface = SurfaceWarm,
-            onPrimary = Color.White,
-            onSecondary = Ink,
-            onBackground = Ink,
-            onSurface = Ink
-        ),
+        colorScheme = colorScheme,
         content = content
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun JellyfinMusicApp() {
-    var selectedTrack by remember { mutableStateOf(tracks.first()) }
-    var progress by remember { mutableFloatStateOf(0.38f) }
+    val context = LocalContext.current
+    val repository = remember { JellyfinRepository(context.applicationContext) }
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
+    val player = remember { JellyfinPlayer(context.applicationContext) }
 
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = Paper
-    ) {
-        Column(
+    var session by remember { mutableStateOf(loadSavedSession(context)) }
+    var serverUrl by remember { mutableStateOf(session?.serverUrl.orEmpty()) }
+    var username by remember { mutableStateOf(session?.username.orEmpty()) }
+    var password by remember { mutableStateOf("") }
+    var tracks by remember { mutableStateOf(emptyList<MusicTrack>()) }
+    var selectedTab by remember { mutableStateOf(LibraryTab.Songs) }
+    var searchQuery by remember { mutableStateOf("") }
+    var isBusy by remember { mutableStateOf(false) }
+    var statusText by remember { mutableStateOf<String?>(null) }
+
+    fun runTask(task: () -> Unit) {
+        if (!isBusy) {
+            isBusy = true
+            thread(name = "jellyfin-task") { task() }
+        }
+    }
+
+    fun loadLibrary(activeSession: JellyfinSession) {
+        runTask {
+            val result = runCatching { repository.fetchTracks(activeSession) }
+            mainHandler.post {
+                isBusy = false
+                result
+                    .onSuccess { loadedTracks ->
+                        tracks = loadedTracks
+                        statusText = if (loadedTracks.isEmpty()) "No music found" else null
+                    }
+                    .onFailure { statusText = it.readableMessage() }
+            }
+        }
+    }
+
+    fun connect() {
+        if (serverUrl.isBlank() || username.isBlank()) {
+            statusText = "Server URL and username are required"
+            return
+        }
+
+        runTask {
+            val result = runCatching {
+                val activeSession = repository.login(serverUrl, username, password)
+                saveSession(context, activeSession)
+                activeSession to repository.fetchTracks(activeSession)
+            }
+            mainHandler.post {
+                isBusy = false
+                result
+                    .onSuccess { (activeSession, loadedTracks) ->
+                        session = activeSession
+                        serverUrl = activeSession.serverUrl
+                        username = activeSession.username
+                        password = ""
+                        tracks = loadedTracks
+                        statusText = if (loadedTracks.isEmpty()) "Connected, but no music found" else null
+                    }
+                    .onFailure { statusText = it.readableMessage() }
+            }
+        }
+    }
+
+    fun signOut() {
+        player.release()
+        clearSavedSession(context)
+        session = null
+        tracks = emptyList()
+        statusText = null
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { player.release() }
+    }
+
+    LaunchedEffect(session?.token) {
+        val activeSession = session
+        if (activeSession != null && tracks.isEmpty()) {
+            loadLibrary(activeSession)
+        }
+    }
+
+    LaunchedEffect(player.currentTrack, player.isPlaying) {
+        while (true) {
+            player.syncProgress()
+            delay(500)
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text(
+                            text = "Jellyfin Music",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1
+                        )
+                        Text(
+                            text = session?.serverUrl?.toHostLabel() ?: "Not connected",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                },
+                actions = {
+                    TopBarSineVisualizer(
+                        modifier = Modifier.padding(end = 12.dp),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background,
+                    scrolledContainerColor = MaterialTheme.colorScheme.surface
+                )
+            )
+        },
+        bottomBar = {
+            val activeSession = session
+            val activeTrack = player.currentTrack
+            if (activeSession != null && activeTrack != null) {
+                NowPlayingBar(
+                    track = activeTrack,
+                    isPlaying = player.isPlaying,
+                    progress = player.progress,
+                    status = player.status,
+                    onToggle = { player.toggle() },
+                    onReplay = { player.play(activeTrack, activeSession) }
+                )
+            }
+        },
+        containerColor = MaterialTheme.colorScheme.background
+    ) { innerPadding ->
+        LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 20.dp, vertical = 18.dp)
+                .padding(innerPadding)
+                .imePadding(),
+            contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Header()
-            Spacer(Modifier.height(18.dp))
-            ServerCard()
-            Spacer(Modifier.height(18.dp))
-            SectionTabs()
-            Spacer(Modifier.height(12.dp))
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                items(tracks) { track ->
-                    TrackRow(
-                        track = track,
-                        selected = track == selectedTrack,
-                        onClick = {
-                            selectedTrack = track
-                            progress = 0.18f + tracks.indexOf(track) * 0.12f
+            if (session == null) {
+                item {
+                    ConnectCard(
+                        serverUrl = serverUrl,
+                        username = username,
+                        password = password,
+                        isBusy = isBusy,
+                        statusText = statusText,
+                        onServerUrlChange = { serverUrl = it },
+                        onUsernameChange = { username = it },
+                        onPasswordChange = { password = it },
+                        onConnect = ::connect
+                    )
+                }
+            } else {
+                item {
+                    LibraryHeader(
+                        searchQuery = searchQuery,
+                        isBusy = isBusy,
+                        statusText = statusText,
+                        onSearchQueryChange = { searchQuery = it },
+                        onRefresh = { session?.let(::loadLibrary) },
+                        onSignOut = ::signOut
+                    )
+                }
+                item {
+                    LibraryTabs(
+                        selectedTab = selectedTab,
+                        onTabSelected = { selectedTab = it }
+                    )
+                }
+
+                val filteredTracks = tracks.filterBy(searchQuery)
+                when (selectedTab) {
+                    LibraryTab.Songs -> {
+                        if (filteredTracks.isEmpty()) {
+                            item { EmptyLibraryMessage(isBusy = isBusy) }
+                        } else {
+                            items(filteredTracks, key = { it.id }) { track ->
+                                TrackRow(
+                                    track = track,
+                                    isCurrent = player.currentTrack?.id == track.id,
+                                    onClick = { session?.let { player.play(track, it) } }
+                                )
+                            }
                         }
+                    }
+
+                    LibraryTab.Albums -> {
+                        val groups = filteredTracks.groupByAlbum()
+                        if (groups.isEmpty()) {
+                            item { EmptyLibraryMessage(isBusy = isBusy) }
+                        } else {
+                            items(groups, key = { it.title }) { group ->
+                                GroupRow(
+                                    group = group,
+                                    onClick = { session?.let { player.play(group.tracks.first(), it) } }
+                                )
+                            }
+                        }
+                    }
+
+                    LibraryTab.Artists -> {
+                        val groups = filteredTracks.groupByArtist()
+                        if (groups.isEmpty()) {
+                            item { EmptyLibraryMessage(isBusy = isBusy) }
+                        } else {
+                            items(groups, key = { it.title }) { group ->
+                                GroupRow(
+                                    group = group,
+                                    onClick = { session?.let { player.play(group.tracks.first(), it) } }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConnectCard(
+    serverUrl: String,
+    username: String,
+    password: String,
+    isBusy: Boolean,
+    statusText: String?,
+    onServerUrlChange: (String) -> Unit,
+    onUsernameChange: (String) -> Unit,
+    onPasswordChange: (String) -> Unit,
+    onConnect: () -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(28.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Text(
+                text = "Connect Jellyfin",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            OutlinedTextField(
+                value = serverUrl,
+                onValueChange = onServerUrlChange,
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Server URL") },
+                placeholder = { Text("https://jellyfin.example.com") }
+            )
+            OutlinedTextField(
+                value = username,
+                onValueChange = onUsernameChange,
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Username") }
+            )
+            OutlinedTextField(
+                value = password,
+                onValueChange = onPasswordChange,
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Password") },
+                visualTransformation = PasswordVisualTransformation()
+            )
+            if (statusText != null) {
+                Text(
+                    text = statusText,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            Button(
+                onClick = onConnect,
+                enabled = !isBusy,
+                shape = RoundedCornerShape(18.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (isBusy) "Connecting" else "Connect")
+            }
+            if (isBusy) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+        }
+    }
+}
+
+@Composable
+private fun LibraryHeader(
+    searchQuery: String,
+    isBusy: Boolean,
+    statusText: String?,
+    onSearchQueryChange: (String) -> Unit,
+    onRefresh: () -> Unit,
+    onSignOut: () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = "Library",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                if (statusText != null) {
+                    Text(
+                        text = statusText,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodyMedium
                     )
                 }
             }
-            Spacer(Modifier.height(14.dp))
-            MiniPlayer(
-                track = selectedTrack,
-                progress = progress.coerceIn(0f, 1f),
-                onProgressBump = { progress = (progress + 0.08f).coerceAtMost(0.95f) }
+            TextButton(onClick = onRefresh, enabled = !isBusy) {
+                Text("Refresh")
+            }
+            TextButton(onClick = onSignOut) {
+                Text("Sign out")
+            }
+        }
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = onSearchQueryChange,
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("Search music") }
+        )
+        if (isBusy) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+    }
+}
+
+@Composable
+private fun LibraryTabs(selectedTab: LibraryTab, onTabSelected: (LibraryTab) -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        LibraryTab.entries.forEach { tab ->
+            FilterChip(
+                selected = selectedTab == tab,
+                onClick = { onTabSelected(tab) },
+                label = { Text(tab.label) }
             )
         }
     }
 }
 
 @Composable
-private fun Header() {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+private fun TrackRow(track: MusicTrack, isCurrent: Boolean, onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(20.dp),
+        color = if (isCurrent) {
+            MaterialTheme.colorScheme.primaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLow
+        },
+        tonalElevation = if (isCurrent) 2.dp else 0.dp
     ) {
-        Column {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AlbumTile(tint = track.tint, modifier = Modifier.size(48.dp))
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = track.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "${track.artist} - ${track.album}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
             Text(
-                text = "Jellyfin Music",
-                color = Ink,
-                fontSize = 30.sp,
-                fontWeight = FontWeight.Black,
-                letterSpacing = 0.sp
-            )
-            Text(
-                text = "A clean Jellyfin music player prototype",
-                color = Ink.copy(alpha = 0.62f),
-                fontSize = 14.sp
+                text = formatDuration(track.durationMs),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        TopBarSineVisualizer()
     }
 }
 
 @Composable
-private fun TopBarSineVisualizer() {
+private fun GroupRow(group: LibraryGroup, onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AlbumTile(tint = group.tint, modifier = Modifier.size(48.dp))
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = group.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = group.subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AlbumTile(tint: Color, modifier: Modifier = Modifier) {
+    val centerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)
+    Canvas(
+        modifier = modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(tint.copy(alpha = 0.18f))
+    ) {
+        drawCircle(
+            brush = Brush.radialGradient(
+                listOf(tint.copy(alpha = 0.92f), tint.copy(alpha = 0.2f)),
+                center = Offset(size.width * 0.33f, size.height * 0.28f),
+                radius = size.minDimension
+            ),
+            radius = size.minDimension * 0.58f,
+            center = Offset(size.width * 0.48f, size.height * 0.48f)
+        )
+        drawCircle(
+            color = centerColor,
+            radius = size.minDimension * 0.12f,
+            center = center
+        )
+    }
+}
+
+@Composable
+private fun EmptyLibraryMessage(isBusy: Boolean) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow
+    ) {
+        Text(
+            text = if (isBusy) "Loading library" else "No matching music",
+            modifier = Modifier.padding(18.dp),
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun NowPlayingBar(
+    track: MusicTrack,
+    isPlaying: Boolean,
+    progress: Float,
+    status: String,
+    onToggle: () -> Unit,
+    onReplay: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        shape = RoundedCornerShape(28.dp),
+        color = MaterialTheme.colorScheme.primaryContainer,
+        tonalElevation = 3.dp
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                AlbumTile(tint = track.tint, modifier = Modifier.size(48.dp))
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = track.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "${track.artist} - $status",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                FilledTonalButton(
+                    onClick = onToggle,
+                    shape = RoundedCornerShape(18.dp),
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp)
+                ) {
+                    Text(if (isPlaying) "Pause" else "Play")
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            WavyProgressBar(
+                progress = progress,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(18.dp),
+                progressColor = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.16f)
+            )
+            if (!isPlaying && status == "Ended") {
+                TextButton(onClick = onReplay, modifier = Modifier.align(Alignment.End)) {
+                    Text("Replay")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TopBarSineVisualizer(modifier: Modifier = Modifier, color: Color) {
     val transition = rememberInfiniteTransition(label = "top-bar-sine")
     val phase by transition.animateFloat(
         initialValue = 0f,
@@ -194,15 +741,15 @@ private fun TopBarSineVisualizer() {
     )
 
     Canvas(
-        modifier = Modifier
-            .width(76.dp)
-            .height(48.dp)
-            .clip(RoundedCornerShape(24.dp))
-            .background(Accent)
-            .padding(horizontal = 10.dp, vertical = 10.dp)
+        modifier = modifier
+            .width(64.dp)
+            .height(40.dp)
+            .clip(RoundedCornerShape(20.dp))
+            .background(color)
+            .padding(horizontal = 10.dp, vertical = 9.dp)
     ) {
         val centerY = size.height / 2f
-        val amplitude = size.height * 0.26f
+        val amplitude = size.height * 0.24f
         val wavelength = size.width / 1.7f
         val path = Path()
         var x = 0f
@@ -217,183 +764,8 @@ private fun TopBarSineVisualizer() {
         drawPath(
             path = path,
             color = Color.White,
-            style = Stroke(width = 5.dp.toPx(), cap = StrokeCap.Round)
+            style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
         )
-    }
-}
-
-@Composable
-private fun ServerCard() {
-    Card(
-        shape = RoundedCornerShape(28.dp),
-        colors = CardDefaults.cardColors(containerColor = SurfaceWarm),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(Modifier.padding(18.dp)) {
-            Text("Server", color = Ink.copy(alpha = 0.58f), fontSize = 13.sp)
-            Spacer(Modifier.height(5.dp))
-            Text(
-                text = "Connect Jellyfin",
-                color = Ink,
-                fontSize = 21.sp,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(Modifier.height(10.dp))
-            Text(
-                text = "Next step: wire this card to the Jellyfin Kotlin SDK for login, library sync, and stream URLs.",
-                color = Ink.copy(alpha = 0.68f),
-                fontSize = 14.sp,
-                lineHeight = 19.sp
-            )
-            Spacer(Modifier.height(14.dp))
-            Button(
-                onClick = {},
-                colors = ButtonDefaults.buttonColors(containerColor = Accent),
-                shape = RoundedCornerShape(18.dp)
-            ) {
-                Text("Add server")
-            }
-        }
-    }
-}
-
-@Composable
-private fun SectionTabs() {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Chip("Albums", true)
-        Chip("Artists", false)
-        Chip("Songs", false)
-    }
-}
-
-@Composable
-private fun Chip(label: String, selected: Boolean) {
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(18.dp))
-            .background(if (selected) Ink else SurfaceWarm)
-            .padding(horizontal = 16.dp, vertical = 9.dp)
-    ) {
-        Text(
-            text = label,
-            color = if (selected) Color.White else Ink.copy(alpha = 0.72f),
-            fontSize = 14.sp,
-            fontWeight = FontWeight.SemiBold
-        )
-    }
-}
-
-@Composable
-private fun TrackRow(track: Track, selected: Boolean, onClick: () -> Unit) {
-    val container = if (selected) AccentSoft else SurfaceWarm
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(24.dp))
-            .background(container)
-            .clickable(onClick = onClick)
-            .padding(12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        AlbumTile(track.tint)
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            Text(
-                text = track.title,
-                color = Ink,
-                fontSize = 17.sp,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                text = "${track.artist} - ${track.album}",
-                color = Ink.copy(alpha = 0.58f),
-                fontSize = 13.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        Text(track.duration, color = Ink.copy(alpha = 0.52f), fontSize = 13.sp)
-    }
-}
-
-@Composable
-private fun AlbumTile(tint: Color) {
-    Canvas(
-        modifier = Modifier
-            .size(54.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(tint.copy(alpha = 0.22f))
-    ) {
-        drawCircle(
-            brush = Brush.radialGradient(
-                listOf(tint.copy(alpha = 0.95f), tint.copy(alpha = 0.28f)),
-                center = Offset(size.width * 0.34f, size.height * 0.34f),
-                radius = size.minDimension
-            ),
-            radius = size.minDimension * 0.55f,
-            center = Offset(size.width * 0.48f, size.height * 0.48f)
-        )
-        drawCircle(
-            color = Color.White.copy(alpha = 0.7f),
-            radius = size.minDimension * 0.12f,
-            center = center
-        )
-    }
-}
-
-@Composable
-private fun MiniPlayer(track: Track, progress: Float, onProgressBump: () -> Unit) {
-    Card(
-        shape = RoundedCornerShape(32.dp),
-        colors = CardDefaults.cardColors(containerColor = Ink),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(Modifier.padding(14.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                AlbumTile(track.tint)
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        text = track.title,
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = track.artist,
-                        color = Color.White.copy(alpha = 0.62f),
-                        fontSize = 13.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                Button(
-                    onClick = onProgressBump,
-                    shape = CircleShape,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.White),
-                    contentPadding = PaddingValues(0.dp),
-                    modifier = Modifier.size(48.dp)
-                ) {
-                    Text("Play", color = Ink, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                }
-            }
-            Spacer(Modifier.height(14.dp))
-            WavyProgressBar(
-                progress = progress,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(26.dp),
-                progressColor = Clay,
-                trackColor = Color.White.copy(alpha = 0.18f)
-            )
-        }
     }
 }
 
@@ -416,10 +788,10 @@ private fun WavyProgressBar(
     )
 
     Canvas(modifier = modifier) {
-        val strokeWidth = 7.dp.toPx()
+        val strokeWidth = 5.dp.toPx()
         val centerY = size.height / 2f
-        val amplitude = size.height * 0.18f
-        val wavelength = size.width / 4.2f
+        val amplitude = size.height * 0.2f
+        val wavelength = size.width / 4.5f
         val endX = size.width * progress.coerceIn(0f, 1f)
 
         fun buildPath(toX: Float, animated: Boolean): Path {
@@ -448,3 +820,303 @@ private fun WavyProgressBar(
         )
     }
 }
+
+private class JellyfinPlayer(private val context: Context) {
+    var currentTrack by mutableStateOf<MusicTrack?>(null)
+        private set
+    var isPlaying by mutableStateOf(false)
+        private set
+    var status by mutableStateOf("Ready")
+        private set
+    var progress by mutableFloatStateOf(0f)
+        private set
+
+    private var mediaPlayer: MediaPlayer? = null
+
+    fun play(track: MusicTrack, session: JellyfinSession) {
+        releasePlayer()
+        currentTrack = track
+        status = "Buffering"
+        progress = 0f
+
+        val nextPlayer = MediaPlayer()
+        mediaPlayer = nextPlayer
+        runCatching {
+            nextPlayer.setDataSource(
+                context,
+                Uri.parse(track.streamUrl(session)),
+                mapOf("X-Emby-Token" to session.token)
+            )
+            nextPlayer.setOnPreparedListener {
+                it.start()
+                isPlaying = true
+                status = "Playing"
+                syncProgress()
+            }
+            nextPlayer.setOnCompletionListener {
+                isPlaying = false
+                status = "Ended"
+                progress = 1f
+            }
+            nextPlayer.setOnErrorListener { _, _, _ ->
+                isPlaying = false
+                status = "Playback error"
+                true
+            }
+            nextPlayer.prepareAsync()
+        }.onFailure {
+            isPlaying = false
+            status = it.readableMessage()
+        }
+    }
+
+    fun toggle() {
+        val activePlayer = mediaPlayer ?: return
+        if (isPlaying) {
+            activePlayer.pause()
+            isPlaying = false
+            status = "Paused"
+        } else {
+            activePlayer.start()
+            isPlaying = true
+            status = "Playing"
+        }
+    }
+
+    fun syncProgress() {
+        val activePlayer = mediaPlayer ?: return
+        runCatching {
+            val duration = activePlayer.duration
+            if (duration > 0) {
+                progress = activePlayer.currentPosition.toFloat() / duration.toFloat()
+            }
+        }
+    }
+
+    fun release() {
+        releasePlayer()
+        currentTrack = null
+        status = "Ready"
+        progress = 0f
+    }
+
+    private fun releasePlayer() {
+        mediaPlayer?.runCatching {
+            if (isPlaying) stop()
+            reset()
+            release()
+        }
+        mediaPlayer = null
+        isPlaying = false
+    }
+}
+
+private class JellyfinRepository(private val context: Context) {
+    private val deviceId: String =
+        Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "android"
+
+    fun login(serverUrl: String, username: String, password: String): JellyfinSession {
+        val normalizedUrl = normalizeServerUrl(serverUrl)
+        val payload = JSONObject()
+            .put("Username", username)
+            .put("Pw", password)
+            .toString()
+
+        val response = request(
+            url = "$normalizedUrl/Users/AuthenticateByName",
+            method = "POST",
+            body = payload,
+            session = null
+        )
+        val json = JSONObject(response)
+        val user = json.getJSONObject("User")
+        return JellyfinSession(
+            serverUrl = normalizedUrl,
+            username = user.optString("Name", username),
+            userId = user.getString("Id"),
+            token = json.getString("AccessToken")
+        )
+    }
+
+    fun fetchTracks(session: JellyfinSession): List<MusicTrack> {
+        val url = buildString {
+            append(session.serverUrl)
+            append("/Users/")
+            append(encode(session.userId))
+            append("/Items?Recursive=true")
+            append("&IncludeItemTypes=Audio")
+            append("&SortBy=SortName")
+            append("&SortOrder=Ascending")
+            append("&Fields=Album,Artists,RunTimeTicks")
+            append("&Limit=200")
+        }
+        val response = request(url = url, method = "GET", body = null, session = session)
+        val items = JSONObject(response).optJSONArray("Items") ?: JSONArray()
+        return buildList {
+            for (index in 0 until items.length()) {
+                val item = items.optJSONObject(index) ?: continue
+                val id = item.optString("Id")
+                if (id.isBlank()) continue
+                val artist = item.optJSONArray("Artists").joinOrFallback(item.optString("AlbumArtist", "Unknown artist"))
+                add(
+                    MusicTrack(
+                        id = id,
+                        title = item.optString("Name", "Untitled"),
+                        artist = artist,
+                        album = item.optString("Album", "Unknown album").ifBlank { "Unknown album" },
+                        durationMs = item.optLong("RunTimeTicks", 0L) / 10_000L,
+                        tint = tintFor(id)
+                    )
+                )
+            }
+        }
+    }
+
+    private fun request(
+        url: String,
+        method: String,
+        body: String?,
+        session: JellyfinSession?
+    ): String {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = method
+            connectTimeout = 12_000
+            readTimeout = 20_000
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty("Authorization", authorizationHeader(session))
+            session?.token?.let { setRequestProperty("X-Emby-Token", it) }
+            if (body != null) {
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+            }
+        }
+
+        try {
+            if (body != null) {
+                connection.outputStream.use { output ->
+                    output.write(body.toByteArray(Charsets.UTF_8))
+                }
+            }
+
+            val code = connection.responseCode
+            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+            val response = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            if (code !in 200..299) {
+                throw IOException("Jellyfin returned HTTP $code ${response.take(160)}".trim())
+            }
+            return response
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun authorizationHeader(session: JellyfinSession?): String {
+        val base = "MediaBrowser Client=\"Jellyfin Music\", Device=\"Android\", DeviceId=\"$deviceId\", Version=\"0.1.0\""
+        return session?.let { "$base, Token=\"${it.token}\"" } ?: base
+    }
+}
+
+private fun loadSavedSession(context: Context): JellyfinSession? {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val serverUrl = prefs.getString("serverUrl", null) ?: return null
+    val username = prefs.getString("username", null) ?: return null
+    val userId = prefs.getString("userId", null) ?: return null
+    val token = prefs.getString("token", null) ?: return null
+    return JellyfinSession(serverUrl = serverUrl, username = username, userId = userId, token = token)
+}
+
+private fun saveSession(context: Context, session: JellyfinSession) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString("serverUrl", session.serverUrl)
+        .putString("username", session.username)
+        .putString("userId", session.userId)
+        .putString("token", session.token)
+        .apply()
+}
+
+private fun clearSavedSession(context: Context) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .clear()
+        .apply()
+}
+
+private fun normalizeServerUrl(input: String): String {
+    val trimmed = input.trim().removeSuffix("/")
+    return if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+        trimmed
+    } else {
+        "https://$trimmed"
+    }
+}
+
+private fun List<MusicTrack>.filterBy(query: String): List<MusicTrack> {
+    val needle = query.trim()
+    if (needle.isBlank()) return this
+    return filter { track ->
+        track.title.contains(needle, ignoreCase = true) ||
+            track.artist.contains(needle, ignoreCase = true) ||
+            track.album.contains(needle, ignoreCase = true)
+    }
+}
+
+private fun List<MusicTrack>.groupByAlbum(): List<LibraryGroup> =
+    groupBy { it.album }
+        .toSortedMap(String.CASE_INSENSITIVE_ORDER)
+        .map { (album, albumTracks) ->
+            LibraryGroup(
+                title = album,
+                subtitle = "${albumTracks.size} songs - ${albumTracks.first().artist}",
+                tint = albumTracks.first().tint,
+                tracks = albumTracks
+            )
+        }
+
+private fun List<MusicTrack>.groupByArtist(): List<LibraryGroup> =
+    groupBy { it.artist }
+        .toSortedMap(String.CASE_INSENSITIVE_ORDER)
+        .map { (artist, artistTracks) ->
+            LibraryGroup(
+                title = artist,
+                subtitle = "${artistTracks.size} songs",
+                tint = artistTracks.first().tint,
+                tracks = artistTracks
+            )
+        }
+
+private fun JSONArray?.joinOrFallback(fallback: String): String {
+    if (this == null || length() == 0) return fallback.ifBlank { "Unknown artist" }
+    return buildList {
+        for (index in 0 until length()) {
+            optString(index).takeIf { it.isNotBlank() }?.let(::add)
+        }
+    }.joinToString(", ").ifBlank { fallback.ifBlank { "Unknown artist" } }
+}
+
+private fun tintFor(id: String): Color {
+    val index = (id.hashCode() and Int.MAX_VALUE) % AlbumTints.size
+    return AlbumTints[index]
+}
+
+private fun formatDuration(durationMs: Long): String {
+    if (durationMs <= 0L) return "--:--"
+    val totalSeconds = durationMs / 1000L
+    val seconds = totalSeconds % 60
+    val minutes = (totalSeconds / 60) % 60
+    val hours = totalSeconds / 3600
+    return if (hours > 0) {
+        String.format(Locale.US, "%d:%02d:%02d", hours, minutes, seconds)
+    } else {
+        String.format(Locale.US, "%d:%02d", minutes, seconds)
+    }
+}
+
+private fun String.toHostLabel(): String =
+    runCatching { Uri.parse(this).host ?: this }.getOrDefault(this)
+
+private fun Throwable.readableMessage(): String =
+    message?.takeIf { it.isNotBlank() } ?: "Something went wrong"
+
+private fun encode(value: String): String =
+    URLEncoder.encode(value, Charsets.UTF_8.name())
