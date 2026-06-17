@@ -473,6 +473,9 @@ private fun JellyfinMusicApp() {
                             onConnect = ::connect
                         )
                     }
+                    item {
+                        AboutCard()
+                    }
                 } else {
                     when (selectedDestination) {
                         AppDestination.Profile -> {
@@ -483,6 +486,9 @@ private fun JellyfinMusicApp() {
                                     onRefresh = { loadLibrary(connectedSession) },
                                     onSignOut = ::signOut
                                 )
+                            }
+                            item {
+                                AboutCard()
                             }
                         }
 
@@ -558,6 +564,40 @@ private fun JellyfinMusicApp() {
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun AboutCard() {
+    Card(
+        shape = RoundedCornerShape(26.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "About",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = "Jellyfin Music",
+                style = MaterialTheme.typography.bodyLarge
+            )
+            Text(
+                text = "Author: Corry Holt",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "corryrholt@gamil.com",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
