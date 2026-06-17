@@ -1450,14 +1450,6 @@ private fun DiscAlbumStage(
             .padding(horizontal = 6.dp),
         contentAlignment = Alignment.Center
     ) {
-        Surface(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(22.dp),
-            shape = RoundedCornerShape(46.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            tonalElevation = 4.dp
-        ) {}
         CircularSeekRing(
             progress = stageProgress,
             onSeek = onSeek,
