@@ -242,6 +242,13 @@ private enum class AppDestination(val label: String) {
     Profile("Me")
 }
 
+private val BottomTabDestinations = listOf(
+    AppDestination.Home,
+    AppDestination.Search,
+    AppDestination.Library,
+    AppDestination.Profile
+)
+
 private data class LibraryGroup(
     val title: String,
     val subtitle: String,
@@ -1052,7 +1059,7 @@ private fun BottomTabsBar(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            AppDestination.entries.forEach { destination ->
+            BottomTabDestinations.forEach { destination ->
                 val selected = selectedDestination == destination
                 BottomTabItem(
                     destination = destination,
@@ -2754,7 +2761,8 @@ private fun NowPlayingBar(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .swipeUpToOpen(onOpen),
         shape = RoundedCornerShape(24.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         tonalElevation = 3.dp
