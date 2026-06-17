@@ -1692,16 +1692,52 @@ private fun VinylDisc(tint: Color, modifier: Modifier = Modifier) {
     Canvas(
         modifier = modifier
             .clip(CircleShape)
-            .background(Color(0xFF18161D))
+            .background(tint.copy(alpha = 0.18f))
     ) {
         val radius = size.minDimension / 2f
         val center = Offset(size.width / 2f, size.height / 2f)
+
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    tint.copy(alpha = 0.3f),
-                    Color(0xFF2A232D),
-                    Color(0xFF141219)
+                    tint.copy(alpha = 0.95f),
+                    Color(0xFFEBD7FF).copy(alpha = 0.52f),
+                    Color(0xFF4AD9C7).copy(alpha = 0.42f),
+                    tint.copy(alpha = 0.68f)
+                ),
+                center = Offset(size.width * 0.31f, size.height * 0.24f),
+                radius = radius * 1.24f
+            ),
+            radius = radius,
+            center = center
+        )
+        drawCircle(
+            color = Color.White.copy(alpha = 0.2f),
+            radius = radius * 0.34f,
+            center = Offset(size.width * 0.36f, size.height * 0.3f)
+        )
+        drawArc(
+            color = tint.copy(alpha = 0.46f),
+            startAngle = 206f,
+            sweepAngle = 112f,
+            useCenter = true,
+            topLeft = Offset.Zero,
+            size = Size(size.minDimension, size.minDimension)
+        )
+        drawArc(
+            color = Color(0xFF6CE5DC).copy(alpha = 0.28f),
+            startAngle = 36f,
+            sweepAngle = 98f,
+            useCenter = true,
+            topLeft = Offset.Zero,
+            size = Size(size.minDimension, size.minDimension)
+        )
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    Color(0xFF141219).copy(alpha = 0.32f),
+                    Color(0xFF211B25).copy(alpha = 0.42f),
+                    Color(0xFF0E0D12).copy(alpha = 0.55f)
                 ),
                 center = Offset(size.width * 0.34f, size.height * 0.24f),
                 radius = radius * 1.18f
@@ -1710,7 +1746,7 @@ private fun VinylDisc(tint: Color, modifier: Modifier = Modifier) {
             center = center
         )
         drawArc(
-            color = Color.White.copy(alpha = 0.14f),
+            color = Color.White.copy(alpha = 0.16f),
             startAngle = -33f,
             sweepAngle = 47f,
             useCenter = true,
@@ -1719,32 +1755,32 @@ private fun VinylDisc(tint: Color, modifier: Modifier = Modifier) {
         )
         for (index in 0..16) {
             drawCircle(
-                color = Color.White.copy(alpha = if (index % 4 == 0) 0.12f else 0.055f),
+                color = Color.White.copy(alpha = if (index % 4 == 0) 0.2f else 0.085f),
                 radius = radius * (0.28f + index * 0.038f),
                 center = center,
                 style = Stroke(width = if (index % 4 == 0) 1.dp.toPx() else 0.65.dp.toPx())
             )
         }
         drawCircle(
-            color = Color.White.copy(alpha = 0.12f),
+            color = Color.White.copy(alpha = 0.15f),
             radius = radius * 0.82f,
             center = center,
             style = Stroke(width = 1.4.dp.toPx())
         )
         drawCircle(
-            color = Color.White.copy(alpha = 0.1f),
+            color = Color.White.copy(alpha = 0.13f),
             radius = radius * 0.62f,
             center = center,
             style = Stroke(width = 1.dp.toPx())
         )
         drawCircle(
-            color = Color.White.copy(alpha = 0.08f),
+            color = Color.White.copy(alpha = 0.12f),
             radius = radius * 0.43f,
             center = center,
             style = Stroke(width = 1.dp.toPx())
         )
         drawCircle(
-            color = Color.Black.copy(alpha = 0.34f),
+            color = Color.Black.copy(alpha = 0.22f),
             radius = radius * 0.27f,
             center = center
         )
