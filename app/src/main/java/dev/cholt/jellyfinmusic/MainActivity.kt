@@ -108,6 +108,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
@@ -3112,17 +3113,19 @@ private fun VinylDisc(
     val tint = track.tint
     val colorScheme = MaterialTheme.colorScheme
     val surface = colorScheme.surface
-    val labelColor = colorScheme.primary
-    val labelDark = colorScheme.primaryContainer
+    val labelDark = blendColors(colorScheme.primaryContainer, Color.Black, 0.28f)
     Box(
         modifier = modifier
             .clip(CircleShape)
-            .background(tint.copy(alpha = 0.18f))
+            .background(Color.Black)
     ) {
         AlbumArtworkImage(
             track = track,
             session = session,
-            modifier = Modifier.fillMaxSize().clip(CircleShape),
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(CircleShape)
+                .alpha(0.18f),
             imageSize = 160,
             imageQuality = 74,
             networkDelayMs = 1_200L
@@ -3132,20 +3135,20 @@ private fun VinylDisc(
             val center = Offset(size.width / 2f, size.height / 2f)
 
             drawCircle(
-                color = Color.Black.copy(alpha = 0.34f),
+                color = Color.Black.copy(alpha = 0.64f),
                 radius = radius,
                 center = center
             )
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        Color.White.copy(alpha = 0.08f),
                         tint.copy(alpha = 0.1f),
-                        Color.Black.copy(alpha = 0.18f),
-                        Color.Black.copy(alpha = 0.5f)
+                        Color(0xFF1D2A26).copy(alpha = 0.24f),
+                        Color.Black.copy(alpha = 0.52f),
+                        Color.Black.copy(alpha = 0.82f)
                     ),
                     center = Offset(size.width * 0.34f, size.height * 0.28f),
-                    radius = radius * 1.18f
+                    radius = radius * 1.1f
                 ),
                 radius = radius,
                 center = center
@@ -3154,8 +3157,8 @@ private fun VinylDisc(
                 brush = Brush.radialGradient(
                     colors = listOf(
                         Color.Transparent,
-                        Color.Black.copy(alpha = 0.14f),
-                        Color.Black.copy(alpha = 0.38f)
+                        Color.Black.copy(alpha = 0.24f),
+                        Color.Black.copy(alpha = 0.58f)
                     ),
                     center = center,
                     radius = radius
@@ -3164,23 +3167,25 @@ private fun VinylDisc(
                 center = center
             )
             drawArc(
-                color = Color.White.copy(alpha = 0.22f),
-                startAngle = -38f,
-                sweepAngle = 45f,
-                useCenter = true,
+                color = Color.White.copy(alpha = 0.16f),
+                startAngle = -76f,
+                sweepAngle = 48f,
+                useCenter = false,
                 topLeft = Offset.Zero,
-                size = Size(size.minDimension, size.minDimension)
+                size = Size(size.minDimension, size.minDimension),
+                style = Stroke(width = radius * 0.2f, cap = StrokeCap.Round)
             )
             drawArc(
-                color = Color.White.copy(alpha = 0.08f),
-                startAngle = 154f,
-                sweepAngle = 36f,
-                useCenter = true,
+                color = Color.White.copy(alpha = 0.06f),
+                startAngle = 136f,
+                sweepAngle = 56f,
+                useCenter = false,
                 topLeft = Offset.Zero,
-                size = Size(size.minDimension, size.minDimension)
+                size = Size(size.minDimension, size.minDimension),
+                style = Stroke(width = radius * 0.16f, cap = StrokeCap.Round)
             )
             drawArc(
-                color = Color.Black.copy(alpha = 0.2f),
+                color = Color.Black.copy(alpha = 0.34f),
                 startAngle = 206f,
                 sweepAngle = 80f,
                 useCenter = true,
@@ -3188,17 +3193,17 @@ private fun VinylDisc(
                 size = Size(size.minDimension, size.minDimension)
             )
             drawCircle(
-                color = Color.White.copy(alpha = 0.14f),
-                radius = radius * 0.2f,
+                color = Color.White.copy(alpha = 0.08f),
+                radius = radius * 0.18f,
                 center = Offset(size.width * 0.36f, size.height * 0.26f)
             )
-            for (index in 0..22) {
-                val grooveRadius = radius * (0.22f + index * 0.032f)
+            for (index in 0..42) {
+                val grooveRadius = radius * (0.16f + index * 0.019f)
                 drawCircle(
-                    color = Color.White.copy(alpha = if (index % 5 == 0) 0.17f else 0.075f),
+                    color = Color.White.copy(alpha = if (index % 6 == 0) 0.14f else 0.052f),
                     radius = grooveRadius,
                     center = center,
-                    style = Stroke(width = if (index % 5 == 0) 0.9.dp.toPx() else 0.55.dp.toPx())
+                    style = Stroke(width = if (index % 6 == 0) 0.85.dp.toPx() else 0.45.dp.toPx())
                 )
             }
             drawCircle(
@@ -3231,18 +3236,36 @@ private fun VinylDisc(
                 center = center
             )
             drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(labelColor, labelDark),
-                    center = center,
-                    radius = radius * 0.28f
-                ),
+                color = Color.Black.copy(alpha = 0.54f),
                 radius = radius * 0.24f,
                 center = center
+            )
+        }
+        AlbumArtworkImage(
+            track = track,
+            session = session,
+            modifier = Modifier
+                .align(Alignment.Center)
+                .fillMaxSize(0.27f)
+                .clip(CircleShape),
+            imageSize = 160,
+            imageQuality = 78,
+            networkDelayMs = 1_200L
+        )
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val radius = size.minDimension / 2f
+            val center = Offset(size.width / 2f, size.height / 2f)
+
+            drawCircle(
+                color = Color.Black.copy(alpha = 0.32f),
+                radius = radius * 0.15f,
+                center = center,
+                style = Stroke(width = 1.2.dp.toPx())
             )
             for (index in 0 until 6) {
                 val angle = (index * 60f + 22f) * PI.toFloat() / 180f
                 drawLine(
-                    color = labelDark.copy(alpha = 0.72f),
+                    color = labelDark.copy(alpha = 0.5f),
                     start = Offset(
                         x = center.x + cos(angle) * radius * 0.04f,
                         y = center.y + sin(angle) * radius * 0.04f
@@ -3257,12 +3280,12 @@ private fun VinylDisc(
             }
             drawCircle(
                 color = surface.copy(alpha = 0.96f),
-                radius = radius * 0.03f,
+                radius = radius * 0.028f,
                 center = center
             )
             drawCircle(
                 color = labelDark,
-                radius = radius * 0.015f,
+                radius = radius * 0.014f,
                 center = center
             )
         }
