@@ -247,15 +247,16 @@ data class MusicTrack(
         return "${session.serverUrl}/Audio/$encodedId/stream?Static=true&api_key=$encodedToken"
     }
 
-    fun imageUrl(session: JellyfinSession?, size: Int = 512): String? {
+    fun imageUrl(session: JellyfinSession?, size: Int = 512, quality: Int = 86): String? {
         val activeSession = session ?: return null
         val itemId = imageItemId?.takeIf { it.isNotBlank() } ?: return null
         val tagParameter = imageTag
             ?.takeIf { it.isNotBlank() }
             ?.let { "&tag=${encode(it)}" }
             .orEmpty()
+        val boundedQuality = quality.coerceIn(55, 92)
         return "${activeSession.serverUrl}/Items/${encode(itemId)}/Images/Primary" +
-            "?fillWidth=$size&fillHeight=$size&quality=90$tagParameter&api_key=${encode(activeSession.token)}"
+            "?fillWidth=$size&fillHeight=$size&quality=$boundedQuality$tagParameter&api_key=${encode(activeSession.token)}"
     }
 }
 
@@ -1753,7 +1754,8 @@ private fun AlbumTile(
         track = track,
         session = session,
         modifier = modifier.clip(RoundedCornerShape(14.dp)),
-        imageSize = 160
+        imageSize = 160,
+        imageQuality = 74
     )
 }
 
@@ -1763,10 +1765,12 @@ private fun AlbumArtworkImage(
     session: JellyfinSession?,
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Crop,
-    imageSize: Int = 512
+    imageSize: Int = 512,
+    imageQuality: Int = 86,
+    networkDelayMs: Long = 0L
 ) {
-    val imageUrl = track?.imageUrl(session, size = imageSize)
-    val bitmap by rememberAlbumBitmap(imageUrl, session?.token)
+    val imageUrl = track?.imageUrl(session, size = imageSize, quality = imageQuality)
+    val bitmap by rememberAlbumBitmap(imageUrl, session?.token, networkDelayMs)
     Box(modifier = modifier) {
         if (bitmap != null) {
             Image(
@@ -1809,18 +1813,34 @@ private fun GeneratedAlbumTile(tint: Color, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun rememberAlbumBitmap(imageUrl: String?, token: String?): State<Bitmap?> {
+private fun rememberAlbumBitmap(
+    imageUrl: String?,
+    token: String?,
+    networkDelayMs: Long = 0L
+): State<Bitmap?> {
     val context = LocalContext.current.applicationContext
     var bitmap by remember(imageUrl) {
         mutableStateOf(imageUrl?.let { AlbumArtCache[it] })
     }
 
-    LaunchedEffect(imageUrl, token) {
+    LaunchedEffect(imageUrl, token, networkDelayMs) {
         if (imageUrl == null) {
             bitmap = null
             return@LaunchedEffect
         }
-        bitmap = AlbumArtCache[imageUrl] ?: loadAlbumBitmap(context, imageUrl, token)
+        val cachedBitmap = AlbumArtCache[imageUrl]
+        if (cachedBitmap != null) {
+            bitmap = cachedBitmap
+            return@LaunchedEffect
+        }
+        if (networkDelayMs > 0L) {
+            delay(networkDelayMs)
+            AlbumArtCache[imageUrl]?.let {
+                bitmap = it
+                return@LaunchedEffect
+            }
+        }
+        bitmap = loadAlbumBitmap(context, imageUrl, token)
     }
 
     return rememberUpdatedState(bitmap)
@@ -3102,7 +3122,10 @@ private fun VinylDisc(
         AlbumArtworkImage(
             track = track,
             session = session,
-            modifier = Modifier.fillMaxSize().clip(CircleShape)
+            modifier = Modifier.fillMaxSize().clip(CircleShape),
+            imageSize = 160,
+            imageQuality = 74,
+            networkDelayMs = 1_200L
         )
         Canvas(modifier = Modifier.fillMaxSize()) {
             val radius = size.minDimension / 2f
@@ -3533,9 +3556,7 @@ private class JellyfinPlayer(private val context: Context) {
                     .build()
             )
             nextPlayer.setDataSource(
-                context,
-                Uri.parse(track.streamUrl(session)),
-                mapOf("X-Emby-Token" to session.token)
+                track.streamUrl(session)
             )
             nextPlayer.setOnPreparedListener {
                 it.start()
@@ -4072,7 +4093,7 @@ private fun warmAlbumArtCache(context: Context, session: JellyfinSession, tracks
     val appContext = context.applicationContext
     val urls = tracks
         .asSequence()
-        .mapNotNull { it.imageUrl(session, size = 160) }
+        .mapNotNull { it.imageUrl(session, size = 160, quality = 74) }
         .distinct()
         .take(64)
         .toList()
