@@ -148,6 +148,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -170,6 +171,7 @@ import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.random.Random
@@ -224,6 +226,7 @@ private const val PREFS_NAME = "jellyfin_music"
 private const val PREF_USE_ALBUM_ART_COLORS = "use_album_art_colors"
 private const val PREF_VISUALIZER_ENABLED = "visualizer_enabled"
 private const val PREF_THEME_MODE = "theme_mode"
+private const val PREF_LIKED_TRACK_IDS_PREFIX = "liked_track_ids_"
 private const val LIBRARY_CACHE_VERSION = 1
 private const val ALBUM_ART_CACHE_DIR = "album_art_cache"
 private const val MAX_ALBUM_ART_CACHE_FILES = 320
@@ -287,6 +290,7 @@ private enum class AppDestination(val label: String) {
     Search("Search"),
     Player("Play"),
     Library("Library"),
+    Liked("Liked"),
     Profile("Me")
 }
 
@@ -300,6 +304,7 @@ private val BottomTabDestinations = listOf(
     AppDestination.Home,
     AppDestination.Search,
     AppDestination.Library,
+    AppDestination.Liked,
     AppDestination.Profile
 )
 
@@ -542,11 +547,16 @@ private fun JellyfinMusicApp() {
     var username by remember { mutableStateOf(session?.username.orEmpty()) }
     var password by remember { mutableStateOf("") }
     var tracks by remember { mutableStateOf(session?.let { loadCachedLibrary(context, it) } ?: emptyList()) }
+    var likedTrackIds by remember(session?.serverUrl, session?.userId) {
+        mutableStateOf(session?.let { loadLikedTrackIds(context, it) } ?: emptySet())
+    }
     var selectedTab by remember { mutableStateOf(LibraryTab.Songs) }
     var searchQuery by remember { mutableStateOf("") }
     var isBusy by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf<String?>(null) }
     var showPlayer by remember { mutableStateOf(false) }
+    var playerDismissDragOffsetPx by remember { mutableFloatStateOf(0f) }
+    var isPlayerDismissDragging by remember { mutableStateOf(false) }
     var playQueue by remember { mutableStateOf(emptyList<MusicTrack>()) }
     var shuffleEnabled by remember { mutableStateOf(false) }
     var repeatEnabled by remember { mutableStateOf(false) }
@@ -666,6 +676,7 @@ private fun JellyfinMusicApp() {
         clearSavedSession(context)
         session = null
         tracks = emptyList()
+        likedTrackIds = emptySet()
         playQueue = emptyList()
         statusText = null
         showPlayer = false
@@ -680,6 +691,17 @@ private fun JellyfinMusicApp() {
                 selectedDestination = AppDestination.Player
                 showPlayer = true
             }
+        }
+    }
+
+    fun playRandom(source: List<MusicTrack>) {
+        session?.let { activeSession ->
+            val randomizedQueue = source.randomizedPlaybackQueue()
+            val firstTrack = randomizedQueue.firstOrNull() ?: return
+            playQueue = randomizedQueue
+            player.play(firstTrack, activeSession)
+            selectedDestination = AppDestination.Player
+            showPlayer = true
         }
     }
 
@@ -721,6 +743,18 @@ private fun JellyfinMusicApp() {
         playQueue = baseQueue.withTrackPlayNext(track, activeTrack)
     }
 
+    fun toggleLiked(track: MusicTrack) {
+        val nextLikedTrackIds = if (track.id in likedTrackIds) {
+            likedTrackIds - track.id
+        } else {
+            likedTrackIds + track.id
+        }
+        likedTrackIds = nextLikedTrackIds
+        session?.let { activeSession ->
+            saveLikedTrackIds(context, activeSession, nextLikedTrackIds)
+        }
+    }
+
     DisposableEffect(Unit) {
         onDispose {
             scratchEngine.release()
@@ -759,8 +793,19 @@ private fun JellyfinMusicApp() {
     val closePlayer = {
         selectedDestination = AppDestination.Home
         showPlayer = false
+        isPlayerDismissDragging = false
+        playerDismissDragOffsetPx = 0f
     }
     val showTopBar = showPlayer || session == null || selectedDestination != AppDestination.Home
+    val playerDismissOffsetPx by animateFloatAsState(
+        targetValue = playerDismissDragOffsetPx,
+        animationSpec = if (isPlayerDismissDragging) {
+            tween(durationMillis = 0)
+        } else {
+            tween(durationMillis = 180, easing = FastOutSlowInEasing)
+        },
+        label = "playerDismissOffset"
+    )
     val themeTrack = player.currentTrack
     val themeImageUrl = if (useAlbumArtColors) {
         themeTrack?.imageUrl(session, size = 128)
@@ -779,22 +824,32 @@ private fun JellyfinMusicApp() {
     JellyfinMusicTheme(albumAccentColor = albumAccentColor, darkTheme = darkTheme) {
         Scaffold(
             modifier = if (showPlayer) {
-                Modifier.swipeDownToDismiss(
-                    onDismiss = closePlayer,
-                    startZone = 128.dp,
-                    dismissDistance = 72.dp
-                )
+                Modifier
+                    .offset { IntOffset(0, playerDismissOffsetPx.roundToInt()) }
+                    .swipeDownToDismiss(
+                        onDismiss = closePlayer,
+                        startZone = 96.dp,
+                        dismissDistance = 118.dp,
+                        onDragStart = {
+                            isPlayerDismissDragging = true
+                        },
+                        onDragOffsetChange = { offset ->
+                            playerDismissDragOffsetPx = offset
+                        },
+                        onDragEnd = { dismissed ->
+                            isPlayerDismissDragging = false
+                            if (!dismissed) {
+                                playerDismissDragOffsetPx = 0f
+                            }
+                        }
+                    )
             } else {
                 Modifier
             },
             topBar = {
                 if (showTopBar) {
                     TopAppBar(
-                        modifier = if (showPlayer) {
-                            Modifier.swipeDownToDismiss(closePlayer, startZone = 96.dp)
-                        } else {
-                            Modifier
-                        },
+                        modifier = Modifier,
                         navigationIcon = {
                             if (showPlayer) {
                                 IconButton(onClick = closePlayer) {
@@ -885,6 +940,10 @@ private fun JellyfinMusicApp() {
                                         showPlayer = false
                                     }
 
+                                    AppDestination.Liked -> {
+                                        showPlayer = false
+                                    }
+
                                     AppDestination.Profile -> {
                                         showPlayer = false
                                     }
@@ -918,12 +977,13 @@ private fun JellyfinMusicApp() {
                     shuffleEnabled = shuffleEnabled,
                     repeatEnabled = repeatEnabled,
                     visualizerEnabled = visualizerEnabled,
+                    isFavorite = activeTrack.id in likedTrackIds,
                     onToggleShuffle = { shuffleEnabled = !shuffleEnabled },
                     onToggleRepeat = { repeatEnabled = !repeatEnabled },
+                    onToggleFavorite = { toggleLiked(activeTrack) },
                     onQueueTrackClick = ::playQueuedTrack,
                     onQueueMove = ::moveQueueTrack,
-                    onQueuePlayNext = ::playTrackNext,
-                    onDismiss = closePlayer
+                    onQueuePlayNext = ::playTrackNext
                 )
             } else {
                 LazyColumn(
@@ -1009,6 +1069,48 @@ private fun JellyfinMusicApp() {
                             }
                         }
 
+                        AppDestination.Liked -> {
+                            val likedTracks = tracks.filter { it.id in likedTrackIds }
+                            item {
+                                LibraryHeader(
+                                    title = "Liked Tracks",
+                                    showSearch = false,
+                                    searchQuery = "",
+                                    isBusy = isBusy,
+                                    statusText = statusText,
+                                    onSearchQueryChange = {},
+                                    onRefresh = { loadLibrary(connectedSession) }
+                                )
+                            }
+                            if (likedTracks.isEmpty()) {
+                                item {
+                                    EmptyLibraryMessage(
+                                        isBusy = isBusy,
+                                        statusText = statusText.takeIf { tracks.isEmpty() },
+                                        emptyText = "No liked tracks yet"
+                                    )
+                                }
+                            } else {
+                                item {
+                                    RandomPlayButton(
+                                        label = "Random liked",
+                                        trackCount = likedTracks.size,
+                                        onClick = { playRandom(likedTracks) }
+                                    )
+                                }
+                                items(likedTracks, key = { it.id }) { track ->
+                                    TrackRow(
+                                        track = track,
+                                        session = connectedSession,
+                                        isCurrent = player.currentTrack?.id == track.id,
+                                        isLiked = track.id in likedTrackIds,
+                                        onToggleLiked = { toggleLiked(track) },
+                                        onClick = { playTrack(track, openPlayer = true, source = likedTracks) }
+                                    )
+                                }
+                            }
+                        }
+
                         else -> {
                             val isHomeTab = selectedDestination == AppDestination.Home
                             val isSearchTab = selectedDestination == AppDestination.Search
@@ -1042,11 +1144,20 @@ private fun JellyfinMusicApp() {
                                     if (filteredTracks.isEmpty()) {
                                         item { EmptyLibraryMessage(isBusy = isBusy, statusText = statusText) }
                                     } else {
+                                        item {
+                                            RandomPlayButton(
+                                                label = if (isSearchTab) "Random from results" else "Random play",
+                                                trackCount = filteredTracks.size,
+                                                onClick = { playRandom(filteredTracks) }
+                                            )
+                                        }
                                         items(filteredTracks, key = { it.id }) { track ->
                                             TrackRow(
                                                 track = track,
                                                 session = connectedSession,
                                                 isCurrent = player.currentTrack?.id == track.id,
+                                                isLiked = track.id in likedTrackIds,
+                                                onToggleLiked = { toggleLiked(track) },
                                                 onClick = { playTrack(track, openPlayer = true, source = filteredTracks) }
                                             )
                                         }
@@ -1575,6 +1686,7 @@ private fun destinationIcon(destination: AppDestination): ImageVector =
         AppDestination.Search -> Icons.Filled.Search
         AppDestination.Player -> Icons.Filled.PlayArrow
         AppDestination.Library -> PlayerIconVectors.Library
+        AppDestination.Liked -> Icons.Filled.Favorite
         AppDestination.Profile -> Icons.Filled.Person
     }
 
@@ -1717,10 +1829,40 @@ private fun LibraryTabs(selectedTab: LibraryTab, onTabSelected: (LibraryTab) -> 
 }
 
 @Composable
+private fun RandomPlayButton(
+    label: String,
+    trackCount: Int,
+    onClick: () -> Unit
+) {
+    FilledTonalButton(
+        onClick = onClick,
+        enabled = trackCount > 0,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(48.dp),
+        shape = RoundedCornerShape(24.dp)
+    ) {
+        Icon(
+            imageVector = PlayerGlyph.Shuffle.imageVector(),
+            contentDescription = null,
+            modifier = Modifier.size(19.dp)
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = "$label ($trackCount)",
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
 private fun TrackRow(
     track: MusicTrack,
     session: JellyfinSession?,
     isCurrent: Boolean,
+    isLiked: Boolean,
+    onToggleLiked: () -> Unit,
     onClick: () -> Unit
 ) {
     Surface(
@@ -1756,6 +1898,21 @@ private fun TrackRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
+                )
+            }
+            IconButton(
+                onClick = onToggleLiked,
+                modifier = Modifier.size(44.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Favorite,
+                    contentDescription = if (isLiked) "Unlike track" else "Like track",
+                    tint = if (isLiked) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+                    },
+                    modifier = Modifier.size(22.dp)
                 )
             }
             Text(
@@ -1979,7 +2136,11 @@ private fun pruneAlbumArtCache(directory: File?) {
 }
 
 @Composable
-private fun EmptyLibraryMessage(isBusy: Boolean, statusText: String?) {
+private fun EmptyLibraryMessage(
+    isBusy: Boolean,
+    statusText: String?,
+    emptyText: String = "No matching music"
+) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
@@ -1989,7 +2150,7 @@ private fun EmptyLibraryMessage(isBusy: Boolean, statusText: String?) {
             text = when {
                 isBusy -> "Loading library"
                 statusText != null -> statusText
-                else -> "No matching music"
+                else -> emptyText
             },
             modifier = Modifier.padding(18.dp),
             style = MaterialTheme.typography.bodyLarge,
@@ -2005,8 +2166,11 @@ private fun EmptyLibraryMessage(isBusy: Boolean, statusText: String?) {
 private fun Modifier.swipeDownToDismiss(
     onDismiss: () -> Unit,
     startZone: Dp,
-    dismissDistance: Dp = 88.dp
-): Modifier = pointerInput(onDismiss, startZone) {
+    dismissDistance: Dp = 88.dp,
+    onDragStart: () -> Unit = {},
+    onDragOffsetChange: (Float) -> Unit = {},
+    onDragEnd: (dismissed: Boolean) -> Unit = {}
+): Modifier = pointerInput(onDismiss, startZone, dismissDistance) {
     val startZonePx = startZone.toPx()
     val dismissDistancePx = dismissDistance.toPx()
     awaitEachGesture {
@@ -2015,30 +2179,45 @@ private fun Modifier.swipeDownToDismiss(
         var totalDragX = 0f
         var totalDragY = 0f
         var dismissed = false
+        var draggingDismiss = false
 
         while (true) {
             val event = awaitPointerEvent(PointerEventPass.Initial)
             val change = event.changes.firstOrNull { it.id == down.id } ?: break
-            if (!change.pressed) break
+            if (!change.pressed) {
+                break
+            }
 
             if (startsInTopZone) {
                 val dragAmount = change.position - change.previousPosition
                 totalDragX += dragAmount.x
                 totalDragY += dragAmount.y
-                if (totalDragY > 0f) {
+                val downwardDrag = totalDragY > 0f && totalDragY > abs(totalDragX) * 0.6f
+                if (downwardDrag) {
+                    if (!draggingDismiss) {
+                        draggingDismiss = true
+                        onDragStart()
+                    }
+                    onDragOffsetChange(totalDragY.coerceAtLeast(0f))
                     change.consume()
                 }
                 if (
                     !dismissed &&
+                    draggingDismiss &&
                     totalDragY > dismissDistancePx &&
                     totalDragY > abs(totalDragX) * 1.2f
                 ) {
                     dismissed = true
+                    onDragEnd(true)
                     onDismiss()
                     change.consume()
                     break
                 }
             }
+        }
+
+        if (draggingDismiss && !dismissed) {
+            onDragEnd(false)
         }
     }
 }
@@ -2063,12 +2242,13 @@ private fun FullPlayerScreen(
     shuffleEnabled: Boolean,
     repeatEnabled: Boolean,
     visualizerEnabled: Boolean,
+    isFavorite: Boolean,
     onToggleShuffle: () -> Unit,
     onToggleRepeat: () -> Unit,
+    onToggleFavorite: () -> Unit,
     onQueueTrackClick: (MusicTrack) -> Unit,
     onQueueMove: (Int, Int) -> Unit,
-    onQueuePlayNext: (MusicTrack) -> Unit,
-    onDismiss: () -> Unit
+    onQueuePlayNext: (MusicTrack) -> Unit
 ) {
     var showQueue by remember { mutableStateOf(false) }
     val displayQueue = queue.ifEmpty { listOf(track) }
@@ -2085,11 +2265,6 @@ private fun FullPlayerScreen(
         modifier = modifier
             .fillMaxSize()
             .background(playerBackground)
-            .swipeDownToDismiss(
-                onDismiss = onDismiss,
-                startZone = 220.dp,
-                dismissDistance = 110.dp
-            )
     ) {
         Column(
             modifier = Modifier
@@ -2210,8 +2385,9 @@ private fun FullPlayerScreen(
                     )
                     RoundedPlaybackButton(
                         icon = PlayerGlyph.Favorite,
-                        contentDescription = "Favorite track",
-                        onClick = {},
+                        contentDescription = if (isFavorite) "Unlike track" else "Like track",
+                        active = isFavorite,
+                        onClick = onToggleFavorite,
                         modifier = Modifier.size(58.dp)
                     )
                 }
@@ -4560,6 +4736,30 @@ private fun saveThemeMode(context: Context, mode: AppThemeMode) {
         .edit()
         .putString(PREF_THEME_MODE, mode.name)
         .apply()
+}
+
+private fun likedTracksPreferenceKey(session: JellyfinSession): String =
+    "$PREF_LIKED_TRACK_IDS_PREFIX${stableCacheKey("${session.serverUrl}|${session.userId}")}"
+
+private fun loadLikedTrackIds(context: Context, session: JellyfinSession): Set<String> =
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getStringSet(likedTracksPreferenceKey(session), emptySet())
+        ?.toSet()
+        ?: emptySet()
+
+private fun saveLikedTrackIds(context: Context, session: JellyfinSession, likedTrackIds: Set<String>) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putStringSet(likedTracksPreferenceKey(session), likedTrackIds.toSet())
+        .apply()
+}
+
+private fun List<MusicTrack>.randomizedPlaybackQueue(): List<MusicTrack> {
+    val queue = distinctBy { it.id }.toMutableList()
+    if (queue.size <= 1) return queue
+    val seed = SystemClock.elapsedRealtimeNanos() xor java.lang.System.nanoTime()
+    Collections.shuffle(queue, java.util.Random(seed))
+    return queue
 }
 
 private fun List<MusicTrack>.queueStartingAt(track: MusicTrack): List<MusicTrack> {
