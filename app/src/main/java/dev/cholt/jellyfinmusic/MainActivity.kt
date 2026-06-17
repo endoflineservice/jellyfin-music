@@ -34,6 +34,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -86,6 +87,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -184,6 +187,7 @@ private val AlbumTints = listOf(
 private const val PREFS_NAME = "jellyfin_music"
 private const val PREF_USE_ALBUM_ART_COLORS = "use_album_art_colors"
 private const val PREF_VISUALIZER_ENABLED = "visualizer_enabled"
+private const val PREF_THEME_MODE = "theme_mode"
 private const val DISC_SCRATCH_SEEK_SCALE = 0.55f
 private const val DISC_SCRATCH_DEAD_ZONE = 0.22f
 private const val VISUALIZER_BAR_COUNT = 28
@@ -244,6 +248,12 @@ private enum class AppDestination(val label: String) {
     Profile("Me")
 }
 
+private enum class AppThemeMode(val label: String) {
+    System("System"),
+    Light("Light"),
+    Dark("Dark")
+}
+
 private val BottomTabDestinations = listOf(
     AppDestination.Home,
     AppDestination.Search,
@@ -261,24 +271,17 @@ private data class LibraryGroup(
 @Composable
 private fun JellyfinMusicTheme(
     albumAccentColor: Color? = null,
+    darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit
 ) {
     val context = LocalContext.current
-    val colorScheme = albumAccentColor?.let(::albumArtLightColorScheme)
+    val colorScheme = albumAccentColor?.let {
+        if (darkTheme) albumArtDarkColorScheme(it) else albumArtLightColorScheme(it)
+    }
         ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            dynamicLightColorScheme(context)
+            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         } else {
-            lightColorScheme(
-                primary = SeedPrimary,
-                secondary = SeedSecondary,
-                tertiary = SeedTertiary,
-                background = Color(0xFFFBFCFA),
-                surface = Color(0xFFFBFCFA),
-                surfaceVariant = Color(0xFFE5ECE8),
-                primaryContainer = Color(0xFFD8EDE7),
-                secondaryContainer = Color(0xFFFFD9E3),
-                tertiaryContainer = Color(0xFFFFDF9A)
-            )
+            fallbackColorScheme(darkTheme)
         }
 
     MaterialTheme(
@@ -287,30 +290,92 @@ private fun JellyfinMusicTheme(
     )
 }
 
-private fun albumArtLightColorScheme(rawAccent: Color) = lightColorScheme(
-    primary = normalizeAlbumAccent(rawAccent),
-    onPrimary = readableOnColor(normalizeAlbumAccent(rawAccent)),
-    primaryContainer = blendColors(normalizeAlbumAccent(rawAccent), Color.White, 0.78f),
-    onPrimaryContainer = blendColors(normalizeAlbumAccent(rawAccent), Color.Black, 0.24f),
-    secondary = shiftedAccent(normalizeAlbumAccent(rawAccent), hueShift = 24f, saturationMultiplier = 0.7f),
+private fun fallbackColorScheme(darkTheme: Boolean) =
+    if (darkTheme) {
+        darkColorScheme(
+            primary = Color(0xFF77D8C4),
+            secondary = Color(0xFFEAB9C8),
+            tertiary = Color(0xFFE4C46A),
+            background = Color(0xFF101413),
+            surface = Color(0xFF101413),
+            surfaceVariant = Color(0xFF3F4945),
+            primaryContainer = Color(0xFF005143),
+            secondaryContainer = Color(0xFF633B48),
+            tertiaryContainer = Color(0xFF574500)
+        )
+    } else {
+        lightColorScheme(
+            primary = SeedPrimary,
+            secondary = SeedSecondary,
+            tertiary = SeedTertiary,
+            background = Color(0xFFFBFCFA),
+            surface = Color(0xFFFBFCFA),
+            surfaceVariant = Color(0xFFE5ECE8),
+            primaryContainer = Color(0xFFD8EDE7),
+            secondaryContainer = Color(0xFFFFD9E3),
+            tertiaryContainer = Color(0xFFFFDF9A)
+        )
+    }
+
+private fun albumArtLightColorScheme(rawAccent: Color): androidx.compose.material3.ColorScheme {
+    val accent = normalizeAlbumAccent(rawAccent)
+    val secondary = shiftedAccent(accent, hueShift = 24f, saturationMultiplier = 0.7f)
+    val tertiary = shiftedAccent(accent, hueShift = -42f, saturationMultiplier = 0.78f)
+    return lightColorScheme(
+    primary = accent,
+    onPrimary = readableOnColor(accent),
+    primaryContainer = blendColors(accent, Color.White, 0.78f),
+    onPrimaryContainer = blendColors(accent, Color.Black, 0.24f),
+    secondary = secondary,
     onSecondary = Color.White,
-    secondaryContainer = blendColors(shiftedAccent(normalizeAlbumAccent(rawAccent), 24f, 0.7f), Color.White, 0.78f),
+    secondaryContainer = blendColors(secondary, Color.White, 0.78f),
     onSecondaryContainer = Color(0xFF241B20),
-    tertiary = shiftedAccent(normalizeAlbumAccent(rawAccent), hueShift = -42f, saturationMultiplier = 0.78f),
+    tertiary = tertiary,
     onTertiary = Color.White,
-    tertiaryContainer = blendColors(shiftedAccent(normalizeAlbumAccent(rawAccent), -42f, 0.78f), Color.White, 0.78f),
+    tertiaryContainer = blendColors(tertiary, Color.White, 0.78f),
     onTertiaryContainer = Color(0xFF201C10),
-    background = blendColors(normalizeAlbumAccent(rawAccent), Color.White, 0.94f),
+    background = blendColors(accent, Color.White, 0.94f),
     onBackground = Color(0xFF191C1B),
-    surface = blendColors(normalizeAlbumAccent(rawAccent), Color.White, 0.96f),
+    surface = blendColors(accent, Color.White, 0.96f),
     onSurface = Color(0xFF191C1B),
-    surfaceVariant = blendColors(normalizeAlbumAccent(rawAccent), Color.White, 0.84f),
+    surfaceVariant = blendColors(accent, Color.White, 0.84f),
     onSurfaceVariant = Color(0xFF434844),
-    outline = blendColors(normalizeAlbumAccent(rawAccent), Color(0xFF747974), 0.54f),
+    outline = blendColors(accent, Color(0xFF747974), 0.54f),
     inverseSurface = Color(0xFF2D312F),
     inverseOnSurface = Color(0xFFEFF1EE),
-    inversePrimary = blendColors(normalizeAlbumAccent(rawAccent), Color.White, 0.42f)
-)
+    inversePrimary = blendColors(accent, Color.White, 0.42f)
+    )
+}
+
+private fun albumArtDarkColorScheme(rawAccent: Color): androidx.compose.material3.ColorScheme {
+    val accent = normalizeAlbumAccentForDark(rawAccent)
+    val secondary = shiftedAccent(accent, hueShift = 24f, saturationMultiplier = 0.7f)
+    val tertiary = shiftedAccent(accent, hueShift = -42f, saturationMultiplier = 0.78f)
+    return darkColorScheme(
+        primary = accent,
+        onPrimary = readableOnColor(accent),
+        primaryContainer = blendColors(accent, Color.Black, 0.42f),
+        onPrimaryContainer = blendColors(accent, Color.White, 0.76f),
+        secondary = blendColors(secondary, Color.White, 0.18f),
+        onSecondary = readableOnColor(blendColors(secondary, Color.White, 0.18f)),
+        secondaryContainer = blendColors(secondary, Color.Black, 0.48f),
+        onSecondaryContainer = blendColors(secondary, Color.White, 0.76f),
+        tertiary = blendColors(tertiary, Color.White, 0.18f),
+        onTertiary = readableOnColor(blendColors(tertiary, Color.White, 0.18f)),
+        tertiaryContainer = blendColors(tertiary, Color.Black, 0.48f),
+        onTertiaryContainer = blendColors(tertiary, Color.White, 0.76f),
+        background = blendColors(accent, Color.Black, 0.9f),
+        onBackground = Color(0xFFE2E7E3),
+        surface = blendColors(accent, Color.Black, 0.92f),
+        onSurface = Color(0xFFE2E7E3),
+        surfaceVariant = blendColors(accent, Color.Black, 0.72f),
+        onSurfaceVariant = Color(0xFFC2CAC5),
+        outline = blendColors(accent, Color(0xFF8C958F), 0.68f),
+        inverseSurface = Color(0xFFE2E7E3),
+        inverseOnSurface = Color(0xFF1B1F1D),
+        inversePrimary = normalizeAlbumAccent(rawAccent)
+    )
+}
 
 private fun Bitmap.extractAlbumAccentColor(): Color? {
     if (width <= 0 || height <= 0) return null
@@ -362,6 +427,14 @@ private fun normalizeAlbumAccent(color: Color): Color {
     AndroidColor.colorToHSV(color.toArgb(), hsv)
     hsv[1] = hsv[1].coerceIn(0.34f, 0.76f)
     hsv[2] = hsv[2].coerceIn(0.38f, 0.68f)
+    return composeColor(AndroidColor.HSVToColor(hsv))
+}
+
+private fun normalizeAlbumAccentForDark(color: Color): Color {
+    val hsv = FloatArray(3)
+    AndroidColor.colorToHSV(color.toArgb(), hsv)
+    hsv[1] = hsv[1].coerceIn(0.28f, 0.72f)
+    hsv[2] = hsv[2].coerceIn(0.68f, 0.88f)
     return composeColor(AndroidColor.HSVToColor(hsv))
 }
 
@@ -425,7 +498,14 @@ private fun JellyfinMusicApp() {
     var repeatEnabled by remember { mutableStateOf(false) }
     var useAlbumArtColors by remember { mutableStateOf(loadUseAlbumArtColors(context)) }
     var visualizerEnabled by remember { mutableStateOf(loadVisualizerEnabled(context)) }
+    var themeMode by remember { mutableStateOf(loadThemeMode(context)) }
     var selectedDestination by remember { mutableStateOf(AppDestination.Home) }
+    val systemDarkTheme = isSystemInDarkTheme()
+    val darkTheme = when (themeMode) {
+        AppThemeMode.System -> systemDarkTheme
+        AppThemeMode.Light -> false
+        AppThemeMode.Dark -> true
+    }
 
     LaunchedEffect(visualizerEnabled) {
         player.setVisualizerEnabled(visualizerEnabled)
@@ -594,7 +674,7 @@ private fun JellyfinMusicApp() {
         }
     }
 
-    JellyfinMusicTheme(albumAccentColor = albumAccentColor) {
+    JellyfinMusicTheme(albumAccentColor = albumAccentColor, darkTheme = darkTheme) {
         Scaffold(
         topBar = {
             if (showTopBar) {
@@ -772,10 +852,15 @@ private fun JellyfinMusicApp() {
                             }
                             item {
                                 AppearanceCard(
+                                    themeMode = themeMode,
                                     useAlbumArtColors = useAlbumArtColors,
                                     visualizerEnabled = visualizerEnabled,
                                     currentTrack = player.currentTrack,
                                     albumAccentColor = albumAccentColor,
+                                    onThemeModeChange = { mode ->
+                                        themeMode = mode
+                                        saveThemeMode(context, mode)
+                                    },
                                     onUseAlbumArtColorsChange = { enabled ->
                                         useAlbumArtColors = enabled
                                         saveUseAlbumArtColors(context, enabled)
@@ -971,10 +1056,12 @@ private fun AccountCard(
 
 @Composable
 private fun AppearanceCard(
+    themeMode: AppThemeMode,
     useAlbumArtColors: Boolean,
     visualizerEnabled: Boolean,
     currentTrack: MusicTrack?,
     albumAccentColor: Color?,
+    onThemeModeChange: (AppThemeMode) -> Unit,
     onUseAlbumArtColorsChange: (Boolean) -> Unit,
     onVisualizerEnabledChange: (Boolean) -> Unit
 ) {
@@ -992,6 +1079,17 @@ private fun AppearanceCard(
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold
             )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Theme",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                ThemeModeControl(
+                    selectedMode = themeMode,
+                    onModeSelected = onThemeModeChange
+                )
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -1057,6 +1155,57 @@ private fun AppearanceCard(
                     checked = visualizerEnabled,
                     onCheckedChange = onVisualizerEnabledChange
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThemeModeControl(
+    selectedMode: AppThemeMode,
+    onModeSelected: (AppThemeMode) -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(44.dp),
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        tonalElevation = 1.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AppThemeMode.entries.forEach { mode ->
+                val selected = selectedMode == mode
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(36.dp)
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(
+                            if (selected) MaterialTheme.colorScheme.primary
+                            else Color.Transparent
+                        )
+                        .clickable { onModeSelected(mode) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = mode.label,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (selected) {
+                            MaterialTheme.colorScheme.onPrimary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        maxLines = 1
+                    )
+                }
             }
         }
     }
@@ -3575,6 +3724,21 @@ private fun saveVisualizerEnabled(context: Context, enabled: Boolean) {
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
         .putBoolean(PREF_VISUALIZER_ENABLED, enabled)
+        .apply()
+}
+
+private fun loadThemeMode(context: Context): AppThemeMode {
+    val saved = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getString(PREF_THEME_MODE, AppThemeMode.System.name)
+    return runCatching {
+        AppThemeMode.valueOf(saved ?: AppThemeMode.System.name)
+    }.getOrDefault(AppThemeMode.System)
+}
+
+private fun saveThemeMode(context: Context, mode: AppThemeMode) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(PREF_THEME_MODE, mode.name)
         .apply()
 }
 
