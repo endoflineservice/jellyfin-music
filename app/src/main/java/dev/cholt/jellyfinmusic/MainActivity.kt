@@ -238,7 +238,7 @@ private enum class AppDestination(val label: String) {
     Home("Home"),
     Search("Search"),
     Player("Play"),
-    Library("Lib"),
+    Library("Library"),
     Profile("Me")
 }
 
@@ -683,7 +683,6 @@ private fun JellyfinMusicApp() {
                                 }
 
                                 AppDestination.Library -> {
-                                    selectedTab = LibraryTab.Albums
                                     showPlayer = false
                                 }
 
@@ -1136,7 +1135,7 @@ private fun destinationIcon(destination: AppDestination): ImageVector =
         AppDestination.Home -> Icons.Filled.Home
         AppDestination.Search -> Icons.Filled.Search
         AppDestination.Player -> Icons.Filled.PlayArrow
-        AppDestination.Library -> Icons.Filled.Favorite
+        AppDestination.Library -> PlayerIconVectors.Library
         AppDestination.Profile -> Icons.Filled.Person
     }
 
@@ -2177,6 +2176,42 @@ private object PlayerIconVectors {
             curveTo(4.78f, 18.15f, 8.07f, 21f, 12f, 21f)
             curveTo(16.42f, 21f, 20f, 17.42f, 20f, 13f)
             curveTo(20f, 8.58f, 16.42f, 5f, 12f, 5f)
+        }
+    }.build()
+
+    val Library: ImageVector = ImageVector.Builder(
+        name = "Library",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(fill = stroke) {
+            moveTo(4f, 5f)
+            horizontalLineTo(7.5f)
+            verticalLineTo(19f)
+            horizontalLineTo(4f)
+            close()
+            moveTo(9.2f, 5f)
+            horizontalLineTo(12.7f)
+            verticalLineTo(19f)
+            horizontalLineTo(9.2f)
+            close()
+            moveTo(14.3f, 6f)
+            lineTo(17.4f, 5.1f)
+            lineTo(21f, 18.1f)
+            lineTo(17.8f, 19f)
+            close()
+            moveTo(5f, 16.3f)
+            horizontalLineTo(6.5f)
+            verticalLineTo(17.7f)
+            horizontalLineTo(5f)
+            close()
+            moveTo(10.2f, 16.3f)
+            horizontalLineTo(11.7f)
+            verticalLineTo(17.7f)
+            horizontalLineTo(10.2f)
+            close()
         }
     }.build()
 
