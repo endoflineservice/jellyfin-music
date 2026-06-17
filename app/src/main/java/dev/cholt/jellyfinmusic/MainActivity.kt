@@ -76,6 +76,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -824,6 +825,9 @@ private fun JellyfinMusicApp() {
             ) {
                 if (connectedSession == null) {
                     item {
+                        SettingsSectionHeader("Connection")
+                    }
+                    item {
                         ConnectCard(
                             serverUrl = serverUrl,
                             username = username,
@@ -837,11 +841,17 @@ private fun JellyfinMusicApp() {
                         )
                     }
                     item {
+                        SettingsSectionHeader("About")
+                    }
+                    item {
                         AboutCard()
                     }
                 } else {
                     when (selectedDestination) {
                         AppDestination.Profile -> {
+                            item {
+                                SettingsSectionHeader("Connection")
+                            }
                             item {
                                 AccountCard(
                                     session = connectedSession,
@@ -849,6 +859,9 @@ private fun JellyfinMusicApp() {
                                     onRefresh = { loadLibrary(connectedSession) },
                                     onSignOut = ::signOut
                                 )
+                            }
+                            item {
+                                SettingsSectionHeader("Appearance")
                             }
                             item {
                                 AppearanceCard(
@@ -870,6 +883,9 @@ private fun JellyfinMusicApp() {
                                         saveVisualizerEnabled(context, enabled)
                                     }
                                 )
+                            }
+                            item {
+                                SettingsSectionHeader("About")
                             }
                             item {
                                 AboutCard()
@@ -978,6 +994,17 @@ private fun JellyfinMusicApp() {
 }
 
 @Composable
+private fun SettingsSectionHeader(title: String) {
+    Text(
+        text = title,
+        modifier = Modifier.padding(start = 6.dp, top = 8.dp),
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.primary
+    )
+}
+
+@Composable
 private fun AboutCard() {
     Card(
         shape = RoundedCornerShape(26.dp),
@@ -986,26 +1013,24 @@ private fun AboutCard() {
     ) {
         Column(
             modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             Text(
-                text = "About",
+                text = "Jellyfin Music",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold
             )
-            Text(
-                text = "Jellyfin Music",
-                style = MaterialTheme.typography.bodyLarge
+            SettingsInfoRow(
+                title = "License",
+                value = "FOSS project"
             )
-            Text(
-                text = "Author: Corry Holt",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+            SettingsInfoRow(
+                title = "Author",
+                value = "Corry Holt"
             )
-            Text(
-                text = "corryrholt@gamil.com",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+            SettingsInfoRow(
+                title = "Contact",
+                value = "corryrholt@gamil.com"
             )
         }
     }
@@ -1025,25 +1050,38 @@ private fun AccountCard(
     ) {
         Column(
             modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Text(
-                text = session.username,
-                style = MaterialTheme.typography.headlineSmall,
+                text = "Jellyfin account",
+                style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold
             )
-            Text(
-                text = session.serverUrl.toHostLabel(),
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+            SettingsInfoRow(
+                title = "Signed in",
+                value = session.username
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                FilledTonalButton(onClick = onRefresh, enabled = !isBusy) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+            SettingsInfoRow(
+                title = "Server",
+                value = session.serverUrl.toHostLabel()
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                FilledTonalButton(
+                    onClick = onRefresh,
+                    enabled = !isBusy,
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
                     Text("Refresh")
                 }
-                TextButton(onClick = onSignOut) {
+                TextButton(
+                    onClick = onSignOut,
+                    shape = RoundedCornerShape(16.dp)
+                ) {
                     Text("Sign out")
                 }
             }
@@ -1051,6 +1089,34 @@ private fun AccountCard(
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
         }
+    }
+}
+
+@Composable
+private fun SettingsInfoRow(
+    title: String,
+    value: String
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        Spacer(Modifier.width(18.dp))
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.End,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
     }
 }
 
@@ -1074,11 +1140,6 @@ private fun AppearanceCard(
             modifier = Modifier.padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Text(
-                text = "Appearance",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.SemiBold
-            )
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "Theme",
@@ -1090,6 +1151,7 @@ private fun AppearanceCard(
                     onModeSelected = onThemeModeChange
                 )
             }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -1122,6 +1184,7 @@ private fun AppearanceCard(
                     onCheckedChange = onUseAlbumArtColorsChange
                 )
             }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
