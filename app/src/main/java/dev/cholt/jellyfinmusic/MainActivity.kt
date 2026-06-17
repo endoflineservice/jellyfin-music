@@ -105,6 +105,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -2806,29 +2807,29 @@ private fun DiscAlbumStage(
     onScratch: (Float) -> Unit,
     onScratchEnd: () -> Unit
 ) {
-    val transition = rememberInfiniteTransition(label = "disc-spin")
-    val rotation by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 14000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "disc-rotation"
-    )
     val latestProgress by rememberUpdatedState(progress)
     val latestOnSeek by rememberUpdatedState(onSeek)
     val latestOnScratch by rememberUpdatedState(onScratch)
     val latestOnScratchEnd by rememberUpdatedState(onScratchEnd)
     var isScratching by remember { mutableStateOf(false) }
     var scratchProgress by remember { mutableFloatStateOf(progress) }
-    var scratchRotation by remember { mutableFloatStateOf(0f) }
+    var discRotation by remember(track.id) { mutableFloatStateOf(0f) }
     val stageProgress = if (isScratching) scratchProgress else progress
-    val discRotation = scratchRotation + if (isPlaying && !isScratching) rotation else 0f
 
     LaunchedEffect(progress, isScratching) {
         if (!isScratching) {
             scratchProgress = progress
+        }
+    }
+
+    LaunchedEffect(isPlaying, isScratching, track.id) {
+        if (!isPlaying || isScratching) return@LaunchedEffect
+        var lastFrameTime = withFrameNanos { it }
+        while (true) {
+            val frameTime = withFrameNanos { it }
+            val deltaSeconds = (frameTime - lastFrameTime) / 1_000_000_000f
+            lastFrameTime = frameTime
+            discRotation = (discRotation + deltaSeconds * (360f / 14f)) % 360f
         }
     }
 
@@ -2896,7 +2897,7 @@ private fun DiscAlbumStage(
                             lastAngle = angle
                             lastEventTime = now
 
-                            scratchRotation += deltaAngle
+                            discRotation = (discRotation + deltaAngle) % 360f
                             scratchProgress = (
                                 scratchProgress +
                                     (deltaAngle / 360f) * DISC_SCRATCH_SEEK_SCALE
@@ -3295,11 +3296,9 @@ private fun AudioBarsVisualizer(
         val step = size.width / barCount
         val baseline = size.height * 0.86f
         for (index in 0 until barCount) {
-            val centerWeight = 1f - abs(index - (barCount - 1) / 2f) / (barCount / 2f)
-            val restingLevel = 0.08f + centerWeight * 0.12f
             val level = when {
                 hasLiveLevels -> levels.getOrElse(index) { 0f }
-                else -> restingLevel
+                else -> 0f
             }.coerceIn(0f, 1f)
             val height = size.height * (0.1f + level * 0.72f)
             val x = step * index + step / 2f
