@@ -3021,50 +3021,92 @@ private fun TurntableArmOverlay(progress: Float, modifier: Modifier = Modifier) 
     Canvas(modifier = modifier) {
         val p = progress.coerceIn(0f, 1f)
         val accent = colorScheme.primary
-        val pivot = Offset(size.width * 0.205f, size.height * 0.16f)
-        val bend = Offset(size.width * (0.19f + p * 0.018f), size.height * (0.36f + p * 0.018f))
-        val stylus = Offset(size.width * (0.34f + p * 0.055f), size.height * (0.56f - p * 0.03f))
-        val armPath = Path().apply {
-            moveTo(pivot.x, pivot.y)
-            cubicTo(
-                size.width * 0.13f,
-                size.height * 0.25f,
-                bend.x,
-                bend.y,
-                stylus.x,
-                stylus.y
-            )
-        }
-        val cartridgeAngle = -0.72f
+        val pivot = Offset(size.width * 0.205f, size.height * 0.14f)
+        val drop = Offset(size.width * (0.18f + p * 0.01f), size.height * (0.36f + p * 0.008f))
+        val elbow = Offset(size.width * (0.235f + p * 0.035f), size.height * (0.51f - p * 0.01f))
+        val stylus = Offset(size.width * (0.285f + p * 0.095f), size.height * (0.635f - p * 0.08f))
+        val cartridgeAngle = 0.82f
         val cartridgeLength = size.minDimension * 0.105f
-        val cartridgeWidth = size.minDimension * 0.052f
+        val cartridgeWidth = size.minDimension * 0.04f
+        val cartridgeDirection = Offset(cos(cartridgeAngle), sin(cartridgeAngle))
         val cartridgeBack = Offset(
             x = stylus.x - cos(cartridgeAngle) * cartridgeLength,
             y = stylus.y - sin(cartridgeAngle) * cartridgeLength
         )
+        fun armPath(offset: Offset = Offset.Zero): Path = Path().apply {
+            moveTo(pivot.x + offset.x, pivot.y + offset.y)
+            cubicTo(
+                pivot.x - size.width * 0.04f + offset.x,
+                pivot.y + size.height * 0.11f + offset.y,
+                drop.x - size.width * 0.02f + offset.x,
+                drop.y - size.height * 0.03f + offset.y,
+                drop.x + offset.x,
+                drop.y + offset.y
+            )
+            cubicTo(
+                drop.x + size.width * 0.012f + offset.x,
+                drop.y + size.height * 0.06f + offset.y,
+                elbow.x - size.width * 0.014f + offset.x,
+                elbow.y - size.height * 0.035f + offset.y,
+                elbow.x + offset.x,
+                elbow.y + offset.y
+            )
+            lineTo(cartridgeBack.x + offset.x, cartridgeBack.y + offset.y)
+        }
         val normal = Offset(
             x = -sin(cartridgeAngle) * cartridgeWidth,
             y = cos(cartridgeAngle) * cartridgeWidth
         )
+        val railGap = 3.2.dp.toPx()
+        val metalBrush = Brush.linearGradient(
+            colors = listOf(
+                Color.White.copy(alpha = 0.9f),
+                Color(0xFFB7C7C1).copy(alpha = 0.86f),
+                Color(0xFF53605C).copy(alpha = 0.7f)
+            ),
+            start = Offset(pivot.x - 18.dp.toPx(), pivot.y),
+            end = Offset(stylus.x, stylus.y)
+        )
+
         drawPath(
-            path = armPath,
-            color = Color.Black.copy(alpha = 0.24f),
-            style = Stroke(width = 9.dp.toPx(), cap = StrokeCap.Round)
+            path = armPath(Offset(2.dp.toPx(), 3.dp.toPx())),
+            color = Color.Black.copy(alpha = 0.32f),
+            style = Stroke(width = 10.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
         )
         drawPath(
-            path = armPath,
-            color = blendColors(colorScheme.surface, Color.White, 0.22f),
-            style = Stroke(width = 6.dp.toPx(), cap = StrokeCap.Round)
+            path = armPath(),
+            color = Color.Black.copy(alpha = 0.18f),
+            style = Stroke(width = 9.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
         )
         drawPath(
-            path = armPath,
-            color = colorScheme.onSurfaceVariant.copy(alpha = 0.42f),
-            style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
+            path = armPath(Offset(-railGap, 0f)),
+            color = Color.Black.copy(alpha = 0.42f),
+            style = Stroke(width = 4.6.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
         )
         drawPath(
-            path = armPath,
-            color = Color.White.copy(alpha = 0.28f),
-            style = Stroke(width = 1.dp.toPx(), cap = StrokeCap.Round)
+            path = armPath(Offset(railGap, 0f)),
+            color = Color.Black.copy(alpha = 0.42f),
+            style = Stroke(width = 4.6.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
+        drawPath(
+            path = armPath(Offset(-railGap, 0f)),
+            brush = metalBrush,
+            style = Stroke(width = 2.8.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
+        drawPath(
+            path = armPath(Offset(railGap, 0f)),
+            brush = metalBrush,
+            style = Stroke(width = 2.8.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
+        drawPath(
+            path = armPath(Offset(-railGap - 0.7.dp.toPx(), 0f)),
+            color = Color.White.copy(alpha = 0.44f),
+            style = Stroke(width = 0.8.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
+        drawPath(
+            path = armPath(Offset(railGap - 0.7.dp.toPx(), 0f)),
+            color = Color.White.copy(alpha = 0.34f),
+            style = Stroke(width = 0.8.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
         )
 
         val cartridge = Path().apply {
@@ -3074,32 +3116,105 @@ private fun TurntableArmOverlay(progress: Float, modifier: Modifier = Modifier) 
             lineTo(stylus.x - normal.x * 0.46f, stylus.y - normal.y * 0.46f)
             close()
         }
-        drawPath(path = cartridge, color = Color.Black.copy(alpha = 0.28f))
-        drawPath(path = cartridge, color = colorScheme.onSurfaceVariant.copy(alpha = 0.78f))
+        drawLine(
+            color = Color.Black.copy(alpha = 0.26f),
+            start = Offset(cartridgeBack.x - railGap, cartridgeBack.y),
+            end = Offset(cartridgeBack.x + railGap, cartridgeBack.y),
+            strokeWidth = 6.dp.toPx(),
+            cap = StrokeCap.Round
+        )
+        drawPath(
+            path = Path().apply {
+                moveTo(cartridgeBack.x - normal.x + 2.dp.toPx(), cartridgeBack.y - normal.y + 2.dp.toPx())
+                lineTo(cartridgeBack.x + normal.x + 2.dp.toPx(), cartridgeBack.y + normal.y + 2.dp.toPx())
+                lineTo(stylus.x + normal.x * 0.46f + 2.dp.toPx(), stylus.y + normal.y * 0.46f + 2.dp.toPx())
+                lineTo(stylus.x - normal.x * 0.46f + 2.dp.toPx(), stylus.y - normal.y * 0.46f + 2.dp.toPx())
+                close()
+            },
+            color = Color.Black.copy(alpha = 0.18f)
+        )
+        drawPath(path = cartridge, color = Color(0xFFEAF2ED).copy(alpha = 0.9f))
+        drawPath(
+            path = cartridge,
+            color = Color(0xFF6F7C77).copy(alpha = 0.45f),
+            style = Stroke(width = 1.dp.toPx(), join = StrokeJoin.Round)
+        )
+        for (index in 0 until 3) {
+            val along = cartridgeLength * (0.24f + index * 0.18f)
+            val grooveCenter = Offset(
+                x = cartridgeBack.x + cartridgeDirection.x * along,
+                y = cartridgeBack.y + cartridgeDirection.y * along
+            )
+            drawLine(
+                color = Color(0xFF6F7C77).copy(alpha = 0.38f),
+                start = Offset(
+                    x = grooveCenter.x - normal.x * 0.34f,
+                    y = grooveCenter.y - normal.y * 0.34f
+                ),
+                end = Offset(
+                    x = grooveCenter.x + normal.x * 0.34f,
+                    y = grooveCenter.y + normal.y * 0.34f
+                ),
+                strokeWidth = 0.9.dp.toPx(),
+                cap = StrokeCap.Round
+            )
+        }
+        drawLine(
+            color = Color(0xFF293532).copy(alpha = 0.9f),
+            start = Offset(
+                x = stylus.x - cartridgeDirection.x * 3.dp.toPx(),
+                y = stylus.y - cartridgeDirection.y * 3.dp.toPx()
+            ),
+            end = Offset(
+                x = stylus.x + cartridgeDirection.x * 4.dp.toPx(),
+                y = stylus.y + cartridgeDirection.y * 4.dp.toPx()
+            ),
+            strokeWidth = 1.4.dp.toPx(),
+            cap = StrokeCap.Round
+        )
         drawCircle(
-            color = colorScheme.primary.copy(alpha = 0.82f),
-            radius = 2.2.dp.toPx(),
+            color = accent.copy(alpha = 0.82f),
+            radius = 2.dp.toPx(),
             center = stylus
         )
         drawCircle(
-            color = Color.Black.copy(alpha = 0.16f),
-            radius = 25.dp.toPx(),
-            center = pivot + Offset(0f, 2.dp.toPx())
+            color = Color.Black.copy(alpha = 0.22f),
+            radius = 31.dp.toPx(),
+            center = Offset(pivot.x + 1.dp.toPx(), pivot.y + 3.dp.toPx())
         )
         drawCircle(
-            color = blendColors(accent, colorScheme.surface, 0.18f),
-            radius = 23.dp.toPx(),
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    Color.White.copy(alpha = 0.96f),
+                    Color(0xFFB6C6C0).copy(alpha = 0.92f),
+                    Color(0xFF64706C).copy(alpha = 0.88f)
+                ),
+                center = Offset(pivot.x - 7.dp.toPx(), pivot.y - 8.dp.toPx()),
+                radius = 31.dp.toPx()
+            ),
+            radius = 29.dp.toPx(),
             center = pivot
         )
         drawCircle(
-            color = colorScheme.surface,
-            radius = 14.dp.toPx(),
+            color = Color.Black.copy(alpha = 0.38f),
+            radius = 18.dp.toPx(),
+            center = pivot,
+            style = Stroke(width = 2.dp.toPx())
+        )
+        drawCircle(
+            color = blendColors(accent, Color.Black, 0.34f).copy(alpha = 0.9f),
+            radius = 11.dp.toPx(),
             center = pivot
         )
         drawCircle(
-            color = accent.copy(alpha = 0.9f),
-            radius = 7.dp.toPx(),
+            color = Color.Black.copy(alpha = 0.66f),
+            radius = 6.dp.toPx(),
             center = pivot
+        )
+        drawCircle(
+            color = Color.White.copy(alpha = 0.55f),
+            radius = 2.4.dp.toPx(),
+            center = Offset(pivot.x - 2.dp.toPx(), pivot.y - 2.dp.toPx())
         )
     }
 }
