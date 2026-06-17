@@ -118,6 +118,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -3194,6 +3195,12 @@ private fun VinylDisc(
                 center = center,
                 style = Stroke(width = 1.dp.toPx())
             )
+            drawVinylSpeckleTexture(
+                center = center,
+                outerRadius = radius * 0.94f,
+                innerRadius = radius * 0.29f,
+                seed = track.id.hashCode()
+            )
             drawCircle(
                 color = Color.Black.copy(alpha = 0.22f),
                 radius = radius * 0.27f,
@@ -3236,6 +3243,40 @@ private fun VinylDisc(
             )
         }
     }
+}
+
+private fun DrawScope.drawVinylSpeckleTexture(
+    center: Offset,
+    outerRadius: Float,
+    innerRadius: Float,
+    seed: Int
+) {
+    val speckleCount = 150
+    val ringArea = outerRadius - innerRadius
+    for (index in 0 until speckleCount) {
+        val hash = speckleHash(seed, index)
+        val angle = ((hash and 0x3FF) / 1024f) * PI.toFloat() * 2f
+        val radialNoise = (((hash ushr 10) and 0x3FF) / 1024f)
+        val distance = innerRadius + ringArea * sqrt(radialNoise)
+        val x = center.x + cos(angle) * distance
+        val y = center.y + sin(angle) * distance
+        val sizeNoise = ((hash ushr 20) and 0xFF) / 255f
+        val alphaNoise = ((hash ushr 28) and 0x0F) / 15f
+        drawCircle(
+            color = Color.White.copy(alpha = 0.018f + alphaNoise * 0.034f),
+            radius = 0.45.dp.toPx() + sizeNoise * 0.75.dp.toPx(),
+            center = Offset(x, y)
+        )
+    }
+}
+
+private fun speckleHash(seed: Int, index: Int): Int {
+    var value = seed xor (index * 0x45D9F3B)
+    value = value xor (value ushr 16)
+    value *= 0x45D9F3B
+    value = value xor (value ushr 16)
+    value *= 0x45D9F3B
+    return value xor (value ushr 16)
 }
 
 @Composable
