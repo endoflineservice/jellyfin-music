@@ -1671,6 +1671,11 @@ private fun FullPlayerScreen(
                     active = repeatEnabled,
                     onClick = onToggleRepeat
                 )
+                RoundedPlaybackButton(
+                    icon = PlayerGlyph.Favorite,
+                    contentDescription = "Favorite track",
+                    onClick = {}
+                )
             }
             Spacer(Modifier.height(12.dp))
             QueuePullHandle(
@@ -1962,6 +1967,7 @@ private enum class PlayerGlyph {
     Pause,
     Next,
     Repeat,
+    Favorite,
     Replay,
     Queue,
     More,
@@ -1991,7 +1997,7 @@ private fun RoundedPlaybackButton(
     }
     Surface(
         modifier = modifier
-            .size(if (prominent) 64.dp else 52.dp)
+            .size(if (prominent) 64.dp else 48.dp)
             .semantics { this.contentDescription = contentDescription }
             .clickable(onClick = onClick),
         shape = CircleShape,
@@ -2013,6 +2019,7 @@ private fun PlayerGlyph.playbackIconSize(prominent: Boolean): Dp =
     when {
         prominent -> 32.dp
         this == PlayerGlyph.Shuffle || this == PlayerGlyph.Repeat -> 24.dp
+        this == PlayerGlyph.Favorite -> 25.dp
         else -> 27.dp
     }
 
@@ -2023,6 +2030,7 @@ private fun PlayerGlyph.imageVector(): ImageVector = when (this) {
     PlayerGlyph.Pause -> PlayerIconVectors.Pause
     PlayerGlyph.Next -> PlayerIconVectors.SkipNext
     PlayerGlyph.Repeat -> PlayerIconVectors.Repeat
+    PlayerGlyph.Favorite -> Icons.Filled.Favorite
     PlayerGlyph.Replay -> PlayerIconVectors.Replay
     PlayerGlyph.Queue -> PlayerIconVectors.Queue
     PlayerGlyph.More -> PlayerIconVectors.MoreVertical
@@ -2361,24 +2369,6 @@ private fun DiscAlbumStage(
             activeColor = MaterialTheme.colorScheme.primary,
             trackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.18f)
         )
-        Surface(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 38.dp, end = 38.dp)
-                .size(48.dp),
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.primary,
-            tonalElevation = 3.dp
-        ) {
-            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                Icon(
-                    imageVector = Icons.Filled.Favorite,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.size(25.dp)
-                )
-            }
-        }
         VinylDisc(
             track = track,
             session = session,
