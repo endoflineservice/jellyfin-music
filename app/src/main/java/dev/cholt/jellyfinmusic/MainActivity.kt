@@ -571,6 +571,7 @@ private fun JellyfinMusicApp() {
         selectedDestination = AppDestination.Home
         showPlayer = false
     }
+    val showTopBar = showPlayer || session == null || selectedDestination != AppDestination.Home
     val themeTrack = player.currentTrack
     val themeImageUrl = if (useAlbumArtColors) {
         themeTrack?.imageUrl(session, size = 128)
@@ -589,52 +590,54 @@ private fun JellyfinMusicApp() {
     JellyfinMusicTheme(albumAccentColor = albumAccentColor) {
         Scaffold(
         topBar = {
-            TopAppBar(
-                modifier = if (showPlayer) {
-                    Modifier.swipeDownToDismiss(closePlayer, startZone = 96.dp)
-                } else {
-                    Modifier
-                },
-                navigationIcon = {
-                    if (showPlayer) {
-                        IconButton(onClick = closePlayer) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Back to Home"
-                            )
+            if (showTopBar) {
+                TopAppBar(
+                    modifier = if (showPlayer) {
+                        Modifier.swipeDownToDismiss(closePlayer, startZone = 96.dp)
+                    } else {
+                        Modifier
+                    },
+                    navigationIcon = {
+                        if (showPlayer) {
+                            IconButton(onClick = closePlayer) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = "Back to Home"
+                                )
+                            }
                         }
-                    }
-                },
-                title = {
-                    val subtitle = when {
-                        showPlayer -> player.currentTrack?.artist
-                        session == null -> "Not connected"
-                        selectedDestination == AppDestination.Profile -> "Settings"
-                        else -> null
-                    }
-                    Column {
-                        Text(
-                            text = if (showPlayer) "Now Playing" else "Jellyfin Music",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1
-                        )
-                        if (subtitle != null) {
+                    },
+                    title = {
+                        val subtitle = when {
+                            showPlayer -> player.currentTrack?.artist
+                            session == null -> "Not connected"
+                            selectedDestination == AppDestination.Profile -> "Settings"
+                            else -> null
+                        }
+                        Column {
                             Text(
-                                text = subtitle,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                text = if (showPlayer) "Now Playing" else "Jellyfin Music",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1
                             )
+                            if (subtitle != null) {
+                                Text(
+                                    text = subtitle,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                    scrolledContainerColor = MaterialTheme.colorScheme.surface
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.background,
+                        scrolledContainerColor = MaterialTheme.colorScheme.surface
+                    )
                 )
-            )
+            }
         },
         bottomBar = {
             val activeSession = session
