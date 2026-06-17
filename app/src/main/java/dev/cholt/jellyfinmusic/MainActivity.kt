@@ -3060,16 +3060,6 @@ private fun AudioBarsVisualizer(
     active: Boolean,
     levels: FloatArray
 ) {
-    val transition = rememberInfiniteTransition(label = "bars")
-    val phase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = (PI * 2).toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = if (active) 1400 else 2800, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "bars-phase"
-    )
     val hasLiveLevels = active && levels.any { it > 0.045f }
 
     Canvas(modifier = modifier) {
@@ -3080,8 +3070,7 @@ private fun AudioBarsVisualizer(
         val baseline = size.height * 0.86f
         for (index in 0 until barCount) {
             val centerWeight = 1f - abs(index - (barCount - 1) / 2f) / (barCount / 2f)
-            val idleWave = (sin(phase + index * 0.42f) + 1f) / 2f
-            val restingLevel = 0.08f + centerWeight * 0.12f + idleWave * if (active) 0.12f else 0.055f
+            val restingLevel = 0.08f + centerWeight * 0.12f
             val level = when {
                 hasLiveLevels -> levels.getOrElse(index) { 0f }
                 else -> restingLevel
@@ -3089,7 +3078,7 @@ private fun AudioBarsVisualizer(
             val height = size.height * (0.1f + level * 0.72f)
             val x = step * index + step / 2f
             drawLine(
-                color = color.copy(alpha = if (hasLiveLevels) 0.32f + level * 0.58f else 0.22f + level * 0.28f),
+                color = color,
                 start = Offset(x, baseline),
                 end = Offset(x, baseline - height),
                 strokeWidth = strokeWidth,
@@ -3261,16 +3250,16 @@ private fun WavySeekBar(
         thumb = {
             Box(
                 modifier = Modifier
-                    .size(18.dp)
+                    .size(24.dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.96f)),
+                    .background(MaterialTheme.colorScheme.primary),
                 contentAlignment = Alignment.Center
             ) {
                 Box(
                     modifier = Modifier
-                        .size(12.dp)
+                        .size(8.dp)
                         .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary)
+                        .background(MaterialTheme.colorScheme.onPrimary)
                 )
             }
         }
