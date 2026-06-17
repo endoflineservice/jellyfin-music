@@ -1,12 +1,17 @@
 package dev.cholt.jellyfinmusic
 
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioTrack
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -20,6 +25,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -72,6 +78,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -102,8 +109,10 @@ import java.net.URLEncoder
 import java.util.Locale
 import kotlin.concurrent.thread
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.sin
 import kotlin.random.Random
 import ir.mahozad.multiplatform.wavyslider.WaveDirection.HEAD
@@ -134,6 +143,8 @@ private val AlbumTints = listOf(
 )
 
 private const val PREFS_NAME = "jellyfin_music"
+private const val DISC_SCRATCH_SEEK_SCALE = 0.55f
+private const val DISC_SCRATCH_DEAD_ZONE = 0.22f
 
 data class JellyfinSession(
     val serverUrl: String,
@@ -210,6 +221,7 @@ private fun JellyfinMusicApp() {
     val repository = remember { JellyfinRepository(context.applicationContext) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val player = remember { JellyfinPlayer(context.applicationContext) }
+    val scratchEngine = remember { ScratchSoundEngine() }
 
     var session by remember { mutableStateOf(loadSavedSession(context)) }
     var serverUrl by remember { mutableStateOf(session?.serverUrl.orEmpty()) }
@@ -308,7 +320,10 @@ private fun JellyfinMusicApp() {
     }
 
     DisposableEffect(Unit) {
-        onDispose { player.release() }
+        onDispose {
+            scratchEngine.release()
+            player.release()
+        }
     }
 
     LaunchedEffect(session?.token) {
@@ -452,6 +467,8 @@ private fun JellyfinMusicApp() {
                 onPrevious = { playAdjacent(-1) },
                 onNext = { playAdjacent(1) },
                 onReplay = { session?.let { player.play(activeTrack, it) } },
+                onScratch = { scratchEngine.playScratch(it) },
+                onScratchEnd = { scratchEngine.stop() },
                 shuffleEnabled = shuffleEnabled,
                 repeatEnabled = repeatEnabled,
                 onToggleShuffle = { shuffleEnabled = !shuffleEnabled },
@@ -1050,6 +1067,8 @@ private fun FullPlayerScreen(
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onReplay: () -> Unit,
+    onScratch: (Float) -> Unit,
+    onScratchEnd: () -> Unit,
     shuffleEnabled: Boolean,
     repeatEnabled: Boolean,
     onToggleShuffle: () -> Unit,
@@ -1067,6 +1086,8 @@ private fun FullPlayerScreen(
             isPlaying = isPlaying,
             progress = progress,
             onSeek = onSeek,
+            onScratch = onScratch,
+            onScratchEnd = onScratchEnd,
             onToggle = onToggle
         )
         Spacer(Modifier.height(22.dp))
@@ -1154,6 +1175,8 @@ private fun DiscAlbumStage(
     isPlaying: Boolean,
     progress: Float,
     onSeek: (Float) -> Unit,
+    onScratch: (Float) -> Unit,
+    onScratchEnd: () -> Unit,
     onToggle: () -> Unit
 ) {
     val transition = rememberInfiniteTransition(label = "disc-spin")
@@ -1166,7 +1189,21 @@ private fun DiscAlbumStage(
         ),
         label = "disc-rotation"
     )
-    val discRotation = if (isPlaying) rotation else 0f
+    val latestProgress by rememberUpdatedState(progress)
+    val latestOnSeek by rememberUpdatedState(onSeek)
+    val latestOnScratch by rememberUpdatedState(onScratch)
+    val latestOnScratchEnd by rememberUpdatedState(onScratchEnd)
+    var isScratching by remember { mutableStateOf(false) }
+    var scratchProgress by remember { mutableFloatStateOf(progress) }
+    var scratchRotation by remember { mutableFloatStateOf(0f) }
+    val stageProgress = if (isScratching) scratchProgress else progress
+    val discRotation = scratchRotation + if (isPlaying && !isScratching) rotation else 0f
+
+    LaunchedEffect(progress, isScratching) {
+        if (!isScratching) {
+            scratchProgress = progress
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -1184,7 +1221,7 @@ private fun DiscAlbumStage(
             tonalElevation = 4.dp
         ) {}
         CircularSeekRing(
-            progress = progress,
+            progress = stageProgress,
             onSeek = onSeek,
             modifier = Modifier.fillMaxSize(),
             activeColor = MaterialTheme.colorScheme.primary,
@@ -1194,6 +1231,62 @@ private fun DiscAlbumStage(
             tint = track.tint,
             modifier = Modifier
                 .fillMaxSize(0.74f)
+                .pointerInput(Unit) {
+                    var lastAngle = 0f
+                    var lastEventTime = 0L
+                    detectDragGestures(
+                        onDragStart = { offset ->
+                            isScratching = true
+                            scratchProgress = latestProgress
+                            lastAngle = angleForOffset(
+                                offset = offset,
+                                width = size.width.toFloat(),
+                                height = size.height.toFloat()
+                            )
+                            lastEventTime = SystemClock.elapsedRealtime()
+                        },
+                        onDragEnd = {
+                            isScratching = false
+                            latestOnScratchEnd()
+                        },
+                        onDragCancel = {
+                            isScratching = false
+                            latestOnScratchEnd()
+                        },
+                        onDrag = { change, _ ->
+                            val radiusFromCenter = distanceFromCenter(
+                                offset = change.position,
+                                width = size.width.toFloat(),
+                                height = size.height.toFloat()
+                            )
+                            val deadZone = minOf(size.width, size.height) * DISC_SCRATCH_DEAD_ZONE
+                            if (radiusFromCenter < deadZone) {
+                                change.consume()
+                                return@detectDragGestures
+                            }
+
+                            val now = SystemClock.elapsedRealtime()
+                            val angle = angleForOffset(
+                                offset = change.position,
+                                width = size.width.toFloat(),
+                                height = size.height.toFloat()
+                            )
+                            val deltaAngle = shortestAngleDelta(lastAngle, angle)
+                            val elapsedMs = (now - lastEventTime).coerceAtLeast(1L)
+                            lastAngle = angle
+                            lastEventTime = now
+
+                            scratchRotation += deltaAngle
+                            scratchProgress = (
+                                scratchProgress +
+                                    (deltaAngle / 360f) * DISC_SCRATCH_SEEK_SCALE
+                                ).coerceIn(0f, 0.995f)
+                            latestOnSeek(scratchProgress)
+                            latestOnScratch(deltaAngle / elapsedMs.toFloat())
+                            change.consume()
+                        }
+                    )
+                }
                 .rotate(discRotation)
         )
         FilledTonalButton(
@@ -1218,12 +1311,11 @@ private fun CircularSeekRing(
     Canvas(
         modifier = modifier.pointerInput(Unit) {
             detectTapGestures { offset ->
-                val centerX = size.width / 2f
-                val centerY = size.height / 2f
-                val dx = offset.x - centerX
-                val dy = offset.y - centerY
-                var degrees = Math.toDegrees(atan2(dy, dx).toDouble()).toFloat() + 90f
-                if (degrees < 0f) degrees += 360f
+                val degrees = angleForOffset(
+                    offset = offset,
+                    width = size.width.toFloat(),
+                    height = size.height.toFloat()
+                )
                 onSeek((degrees / 360f).coerceIn(0f, 1f))
             }
         }
@@ -1264,6 +1356,25 @@ private fun CircularSeekRing(
         drawCircle(color = activeColor, radius = 8.dp.toPx(), center = knobCenter)
         drawCircle(color = Color.White.copy(alpha = 0.86f), radius = 4.dp.toPx(), center = knobCenter)
     }
+}
+
+private fun angleForOffset(offset: Offset, width: Float, height: Float): Float {
+    val dx = offset.x - width / 2f
+    val dy = offset.y - height / 2f
+    var degrees = Math.toDegrees(atan2(dy, dx).toDouble()).toFloat() + 90f
+    if (degrees < 0f) degrees += 360f
+    return degrees
+}
+
+private fun distanceFromCenter(offset: Offset, width: Float, height: Float): Float {
+    return hypot(offset.x - width / 2f, offset.y - height / 2f)
+}
+
+private fun shortestAngleDelta(start: Float, end: Float): Float {
+    var delta = end - start
+    while (delta > 180f) delta -= 360f
+    while (delta < -180f) delta += 360f
+    return delta
 }
 
 @Composable
@@ -1621,6 +1732,97 @@ private class JellyfinPlayer(private val context: Context) {
         }
         mediaPlayer = null
         isPlaying = false
+    }
+}
+
+private class ScratchSoundEngine {
+    private val sampleRate = 44_100
+    private val channelConfig = AudioFormat.CHANNEL_OUT_MONO
+    private val encoding = AudioFormat.ENCODING_PCM_16BIT
+    private val minBufferSize = AudioTrack
+        .getMinBufferSize(sampleRate, channelConfig, encoding)
+        .takeIf { it > 0 }
+        ?: sampleRate / 5
+    private val audioTrack = AudioTrack.Builder()
+        .setAudioAttributes(
+            AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                .build()
+        )
+        .setAudioFormat(
+            AudioFormat.Builder()
+                .setEncoding(encoding)
+                .setSampleRate(sampleRate)
+                .setChannelMask(channelConfig)
+                .build()
+        )
+        .setBufferSizeInBytes(minBufferSize.coerceAtLeast(sampleRate / 6))
+        .setTransferMode(AudioTrack.MODE_STREAM)
+        .setSessionId(AudioManager.AUDIO_SESSION_ID_GENERATE)
+        .build()
+    private val scratchBuffer = ShortArray((sampleRate * 0.065f).toInt())
+    private var lastScratchAt = 0L
+
+    fun playScratch(angularVelocity: Float) {
+        if (audioTrack.state != AudioTrack.STATE_INITIALIZED) return
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastScratchAt < 18L) return
+        lastScratchAt = now
+
+        runCatching {
+            val velocity = angularVelocity.coerceIn(-2.4f, 2.4f)
+            val intensity = (abs(velocity) / 1.25f).coerceIn(0.18f, 1f)
+            val direction = if (velocity >= 0f) 1f else -1f
+            val frameCount = (sampleRate * (0.026f + intensity * 0.035f))
+                .toInt()
+                .coerceAtMost(scratchBuffer.size)
+            var carrierPhase = 0f
+            var gatePhase = 0f
+            val baseFrequency = 380f + intensity * 1_850f
+
+            for (index in 0 until frameCount) {
+                val t = index / frameCount.toFloat()
+                val envelope = sin((PI * t).toFloat()).coerceAtLeast(0f)
+                val sweep = if (direction > 0f) t else 1f - t
+                val frequency = baseFrequency + sweep * intensity * 1_500f
+                carrierPhase = (carrierPhase + frequency / sampleRate) % 1f
+                gatePhase = (gatePhase + (28f + intensity * 94f) / sampleRate) % 1f
+
+                val saw = carrierPhase * 2f - 1f
+                val noise = Random.nextFloat() * 2f - 1f
+                val gate = if (gatePhase < 0.48f) 1f else -0.55f
+                val sample = (noise * 0.62f + saw * 0.38f) *
+                    gate *
+                    envelope *
+                    (0.22f + intensity * 0.42f)
+                scratchBuffer[index] = (sample * Short.MAX_VALUE)
+                    .toInt()
+                    .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                    .toShort()
+            }
+
+            if (audioTrack.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                audioTrack.play()
+            }
+            audioTrack.write(scratchBuffer, 0, frameCount, AudioTrack.WRITE_NON_BLOCKING)
+        }
+    }
+
+    fun stop() {
+        runCatching {
+            if (audioTrack.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                audioTrack.pause()
+                audioTrack.flush()
+            }
+        }
+    }
+
+    fun release() {
+        runCatching {
+            stop()
+            audioTrack.release()
+        }
     }
 }
 
