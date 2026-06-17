@@ -2,9 +2,9 @@
 <resources>
     <style name="LaunchTheme" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@drawable/splash_screen</item>
-        <item name="android:windowLightStatusBar">true</item>
-        <item name="android:navigationBarColor">#EAFBF7</item>
-        <item name="android:statusBarColor">#EAFBF7</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:navigationBarColor">#080A0B</item>
+        <item name="android:statusBarColor">#171A1B</item>
     </style>
 
     <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">

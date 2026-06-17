@@ -24,12 +24,21 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.foundation.Image
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -43,6 +52,7 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -54,6 +64,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -219,8 +230,8 @@ private const val MAX_ALBUM_ART_CACHE_FILES = 320
 private const val DISC_SCRATCH_SEEK_SCALE = 0.55f
 private const val DISC_SCRATCH_DEAD_ZONE = 0.22f
 private const val VISUALIZER_BAR_COUNT = 28
-private const val VISUALIZER_CAPTURE_STALE_MS = 650L
-private const val VISUALIZER_FALLBACK_FRAME_MS = 66L
+private const val VISUALIZER_CAPTURE_STALE_MS = 1_200L
+private const val VISUALIZER_FALLBACK_FRAME_MS = 110L
 
 private val AlbumArtCache = Collections.synchronizedMap(
     object : LinkedHashMap<String, Bitmap>(96, 0.75f, true) {
@@ -1438,6 +1449,13 @@ private fun BottomTabsBar(
     selectedDestination: AppDestination,
     onDestinationSelected: (AppDestination) -> Unit
 ) {
+    val tabCount = BottomTabDestinations.size
+    val selectedIndex = BottomTabDestinations
+        .indexOf(selectedDestination)
+        .coerceAtLeast(0)
+    val horizontalPadding = 8.dp
+    val tabGap = 4.dp
+
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -1447,22 +1465,46 @@ private fun BottomTabsBar(
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         tonalElevation = 6.dp
     ) {
-        Row(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(58.dp)
-                .padding(horizontal = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalAlignment = Alignment.CenterVertically
         ) {
-            BottomTabDestinations.forEach { destination ->
-                val selected = selectedDestination == destination
-                BottomTabItem(
-                    destination = destination,
-                    selected = selected,
-                    onClick = { onDestinationSelected(destination) },
-                    modifier = Modifier.weight(if (selected) 1.35f else 1f)
-                )
+            val slotWidth = (maxWidth - horizontalPadding * 2 - tabGap * (tabCount - 1)) / tabCount
+            val targetOffset = horizontalPadding + (slotWidth + tabGap) * selectedIndex
+            val pillOffset by animateDpAsState(
+                targetValue = targetOffset,
+                animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing),
+                label = "bottomTabPillOffset"
+            )
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .offset(x = pillOffset)
+                    .width(slotWidth)
+                    .height(44.dp)
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(MaterialTheme.colorScheme.primaryContainer)
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(58.dp)
+                    .padding(horizontal = horizontalPadding),
+                horizontalArrangement = Arrangement.spacedBy(tabGap),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                BottomTabDestinations.forEach { destination ->
+                    val selected = selectedDestination == destination
+                    BottomTabItem(
+                        destination = destination,
+                        selected = selected,
+                        onClick = { onDestinationSelected(destination) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
             }
         }
     }
@@ -1475,6 +1517,16 @@ private fun BottomTabItem(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val contentColor by animateColorAsState(
+        targetValue = if (selected) {
+            MaterialTheme.colorScheme.onPrimaryContainer
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.86f)
+        },
+        animationSpec = tween(durationMillis = 160, easing = FastOutSlowInEasing),
+        label = "bottomTabContentColor"
+    )
+
     Box(
         modifier = modifier
             .height(44.dp)
@@ -1483,38 +1535,34 @@ private fun BottomTabItem(
         contentAlignment = Alignment.Center
     ) {
         if (selected) {
-            Surface(
+            Row(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(40.dp),
-                shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.primaryContainer,
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    .fillMaxSize()
+                    .padding(horizontal = 2.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 6.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = destinationIcon(destination),
-                        contentDescription = destination.label,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(Modifier.width(3.dp))
-                    Text(
-                        text = destination.label,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1
-                    )
-                }
+                Icon(
+                    imageVector = destinationIcon(destination),
+                    contentDescription = destination.label,
+                    tint = contentColor,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(2.dp))
+                Text(
+                    text = destination.label,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = contentColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         } else {
             Icon(
                 imageVector = destinationIcon(destination),
                 contentDescription = destination.label,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.86f),
+                tint = contentColor,
                 modifier = Modifier.size(22.dp)
             )
         }
@@ -2169,13 +2217,47 @@ private fun FullPlayerScreen(
                 }
             }
             Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(92.dp))
+        }
+
+        if (!showQueue) {
             QueuePullHandle(
                 queueCount = (displayQueue.size - 1).coerceAtLeast(0),
-                onOpen = { showQueue = true }
+                onOpen = { showQueue = true },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
             )
         }
 
-        if (showQueue) {
+        AnimatedVisibility(
+            visible = showQueue,
+            enter = fadeIn(animationSpec = tween(durationMillis = 140)),
+            exit = fadeOut(animationSpec = tween(durationMillis = 180)),
+            modifier = Modifier.matchParentSize()
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.24f))
+                    .clickable(onClick = { showQueue = false })
+            )
+        }
+
+        AnimatedVisibility(
+            visible = showQueue,
+            enter = slideInVertically(
+                initialOffsetY = { it },
+                animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing)
+            ),
+            exit = slideOutVertically(
+                targetOffsetY = { it },
+                animationSpec = tween(durationMillis = 230, easing = FastOutSlowInEasing)
+            ),
+            modifier = Modifier.align(Alignment.BottomCenter)
+        ) {
             QueueBottomSheet(
                 currentTrack = track,
                 queue = displayQueue,
@@ -2184,7 +2266,7 @@ private fun FullPlayerScreen(
                 onTrackClick = onQueueTrackClick,
                 onMove = onQueueMove,
                 onPlayNext = onQueuePlayNext,
-                modifier = Modifier.align(Alignment.BottomCenter)
+                modifier = Modifier.fillMaxWidth()
             )
         }
     }
@@ -2193,47 +2275,54 @@ private fun FullPlayerScreen(
 @Composable
 private fun QueuePullHandle(
     queueCount: Int,
-    onOpen: () -> Unit
+    onOpen: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(46.dp)
+    Box(
+        modifier = modifier
+            .height(96.dp)
             .swipeUpToOpen(onOpen)
             .clickable(onClick = onOpen),
-        shape = RoundedCornerShape(23.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        tonalElevation = 2.dp
+        contentAlignment = Alignment.BottomCenter
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 18.dp, vertical = 7.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(54.dp),
+            shape = RoundedCornerShape(27.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            tonalElevation = 2.dp
         ) {
-            Box(
-                modifier = Modifier
-                    .width(44.dp)
-                    .height(5.dp)
-                    .clip(RoundedCornerShape(3.dp))
-                    .background(MaterialTheme.colorScheme.primary)
-            )
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center
+            Column(
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
-                Icon(
-                    imageVector = PlayerGlyph.Queue.imageVector(),
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(16.dp)
+                Box(
+                    modifier = Modifier
+                        .width(48.dp)
+                        .height(5.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(MaterialTheme.colorScheme.primary)
                 )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    text = "Up next $queueCount",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = PlayerGlyph.Queue.imageVector(),
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = "Up next $queueCount",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
+                    )
+                }
             }
         }
     }
@@ -2275,73 +2364,69 @@ private fun QueueBottomSheet(
     onPlayNext: (MusicTrack) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Box(Modifier.fillMaxSize()) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.24f))
-                .clickable(onClick = onDismiss)
-        )
-        Surface(
-            modifier = modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.72f)
-                .navigationBarsPadding(),
-            shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp),
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 8.dp
+    Surface(
+        modifier = modifier
+            .fillMaxHeight(0.72f)
+            .navigationBarsPadding()
+            .swipeDownToDismiss(
+                onDismiss = onDismiss,
+                startZone = 118.dp,
+                dismissDistance = 72.dp
+            ),
+        shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 8.dp
+    ) {
+        Column(
+            modifier = Modifier.padding(start = 16.dp, top = 10.dp, end = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Column(
-                modifier = Modifier.padding(start = 16.dp, top = 10.dp, end = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .width(48.dp)
+                    .height(5.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.32f))
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.CenterHorizontally)
-                        .width(48.dp)
-                        .height(5.dp)
-                        .clip(RoundedCornerShape(3.dp))
-                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.32f))
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(
-                            text = "Now playing",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text(
-                            text = "${(queue.size - 1).coerceAtLeast(0)} up next",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    TextButton(onClick = onDismiss) {
-                        Text("Done")
-                    }
+                Column {
+                    Text(
+                        text = "Now playing",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "${(queue.size - 1).coerceAtLeast(0)} up next",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 18.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    itemsIndexed(queue, key = { _, track -> track.id }) { index, item ->
-                        QueueTrackRow(
-                            track = item,
-                            session = session,
-                            index = index,
-                            lastIndex = queue.lastIndex,
-                            isCurrent = item.id == currentTrack.id,
-                            onClick = { onTrackClick(item) },
-                            onMoveUp = { onMove(index, index - 1) },
-                            onMoveDown = { onMove(index, index + 1) },
-                            onPlayNext = { onPlayNext(item) }
-                        )
-                    }
+                TextButton(onClick = onDismiss) {
+                    Text("Done")
+                }
+            }
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                itemsIndexed(queue, key = { _, track -> track.id }) { index, item ->
+                    QueueTrackRow(
+                        track = item,
+                        session = session,
+                        index = index,
+                        lastIndex = queue.lastIndex,
+                        isCurrent = item.id == currentTrack.id,
+                        onClick = { onTrackClick(item) },
+                        onMoveUp = { onMove(index, index - 1) },
+                        onMoveDown = { onMove(index, index + 1) },
+                        onPlayNext = { onPlayNext(item) }
+                    )
                 }
             }
         }
@@ -2925,6 +3010,7 @@ private fun DiscAlbumStage(
         )
         TurntableArmOverlay(
             progress = stageProgress,
+            onRecord = isPlaying || isScratching,
             modifier = Modifier.fillMaxSize()
         )
     }
@@ -3008,16 +3094,41 @@ private fun shortestAngleDelta(start: Float, end: Float): Float {
 }
 
 @Composable
-private fun TurntableArmOverlay(progress: Float, modifier: Modifier = Modifier) {
+private fun TurntableArmOverlay(
+    progress: Float,
+    onRecord: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val offRecord by animateFloatAsState(
+        targetValue = if (onRecord) 0f else 1f,
+        animationSpec = tween(durationMillis = 620, easing = FastOutSlowInEasing),
+        label = "tonearmOffRecord"
+    )
     val colorScheme = MaterialTheme.colorScheme
     Canvas(modifier = modifier) {
         val p = progress.coerceIn(0f, 1f)
         val accent = colorScheme.primary
+        val swing = ((offRecord - 0.12f) / 0.88f).coerceIn(0f, 1f)
+        val lift = (offRecord / 0.46f).coerceIn(0f, 1f)
+        val liftY = size.minDimension * 0.036f * lift
+        fun mix(start: Float, end: Float, amount: Float): Float = start + (end - start) * amount
+        fun mixOffset(start: Offset, end: Offset, amount: Float, liftScale: Float = 1f): Offset =
+            Offset(
+                x = mix(start.x, end.x, amount),
+                y = mix(start.y, end.y, amount) - liftY * liftScale
+            )
+
         val pivot = Offset(size.width * 0.205f, size.height * 0.14f)
-        val drop = Offset(size.width * (0.18f + p * 0.01f), size.height * (0.36f + p * 0.008f))
-        val elbow = Offset(size.width * (0.235f + p * 0.035f), size.height * (0.51f - p * 0.01f))
-        val stylus = Offset(size.width * (0.285f + p * 0.095f), size.height * (0.635f - p * 0.08f))
-        val cartridgeAngle = 0.82f
+        val dropOnRecord = Offset(size.width * (0.18f + p * 0.01f), size.height * (0.36f + p * 0.008f))
+        val elbowOnRecord = Offset(size.width * (0.235f + p * 0.035f), size.height * (0.51f - p * 0.01f))
+        val stylusOnRecord = Offset(size.width * (0.285f + p * 0.095f), size.height * (0.635f - p * 0.08f))
+        val dropRest = Offset(size.width * 0.145f, size.height * 0.29f)
+        val elbowRest = Offset(size.width * 0.15f, size.height * 0.405f)
+        val stylusRest = Offset(size.width * 0.135f, size.height * 0.51f)
+        val drop = mixOffset(dropOnRecord, dropRest, swing, liftScale = 0.42f)
+        val elbow = mixOffset(elbowOnRecord, elbowRest, swing, liftScale = 0.76f)
+        val stylus = mixOffset(stylusOnRecord, stylusRest, swing, liftScale = 1f)
+        val cartridgeAngle = mix(0.82f, 0.32f, swing)
         val cartridgeLength = size.minDimension * 0.105f
         val cartridgeWidth = size.minDimension * 0.04f
         val cartridgeDirection = Offset(cos(cartridgeAngle), sin(cartridgeAngle))
@@ -3060,10 +3171,14 @@ private fun TurntableArmOverlay(progress: Float, modifier: Modifier = Modifier) 
             end = Offset(stylus.x, stylus.y)
         )
 
+        val liftShadowOffset = Offset(
+            x = (2.2f + lift * 2.6f).dp.toPx(),
+            y = (3.2f + lift * 7.2f).dp.toPx()
+        )
         drawPath(
-            path = armPath(Offset(2.dp.toPx(), 3.dp.toPx())),
-            color = Color.Black.copy(alpha = 0.32f),
-            style = Stroke(width = 10.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+            path = armPath(liftShadowOffset),
+            color = Color.Black.copy(alpha = 0.24f + lift * 0.08f),
+            style = Stroke(width = (10.5f + lift * 2.4f).dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
         )
         drawPath(
             path = armPath(),
@@ -3165,8 +3280,8 @@ private fun TurntableArmOverlay(progress: Float, modifier: Modifier = Modifier) 
             cap = StrokeCap.Round
         )
         drawCircle(
-            color = accent.copy(alpha = 0.82f),
-            radius = 2.dp.toPx(),
+            color = accent.copy(alpha = 0.82f - lift * 0.36f),
+            radius = (2f + lift * 0.8f).dp.toPx(),
             center = stylus
         )
         drawCircle(
@@ -3273,23 +3388,21 @@ private fun VinylDisc(
                 radius = radius,
                 center = center
             )
-            drawArc(
-                color = Color.White.copy(alpha = 0.16f),
+            drawSoftVinylShine(
+                center = center,
+                radius = radius,
                 startAngle = -76f,
                 sweepAngle = 48f,
-                useCenter = false,
-                topLeft = Offset.Zero,
-                size = Size(size.minDimension, size.minDimension),
-                style = Stroke(width = radius * 0.2f, cap = StrokeCap.Round)
+                width = radius * 0.17f,
+                baseAlpha = 0.13f
             )
-            drawArc(
-                color = Color.White.copy(alpha = 0.06f),
+            drawSoftVinylShine(
+                center = center,
+                radius = radius,
                 startAngle = 136f,
                 sweepAngle = 56f,
-                useCenter = false,
-                topLeft = Offset.Zero,
-                size = Size(size.minDimension, size.minDimension),
-                style = Stroke(width = radius * 0.16f, cap = StrokeCap.Round)
+                width = radius * 0.13f,
+                baseAlpha = 0.07f
             )
             drawArc(
                 color = Color.Black.copy(alpha = 0.34f),
@@ -3299,10 +3412,19 @@ private fun VinylDisc(
                 topLeft = Offset.Zero,
                 size = Size(size.minDimension, size.minDimension)
             )
+            val softSpotCenter = Offset(size.width * 0.36f, size.height * 0.26f)
             drawCircle(
-                color = Color.White.copy(alpha = 0.08f),
-                radius = radius * 0.18f,
-                center = Offset(size.width * 0.36f, size.height * 0.26f)
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.055f),
+                        Color.White.copy(alpha = 0.018f),
+                        Color.Transparent
+                    ),
+                    center = softSpotCenter,
+                    radius = radius * 0.26f
+                ),
+                radius = radius * 0.26f,
+                center = softSpotCenter
             )
             for (index in 0..42) {
                 val grooveRadius = radius * (0.16f + index * 0.019f)
@@ -3399,6 +3521,37 @@ private fun VinylDisc(
     }
 }
 
+private fun DrawScope.drawSoftVinylShine(
+    center: Offset,
+    radius: Float,
+    startAngle: Float,
+    sweepAngle: Float,
+    width: Float,
+    baseAlpha: Float
+) {
+    val diameter = radius * 2f
+    val topLeft = Offset(center.x - radius, center.y - radius)
+    val layers = listOf(
+        2.7f to 0.12f,
+        2.05f to 0.18f,
+        1.42f to 0.26f,
+        0.9f to 0.34f,
+        0.46f to 0.42f
+    )
+
+    layers.forEachIndexed { index, (scale, alphaScale) ->
+        drawArc(
+            color = Color.White.copy(alpha = baseAlpha * alphaScale),
+            startAngle = startAngle - index * 2.4f,
+            sweepAngle = sweepAngle + index * 4.8f,
+            useCenter = false,
+            topLeft = topLeft,
+            size = Size(diameter, diameter),
+            style = Stroke(width = width * scale, cap = StrokeCap.Round)
+        )
+    }
+}
+
 private fun DrawScope.drawVinylSpeckleTexture(
     center: Offset,
     outerRadius: Float,
@@ -3440,27 +3593,63 @@ private fun AudioBarsVisualizer(
     active: Boolean,
     levels: FloatArray
 ) {
-    val hasLiveLevels = active && levels.any { it > 0.008f }
+    val targetLevels = remember(active, levels) {
+        if (active) levels.copyOf() else FloatArray(VISUALIZER_BAR_COUNT)
+    }
+    val latestTargetLevels by rememberUpdatedState(targetLevels)
+    val latestActive by rememberUpdatedState(active)
+    var displayedLevels by remember { mutableStateOf(FloatArray(VISUALIZER_BAR_COUNT)) }
+
+    LaunchedEffect(Unit) {
+        var lastFrameTime = withFrameNanos { it }
+        while (true) {
+            val frameTime = withFrameNanos { it }
+            val deltaSeconds = ((frameTime - lastFrameTime) / 1_000_000_000f).coerceIn(0f, 0.05f)
+            lastFrameTime = frameTime
+
+            val current = displayedLevels
+            val target = latestTargetLevels
+            val next = FloatArray(VISUALIZER_BAR_COUNT)
+            var maxLevel = 0f
+
+            for (index in 0 until VISUALIZER_BAR_COUNT) {
+                val goal = target.getOrElse(index) { 0f }.coerceIn(0f, 1f)
+                val level = current.getOrElse(index) { 0f }
+                val speed = if (goal > level) 5.8f else 3.2f
+                val blend = (deltaSeconds * speed).coerceIn(0.04f, 0.28f)
+                val smoothed = level + (goal - level) * blend
+                next[index] = smoothed
+                if (smoothed > maxLevel) maxLevel = smoothed
+            }
+
+            displayedLevels = next
+            if (!latestActive && maxLevel < 0.003f) {
+                delay(90L)
+            }
+        }
+    }
+
+    val hasLiveLevels = displayedLevels.any { it > 0.01f }
 
     Canvas(modifier = modifier) {
         val barCount = VISUALIZER_BAR_COUNT
-        val gap = size.width / (barCount * 2.05f)
-        val strokeWidth = gap.coerceAtLeast(2.5f)
+        val gap = size.width / (barCount * 2.18f)
+        val strokeWidth = gap.coerceAtLeast(2.4f)
         val step = size.width / barCount
         val baseline = size.height * 0.86f
         for (index in 0 until barCount) {
-            val level = when {
-                hasLiveLevels -> levels.getOrElse(index) { 0f }
-                else -> 0f
-            }.coerceIn(0f, 1f)
+            val rawLevel = displayedLevels.getOrElse(index) { 0f }
+            val previous = displayedLevels.getOrElse(index - 1) { rawLevel }
+            val next = displayedLevels.getOrElse(index + 1) { rawLevel }
+            val level = (rawLevel * 0.72f + previous * 0.14f + next * 0.14f).coerceIn(0f, 1f)
             val height = if (hasLiveLevels) {
-                size.height * (0.08f + level * 0.78f)
+                size.height * (0.1f + sqrt(level) * 0.72f)
             } else {
                 1.5.dp.toPx()
             }
             val x = step * index + step / 2f
             drawLine(
-                color = color,
+                color = color.copy(alpha = if (hasLiveLevels) 0.48f + level * 0.46f else 0.34f),
                 start = Offset(x, baseline),
                 end = Offset(x, baseline - height),
                 strokeWidth = strokeWidth,
@@ -3568,12 +3757,12 @@ private fun NowPlayingBar(
 
 @Composable
 private fun TopBarSineVisualizer(modifier: Modifier = Modifier, color: Color) {
-    val transition = rememberInfiniteTransition(label = "top-bar-sine")
+    val transition = rememberInfiniteTransition(label = "top-bar-wave")
     val phase by transition.animateFloat(
         initialValue = 0f,
         targetValue = (PI * 2).toFloat(),
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1200, easing = LinearEasing),
+            animation = tween(durationMillis = 2600, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
         label = "top-bar-phase"
@@ -3588,22 +3777,24 @@ private fun TopBarSineVisualizer(modifier: Modifier = Modifier, color: Color) {
             .padding(horizontal = 10.dp, vertical = 9.dp)
     ) {
         val centerY = size.height / 2f
-        val amplitude = size.height * 0.24f
-        val wavelength = size.width / 1.7f
+        val amplitude = size.height * 0.2f
+        val wavelength = size.width / 1.55f
         val path = Path()
         var x = 0f
 
         path.moveTo(0f, centerY)
         while (x <= size.width) {
-            val y = centerY + sin((x / wavelength) * PI.toFloat() * 2f + phase) * amplitude
+            val primary = sin((x / wavelength) * PI.toFloat() * 2f + phase)
+            val texture = sin((x / size.width) * PI.toFloat() * 5.5f - phase * 0.42f) * 0.32f
+            val y = centerY + (primary + texture) * amplitude
             path.lineTo(x, y)
-            x += 3f
+            x += 4f
         }
 
         drawPath(
             path = path,
-            color = Color.White,
-            style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
+            color = Color.White.copy(alpha = 0.92f),
+            style = Stroke(width = 3.8.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
         )
     }
 }
@@ -3867,7 +4058,7 @@ private class JellyfinPlayer(private val context: Context) {
                         }
                     },
                     (Visualizer.getMaxCaptureRate() / 3).coerceAtLeast(1_000),
-                    true,
+                    false,
                     true
                 )
                 enabled = true
@@ -3882,9 +4073,7 @@ private class JellyfinPlayer(private val context: Context) {
 
     private fun publishNativeVisualizerLevels(target: FloatArray) {
         val nextLevels = smoothVisualizerLevels(target)
-        if (nextLevels.any { it > 0.015f }) {
-            lastVisualizerCaptureAt = SystemClock.elapsedRealtime()
-        }
+        lastVisualizerCaptureAt = SystemClock.elapsedRealtime()
         mainHandler.post { visualizerLevels = nextLevels }
     }
 
@@ -3936,16 +4125,19 @@ private class JellyfinPlayer(private val context: Context) {
 
     private fun fallbackVisualizerLevels(nowMs: Long, trackId: String?): FloatArray {
         val time = nowMs / 1_000f
-        val seed = (trackId?.hashCode() ?: 0) * 0.00031f
+        val seed = trackId?.hashCode() ?: 0
         val center = (VISUALIZER_BAR_COUNT - 1) / 2f
         return FloatArray(VISUALIZER_BAR_COUNT) { index ->
             val distanceFromCenter = abs(index - center) / center.coerceAtLeast(1f)
             val centerWeight = 1f - distanceFromCenter
-            val slowWave = (sin(time * 3.7f + index * 0.58f + seed) + 1f) * 0.5f
-            val fastWave = (sin(time * 7.1f + index * 0.31f + seed * 1.7f) + 1f) * 0.5f
-            val pulse = (sin(time * 5.2f + seed) + 1f) * 0.5f
-            (0.05f + slowWave * 0.26f + fastWave * 0.14f + pulse * centerWeight * 0.24f)
-                .coerceIn(0.035f, 0.78f)
+            val hash = speckleHash(seed, index)
+            val phaseA = ((hash and 0x3FF) / 1024f) * PI.toFloat() * 2f
+            val phaseB = (((hash ushr 10) and 0x3FF) / 1024f) * PI.toFloat() * 2f
+            val drift = (sin(time * 1.35f + phaseA) + 1f) * 0.5f
+            val pulse = (sin(time * 1.9f + phaseB) + 1f) * 0.5f
+            val lift = (sin(time * 1.1f + seed * 0.00019f) + 1f) * 0.5f
+            (0.025f + drift * 0.18f + pulse * 0.08f + lift * centerWeight * 0.16f)
+                .coerceIn(0.02f, 0.55f)
         }
     }
 
@@ -3956,7 +4148,7 @@ private class JellyfinPlayer(private val context: Context) {
         for (index in 0 until VISUALIZER_BAR_COUNT) {
             val current = smoothedVisualizerLevels[index]
             val next = target.getOrElse(index) { 0f }
-            val smoothing = if (next > current) 0.36f else 0.18f
+            val smoothing = if (next > current) 0.24f else 0.12f
             smoothedVisualizerLevels[index] = current + (next - current) * smoothing
         }
         return smoothedVisualizerLevels.copyOf()
