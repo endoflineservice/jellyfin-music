@@ -38,12 +38,19 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -73,6 +80,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
@@ -148,6 +156,14 @@ private enum class LibraryTab(val label: String) {
     Artists("Artists")
 }
 
+private enum class AppDestination(val label: String) {
+    Home("Home"),
+    Search("Search"),
+    Player("Play"),
+    Library("Lib"),
+    Profile("Me")
+}
+
 private data class LibraryGroup(
     val title: String,
     val subtitle: String,
@@ -200,6 +216,7 @@ private fun JellyfinMusicApp() {
     var showPlayer by remember { mutableStateOf(false) }
     var shuffleEnabled by remember { mutableStateOf(false) }
     var repeatEnabled by remember { mutableStateOf(false) }
+    var selectedDestination by remember { mutableStateOf(AppDestination.Home) }
 
     fun runTask(task: () -> Unit) {
         if (!isBusy) {
@@ -258,12 +275,16 @@ private fun JellyfinMusicApp() {
         tracks = emptyList()
         statusText = null
         showPlayer = false
+        selectedDestination = AppDestination.Home
     }
 
     fun playTrack(track: MusicTrack, openPlayer: Boolean = false) {
         session?.let { activeSession ->
             player.play(track, activeSession)
-            if (openPlayer) showPlayer = true
+            if (openPlayer) {
+                selectedDestination = AppDestination.Player
+                showPlayer = true
+            }
         }
     }
 
@@ -315,7 +336,10 @@ private fun JellyfinMusicApp() {
             TopAppBar(
                 navigationIcon = {
                     if (showPlayer) {
-                        TextButton(onClick = { showPlayer = false }) {
+                        TextButton(onClick = {
+                            showPlayer = false
+                            selectedDestination = AppDestination.Home
+                        }) {
                             Text("<")
                         }
                     }
@@ -352,24 +376,63 @@ private fun JellyfinMusicApp() {
         bottomBar = {
             val activeSession = session
             val activeTrack = player.currentTrack
-            if (activeSession != null && activeTrack != null && !showPlayer) {
-                NowPlayingBar(
-                    track = activeTrack,
-                    isPlaying = player.isPlaying,
-                    progress = player.progress,
-                    status = player.status,
-                    onOpen = { showPlayer = true },
-                    onToggle = { player.toggle() },
-                    onReplay = { player.play(activeTrack, activeSession) },
-                    onSeek = { player.seekToFraction(it) },
-                    onPrevious = { playAdjacent(-1) },
-                    onNext = { playAdjacent(1) }
-                )
+            if (activeSession != null && !showPlayer) {
+                Column {
+                    if (activeTrack != null) {
+                        NowPlayingBar(
+                            track = activeTrack,
+                            isPlaying = player.isPlaying,
+                            progress = player.progress,
+                            status = player.status,
+                            onOpen = {
+                                selectedDestination = AppDestination.Player
+                                showPlayer = true
+                            },
+                            onToggle = { player.toggle() },
+                            onReplay = { player.play(activeTrack, activeSession) },
+                            onSeek = { player.seekToFraction(it) },
+                            onPrevious = { playAdjacent(-1) },
+                            onNext = { playAdjacent(1) }
+                        )
+                    }
+                    BottomTabsBar(
+                        selectedDestination = selectedDestination,
+                        onDestinationSelected = { destination ->
+                            selectedDestination = destination
+                            when (destination) {
+                                AppDestination.Home -> {
+                                    selectedTab = LibraryTab.Songs
+                                    showPlayer = false
+                                }
+
+                                AppDestination.Search -> {
+                                    showPlayer = false
+                                }
+
+                                AppDestination.Player -> {
+                                    if (player.currentTrack != null) {
+                                        showPlayer = true
+                                    }
+                                }
+
+                                AppDestination.Library -> {
+                                    selectedTab = LibraryTab.Albums
+                                    showPlayer = false
+                                }
+
+                                AppDestination.Profile -> {
+                                    showPlayer = false
+                                }
+                            }
+                        }
+                    )
+                }
             }
         },
         containerColor = MaterialTheme.colorScheme.background
     ) { innerPadding ->
         val activeTrack = player.currentTrack
+        val connectedSession = session
         if (showPlayer && activeTrack != null) {
             FullPlayerScreen(
                 track = activeTrack,
@@ -396,7 +459,7 @@ private fun JellyfinMusicApp() {
                 contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 20.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                if (session == null) {
+                if (connectedSession == null) {
                     item {
                         ConnectCard(
                             serverUrl = serverUrl,
@@ -411,63 +474,84 @@ private fun JellyfinMusicApp() {
                         )
                     }
                 } else {
-                    item {
-                        LibraryHeader(
-                            searchQuery = searchQuery,
-                            isBusy = isBusy,
-                            statusText = statusText,
-                            onSearchQueryChange = { searchQuery = it },
-                            onRefresh = { session?.let(::loadLibrary) },
-                            onSignOut = ::signOut
-                        )
-                    }
-                    item {
-                        LibraryTabs(
-                            selectedTab = selectedTab,
-                            onTabSelected = { selectedTab = it }
-                        )
-                    }
-
-                    val filteredTracks = tracks.filterBy(searchQuery)
-                    when (selectedTab) {
-                        LibraryTab.Songs -> {
-                            if (filteredTracks.isEmpty()) {
-                                item { EmptyLibraryMessage(isBusy = isBusy) }
-                            } else {
-                                items(filteredTracks, key = { it.id }) { track ->
-                                    TrackRow(
-                                        track = track,
-                                        isCurrent = player.currentTrack?.id == track.id,
-                                        onClick = { playTrack(track, openPlayer = true) }
-                                    )
-                                }
+                    when (selectedDestination) {
+                        AppDestination.Profile -> {
+                            item {
+                                AccountCard(
+                                    session = connectedSession,
+                                    isBusy = isBusy,
+                                    onRefresh = { loadLibrary(connectedSession) },
+                                    onSignOut = ::signOut
+                                )
                             }
                         }
 
-                        LibraryTab.Albums -> {
-                            val groups = filteredTracks.groupByAlbum()
-                            if (groups.isEmpty()) {
-                                item { EmptyLibraryMessage(isBusy = isBusy) }
-                            } else {
-                                items(groups, key = { it.title }) { group ->
-                                    GroupRow(
-                                        group = group,
-                                        onClick = { playTrack(group.tracks.first(), openPlayer = true) }
-                                    )
-                                }
+                        AppDestination.Player -> {
+                            item {
+                                EmptyPlayerCard()
                             }
                         }
 
-                        LibraryTab.Artists -> {
-                            val groups = filteredTracks.groupByArtist()
-                            if (groups.isEmpty()) {
-                                item { EmptyLibraryMessage(isBusy = isBusy) }
-                            } else {
-                                items(groups, key = { it.title }) { group ->
-                                    GroupRow(
-                                        group = group,
-                                        onClick = { playTrack(group.tracks.first(), openPlayer = true) }
-                                    )
+                        else -> {
+                            item {
+                                LibraryHeader(
+                                    searchQuery = searchQuery,
+                                    isBusy = isBusy,
+                                    statusText = statusText,
+                                    onSearchQueryChange = { searchQuery = it },
+                                    onRefresh = { loadLibrary(connectedSession) },
+                                    onSignOut = ::signOut
+                                )
+                            }
+                            item {
+                                LibraryTabs(
+                                    selectedTab = selectedTab,
+                                    onTabSelected = { selectedTab = it }
+                                )
+                            }
+
+                            val filteredTracks = tracks.filterBy(searchQuery)
+                            when (selectedTab) {
+                                LibraryTab.Songs -> {
+                                    if (filteredTracks.isEmpty()) {
+                                        item { EmptyLibraryMessage(isBusy = isBusy) }
+                                    } else {
+                                        items(filteredTracks, key = { it.id }) { track ->
+                                            TrackRow(
+                                                track = track,
+                                                isCurrent = player.currentTrack?.id == track.id,
+                                                onClick = { playTrack(track, openPlayer = true) }
+                                            )
+                                        }
+                                    }
+                                }
+
+                                LibraryTab.Albums -> {
+                                    val groups = filteredTracks.groupByAlbum()
+                                    if (groups.isEmpty()) {
+                                        item { EmptyLibraryMessage(isBusy = isBusy) }
+                                    } else {
+                                        items(groups, key = { it.title }) { group ->
+                                            GroupRow(
+                                                group = group,
+                                                onClick = { playTrack(group.tracks.first(), openPlayer = true) }
+                                            )
+                                        }
+                                    }
+                                }
+
+                                LibraryTab.Artists -> {
+                                    val groups = filteredTracks.groupByArtist()
+                                    if (groups.isEmpty()) {
+                                        item { EmptyLibraryMessage(isBusy = isBusy) }
+                                    } else {
+                                        items(groups, key = { it.title }) { group ->
+                                            GroupRow(
+                                                group = group,
+                                                onClick = { playTrack(group.tracks.first(), openPlayer = true) }
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -477,6 +561,174 @@ private fun JellyfinMusicApp() {
         }
     }
 }
+
+@Composable
+private fun AccountCard(
+    session: JellyfinSession,
+    isBusy: Boolean,
+    onRefresh: () -> Unit,
+    onSignOut: () -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(26.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Text(
+                text = session.username,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = session.serverUrl.toHostLabel(),
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                FilledTonalButton(onClick = onRefresh, enabled = !isBusy) {
+                    Text("Refresh")
+                }
+                TextButton(onClick = onSignOut) {
+                    Text("Sign out")
+                }
+            }
+            if (isBusy) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptyPlayerCard() {
+    Card(
+        shape = RoundedCornerShape(26.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(18.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TopBarSineVisualizer(color = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(14.dp))
+            Column {
+                Text(
+                    text = "No song playing",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "Choose a song",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BottomTabsBar(
+    selectedDestination: AppDestination,
+    onDestinationSelected: (AppDestination) -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        shape = RoundedCornerShape(30.dp),
+        color = MaterialTheme.colorScheme.inverseSurface,
+        tonalElevation = 6.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(58.dp)
+                .padding(horizontal = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AppDestination.entries.forEach { destination ->
+                BottomTabItem(
+                    destination = destination,
+                    selected = selectedDestination == destination,
+                    onClick = { onDestinationSelected(destination) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BottomTabItem(
+    destination: AppDestination,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .height(44.dp)
+            .clip(RoundedCornerShape(22.dp))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        if (selected) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(40.dp),
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = destinationIcon(destination),
+                        contentDescription = destination.label,
+                        modifier = Modifier.size(19.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = destination.label,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1
+                    )
+                }
+            }
+        } else {
+            Icon(
+                imageVector = destinationIcon(destination),
+                contentDescription = destination.label,
+                tint = MaterialTheme.colorScheme.inverseOnSurface.copy(alpha = 0.78f),
+                modifier = Modifier.size(22.dp)
+            )
+        }
+    }
+}
+
+private fun destinationIcon(destination: AppDestination): ImageVector =
+    when (destination) {
+        AppDestination.Home -> Icons.Filled.Home
+        AppDestination.Search -> Icons.Filled.Search
+        AppDestination.Player -> Icons.Filled.PlayArrow
+        AppDestination.Library -> Icons.Filled.Favorite
+        AppDestination.Profile -> Icons.Filled.Person
+    }
 
 @Composable
 private fun ConnectCard(
@@ -948,8 +1200,7 @@ private fun NowPlayingBar(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .navigationBarsPadding()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(horizontal = 12.dp, vertical = 6.dp),
         shape = RoundedCornerShape(24.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         tonalElevation = 3.dp
