@@ -145,6 +145,7 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.sin
+import kotlin.math.sqrt
 import kotlin.random.Random
 import ir.mahozad.multiplatform.wavyslider.WaveDirection.HEAD
 import ir.mahozad.multiplatform.wavyslider.material3.WavySlider
@@ -2751,31 +2752,31 @@ private fun AudioBarsVisualizer(
         initialValue = 0f,
         targetValue = (PI * 2).toFloat(),
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = if (active) 900 else 2200, easing = LinearEasing),
+            animation = tween(durationMillis = if (active) 1400 else 2800, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
         label = "bars-phase"
     )
-    val hasLiveLevels = active && levels.any { it > 0.035f }
+    val hasLiveLevels = active && levels.any { it > 0.045f }
 
     Canvas(modifier = modifier) {
-        val barCount = 28
+        val barCount = VISUALIZER_BAR_COUNT
         val gap = size.width / (barCount * 2.05f)
         val strokeWidth = gap.coerceAtLeast(2.5f)
         val step = size.width / barCount
         val baseline = size.height * 0.86f
         for (index in 0 until barCount) {
-            val fallbackWave = (sin(phase + index * 0.63f) + 1f) / 2f
-            val stable = ((index * 37) % 9) / 10f
+            val centerWeight = 1f - abs(index - (barCount - 1) / 2f) / (barCount / 2f)
+            val idleWave = (sin(phase + index * 0.42f) + 1f) / 2f
+            val restingLevel = 0.08f + centerWeight * 0.12f + idleWave * if (active) 0.12f else 0.055f
             val level = when {
                 hasLiveLevels -> levels.getOrElse(index) { 0f }
-                active -> fallbackWave * 0.72f
-                else -> stable * 0.42f
+                else -> restingLevel
             }.coerceIn(0f, 1f)
-            val height = size.height * (0.16f + level * 0.76f)
+            val height = size.height * (0.1f + level * 0.72f)
             val x = step * index + step / 2f
             drawLine(
-                color = color.copy(alpha = 0.26f + level * 0.66f),
+                color = color.copy(alpha = if (hasLiveLevels) 0.32f + level * 0.58f else 0.22f + level * 0.28f),
                 start = Offset(x, baseline),
                 end = Offset(x, baseline - height),
                 strokeWidth = strokeWidth,
@@ -2970,12 +2971,14 @@ private class JellyfinPlayer(private val context: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var mediaPlayer: MediaPlayer? = null
     private var visualizer: Visualizer? = null
+    private var smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
 
     fun play(track: MusicTrack, session: JellyfinSession) {
         releasePlayer()
         currentTrack = track
         status = "Buffering"
         progress = 0f
+        smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         saveWidgetState(context, track, status, progress)
 
@@ -3011,6 +3014,7 @@ private class JellyfinPlayer(private val context: Context) {
                 isPlaying = false
                 status = "Ended"
                 progress = 1f
+                smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
                 visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
                 saveWidgetState(context, track, status, progress)
             }
@@ -3018,6 +3022,7 @@ private class JellyfinPlayer(private val context: Context) {
                 visualizer?.runCatching { enabled = false }
                 isPlaying = false
                 status = "Playback error"
+                smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
                 visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
                 saveWidgetState(context, track, status, progress)
                 true
@@ -3090,6 +3095,7 @@ private class JellyfinPlayer(private val context: Context) {
         }
         mediaPlayer = null
         isPlaying = false
+        smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
     }
 
@@ -3113,7 +3119,7 @@ private class JellyfinPlayer(private val context: Context) {
                             samplingRate: Int
                         ) {
                             val data = waveform ?: return
-                            val nextLevels = waveformToBars(data)
+                            val nextLevels = smoothVisualizerLevels(waveformToBars(data))
                             mainHandler.post { visualizerLevels = nextLevels }
                         }
 
@@ -3132,26 +3138,47 @@ private class JellyfinPlayer(private val context: Context) {
             visualizer = nextVisualizer
         }.onFailure {
             visualizer = null
+            smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
             visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         }
     }
 
     private fun waveformToBars(waveform: ByteArray): FloatArray {
         if (waveform.isEmpty()) return FloatArray(VISUALIZER_BAR_COUNT)
+        val rawBars = FloatArray(VISUALIZER_BAR_COUNT)
         val bars = FloatArray(VISUALIZER_BAR_COUNT)
         val samplesPerBar = (waveform.size / VISUALIZER_BAR_COUNT).coerceAtLeast(1)
-        for (bar in bars.indices) {
+        for (bar in rawBars.indices) {
             val start = bar * samplesPerBar
             val end = (start + samplesPerBar).coerceAtMost(waveform.size)
             var sum = 0f
             for (index in start until end) {
                 val sample = (waveform[index].toInt() and 0xFF) - 128
-                sum += abs(sample) / 128f
+                val normalized = sample / 128f
+                sum += normalized * normalized
             }
-            val average = sum / (end - start).coerceAtLeast(1)
-            bars[bar] = average.coerceIn(0f, 1f)
+            val rms = sqrt(sum / (end - start).coerceAtLeast(1))
+            rawBars[bar] = ((rms - 0.025f) / 0.62f).coerceIn(0f, 1f)
+        }
+        for (bar in bars.indices) {
+            val previous = rawBars.getOrElse(bar - 1) { rawBars[bar] }
+            val next = rawBars.getOrElse(bar + 1) { rawBars[bar] }
+            bars[bar] = (rawBars[bar] * 0.62f + previous * 0.19f + next * 0.19f).coerceIn(0f, 1f)
         }
         return bars
+    }
+
+    private fun smoothVisualizerLevels(target: FloatArray): FloatArray {
+        if (smoothedVisualizerLevels.size != VISUALIZER_BAR_COUNT) {
+            smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+        }
+        for (index in 0 until VISUALIZER_BAR_COUNT) {
+            val current = smoothedVisualizerLevels[index]
+            val next = target.getOrElse(index) { 0f }
+            val smoothing = if (next > current) 0.36f else 0.18f
+            smoothedVisualizerLevels[index] = current + (next - current) * smoothing
+        }
+        return smoothedVisualizerLevels.copyOf()
     }
 
     private fun releaseVisualizer() {
