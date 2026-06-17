@@ -3248,53 +3248,64 @@ private class JellyfinRepository(private val context: Context) {
     }
 
     fun fetchTracks(session: JellyfinSession): List<MusicTrack> {
-        val url = buildString {
-            append(session.serverUrl)
-            append("/Users/")
-            append(encode(session.userId))
-            append("/Items?Recursive=true")
-            append("&IncludeItemTypes=Audio")
-            append("&SortBy=SortName")
-            append("&SortOrder=Ascending")
-            append("&Fields=Album,AlbumId,AlbumPrimaryImageTag,Artists,ImageTags,PrimaryImageItemId,RunTimeTicks")
-            append("&Limit=200")
-        }
-        val response = request(url = url, method = "GET", body = null, session = session)
-        val items = JSONObject(response).optJSONArray("Items") ?: JSONArray()
+        val pageSize = 500
         return buildList {
-            for (index in 0 until items.length()) {
-                val item = items.optJSONObject(index) ?: continue
-                val id = item.optString("Id")
-                if (id.isBlank()) continue
-                val artist = item.optJSONArray("Artists").joinOrFallback(item.optString("AlbumArtist", "Unknown artist"))
-                val imageTags = item.optJSONObject("ImageTags")
-                val primaryImageTag = imageTags?.optString("Primary").orEmpty()
-                val primaryImageItemId = item.optString("PrimaryImageItemId")
-                val albumId = item.optString("AlbumId")
-                val albumImageTag = item.optString("AlbumPrimaryImageTag")
-                val imageItemId = when {
-                    primaryImageTag.isNotBlank() -> id
-                    primaryImageItemId.isNotBlank() -> primaryImageItemId
-                    albumId.isNotBlank() && albumImageTag.isNotBlank() -> albumId
-                    else -> null
+            var startIndex = 0
+            var totalRecordCount = Int.MAX_VALUE
+            while (startIndex < totalRecordCount) {
+                val url = buildString {
+                    append(session.serverUrl)
+                    append("/Users/")
+                    append(encode(session.userId))
+                    append("/Items?Recursive=true")
+                    append("&IncludeItemTypes=Audio")
+                    append("&SortBy=SortName")
+                    append("&SortOrder=Ascending")
+                    append("&Fields=Album,AlbumId,AlbumPrimaryImageTag,Artists,ImageTags,PrimaryImageItemId,RunTimeTicks")
+                    append("&StartIndex=$startIndex")
+                    append("&Limit=$pageSize")
                 }
-                val imageTag = when {
-                    primaryImageTag.isNotBlank() -> primaryImageTag
-                    albumImageTag.isNotBlank() -> albumImageTag
-                    else -> null
-                }
-                add(
-                    MusicTrack(
-                        id = id,
-                        title = item.optString("Name", "Untitled"),
-                        artist = artist,
-                        album = item.optString("Album", "Unknown album").ifBlank { "Unknown album" },
-                        durationMs = item.optLong("RunTimeTicks", 0L) / 10_000L,
-                        imageItemId = imageItemId,
-                        imageTag = imageTag,
-                        tint = tintFor(id)
+                val response = JSONObject(request(url = url, method = "GET", body = null, session = session))
+                totalRecordCount = response.optInt("TotalRecordCount", totalRecordCount)
+                val items = response.optJSONArray("Items") ?: JSONArray()
+                if (items.length() == 0) break
+
+                for (index in 0 until items.length()) {
+                    val item = items.optJSONObject(index) ?: continue
+                    val id = item.optString("Id")
+                    if (id.isBlank()) continue
+                    val artist = item.optJSONArray("Artists").joinOrFallback(item.optString("AlbumArtist", "Unknown artist"))
+                    val imageTags = item.optJSONObject("ImageTags")
+                    val primaryImageTag = imageTags?.optString("Primary").orEmpty()
+                    val primaryImageItemId = item.optString("PrimaryImageItemId")
+                    val albumId = item.optString("AlbumId")
+                    val albumImageTag = item.optString("AlbumPrimaryImageTag")
+                    val imageItemId = when {
+                        primaryImageTag.isNotBlank() -> id
+                        primaryImageItemId.isNotBlank() -> primaryImageItemId
+                        albumId.isNotBlank() && albumImageTag.isNotBlank() -> albumId
+                        else -> null
+                    }
+                    val imageTag = when {
+                        primaryImageTag.isNotBlank() -> primaryImageTag
+                        albumImageTag.isNotBlank() -> albumImageTag
+                        else -> null
+                    }
+                    add(
+                        MusicTrack(
+                            id = id,
+                            title = item.optString("Name", "Untitled"),
+                            artist = artist,
+                            album = item.optString("Album", "Unknown album").ifBlank { "Unknown album" },
+                            durationMs = item.optLong("RunTimeTicks", 0L) / 10_000L,
+                            imageItemId = imageItemId,
+                            imageTag = imageTag,
+                            tint = tintFor(id)
+                        )
                     )
-                )
+                }
+                startIndex += items.length()
+                if (items.length() < pageSize) break
             }
         }
     }
