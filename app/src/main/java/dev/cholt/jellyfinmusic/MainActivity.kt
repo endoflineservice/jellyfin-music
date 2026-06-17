@@ -37,6 +37,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -126,6 +128,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
@@ -763,152 +766,162 @@ private fun JellyfinMusicApp() {
 
     JellyfinMusicTheme(albumAccentColor = albumAccentColor, darkTheme = darkTheme) {
         Scaffold(
-        topBar = {
-            if (showTopBar) {
-                TopAppBar(
-                    modifier = if (showPlayer) {
-                        Modifier.swipeDownToDismiss(closePlayer, startZone = 96.dp)
-                    } else {
-                        Modifier
-                    },
-                    navigationIcon = {
-                        if (showPlayer) {
-                            IconButton(onClick = closePlayer) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                    contentDescription = "Back to Home"
-                                )
-                            }
-                        }
-                    },
-                    title = {
-                        val subtitle = when {
-                            showPlayer -> player.currentTrack?.artist
-                            session == null -> "Not connected"
-                            selectedDestination == AppDestination.Profile -> "Settings"
-                            else -> null
-                        }
-                        Column {
-                            Text(
-                                text = if (showPlayer) "Now Playing" else "Jellyfin Music",
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1
-                            )
-                            if (subtitle != null) {
-                                Text(
-                                    text = subtitle,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.background,
-                        scrolledContainerColor = MaterialTheme.colorScheme.surface
-                    )
+            modifier = if (showPlayer) {
+                Modifier.swipeDownToDismiss(
+                    onDismiss = closePlayer,
+                    startZone = 128.dp,
+                    dismissDistance = 72.dp
                 )
-            }
-        },
-        bottomBar = {
-            val activeSession = session
-            val activeTrack = player.currentTrack
-            if (activeSession != null && !showPlayer) {
-                Column {
-                    if (activeTrack != null) {
-                        NowPlayingBar(
-                            track = activeTrack,
-                            session = activeSession,
-                            isPlaying = player.isPlaying,
-                            progress = player.progress,
-                            status = player.status,
-                            onOpen = {
-                                selectedDestination = AppDestination.Player
-                                showPlayer = true
-                            },
-                            onToggle = { player.toggle() },
-                            onReplay = { player.play(activeTrack, activeSession) },
-                            onSeek = { player.seekToFraction(it) },
-                            onPrevious = { playAdjacent(-1) },
-                            onNext = { playAdjacent(1) }
-                        )
-                    }
-                    BottomTabsBar(
-                        selectedDestination = selectedDestination,
-                        onDestinationSelected = { destination ->
-                            selectedDestination = destination
-                            when (destination) {
-                                AppDestination.Home -> {
-                                    selectedTab = LibraryTab.Songs
-                                    showPlayer = false
+            } else {
+                Modifier
+            },
+            topBar = {
+                if (showTopBar) {
+                    TopAppBar(
+                        modifier = if (showPlayer) {
+                            Modifier.swipeDownToDismiss(closePlayer, startZone = 96.dp)
+                        } else {
+                            Modifier
+                        },
+                        navigationIcon = {
+                            if (showPlayer) {
+                                IconButton(onClick = closePlayer) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                        contentDescription = "Back to Home"
+                                    )
                                 }
-
-                                AppDestination.Search -> {
-                                    showPlayer = false
+                            }
+                        },
+                        title = {
+                            if (!showPlayer) {
+                                val subtitle = when {
+                                    session == null -> "Not connected"
+                                    selectedDestination == AppDestination.Profile -> "Settings"
+                                    else -> null
                                 }
-
-                                AppDestination.Player -> {
-                                    if (player.currentTrack != null) {
-                                        showPlayer = true
+                                Column {
+                                    Text(
+                                        text = "Jellyfin Music",
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1
+                                    )
+                                    if (subtitle != null) {
+                                        Text(
+                                            text = subtitle,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
                                     }
                                 }
-
-                                AppDestination.Library -> {
-                                    showPlayer = false
-                                }
-
-                                AppDestination.Profile -> {
-                                    showPlayer = false
-                                }
                             }
-                        }
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.background,
+                            scrolledContainerColor = MaterialTheme.colorScheme.surface
+                        )
                     )
                 }
-            }
-        },
-        containerColor = MaterialTheme.colorScheme.background
+            },
+            bottomBar = {
+                val activeSession = session
+                val activeTrack = player.currentTrack
+                if (activeSession != null && !showPlayer) {
+                    Column {
+                        if (activeTrack != null) {
+                            NowPlayingBar(
+                                track = activeTrack,
+                                session = activeSession,
+                                isPlaying = player.isPlaying,
+                                progress = player.progress,
+                                status = player.status,
+                                onOpen = {
+                                    selectedDestination = AppDestination.Player
+                                    showPlayer = true
+                                },
+                                onToggle = { player.toggle() },
+                                onReplay = { player.play(activeTrack, activeSession) },
+                                onSeek = { player.seekToFraction(it) },
+                                onPrevious = { playAdjacent(-1) },
+                                onNext = { playAdjacent(1) }
+                            )
+                        }
+                        BottomTabsBar(
+                            selectedDestination = selectedDestination,
+                            onDestinationSelected = { destination ->
+                                selectedDestination = destination
+                                when (destination) {
+                                    AppDestination.Home -> {
+                                        selectedTab = LibraryTab.Songs
+                                        showPlayer = false
+                                    }
+
+                                    AppDestination.Search -> {
+                                        showPlayer = false
+                                    }
+
+                                    AppDestination.Player -> {
+                                        if (player.currentTrack != null) {
+                                            showPlayer = true
+                                        }
+                                    }
+
+                                    AppDestination.Library -> {
+                                        showPlayer = false
+                                    }
+
+                                    AppDestination.Profile -> {
+                                        showPlayer = false
+                                    }
+                                }
+                            }
+                        )
+                    }
+                }
+            },
+            containerColor = MaterialTheme.colorScheme.background
         ) { innerPadding ->
-        val activeTrack = player.currentTrack
-        val connectedSession = session
-        if (showPlayer && activeTrack != null) {
-            FullPlayerScreen(
-                track = activeTrack,
-                isPlaying = player.isPlaying,
-                progress = player.progress,
-                visualizerLevels = player.visualizerLevels,
-                status = player.status,
-                queue = playQueue.ifEmpty { tracks.queueStartingAt(activeTrack) },
-                session = connectedSession,
-                modifier = Modifier.padding(innerPadding),
-                onToggle = { player.toggle() },
-                onSeek = { player.seekToFraction(it) },
-                onPrevious = { playAdjacent(-1) },
-                onNext = { playAdjacent(1) },
-                onReplay = { session?.let { player.play(activeTrack, it) } },
-                onScratch = { scratchEngine.playScratch(it) },
-                onScratchEnd = { scratchEngine.stop() },
-                shuffleEnabled = shuffleEnabled,
-                repeatEnabled = repeatEnabled,
-                visualizerEnabled = visualizerEnabled,
-                onToggleShuffle = { shuffleEnabled = !shuffleEnabled },
-                onToggleRepeat = { repeatEnabled = !repeatEnabled },
-                onQueueTrackClick = ::playQueuedTrack,
-                onQueueMove = ::moveQueueTrack,
-                onQueuePlayNext = ::playTrackNext,
-                onDismiss = closePlayer
-            )
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
-                    .imePadding(),
-                contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
+            val activeTrack = player.currentTrack
+            val connectedSession = session
+            if (showPlayer && activeTrack != null) {
+                FullPlayerScreen(
+                    track = activeTrack,
+                    isPlaying = player.isPlaying,
+                    progress = player.progress,
+                    visualizerLevels = player.visualizerLevels,
+                    status = player.status,
+                    queue = playQueue.ifEmpty { tracks.queueStartingAt(activeTrack) },
+                    session = connectedSession,
+                    modifier = Modifier.padding(innerPadding),
+                    onToggle = { player.toggle() },
+                    onSeek = { player.seekToFraction(it) },
+                    onPrevious = { playAdjacent(-1) },
+                    onNext = { playAdjacent(1) },
+                    onReplay = { session?.let { player.play(activeTrack, it) } },
+                    onScratch = { scratchEngine.playScratch(it) },
+                    onScratchEnd = { scratchEngine.stop() },
+                    shuffleEnabled = shuffleEnabled,
+                    repeatEnabled = repeatEnabled,
+                    visualizerEnabled = visualizerEnabled,
+                    onToggleShuffle = { shuffleEnabled = !shuffleEnabled },
+                    onToggleRepeat = { repeatEnabled = !repeatEnabled },
+                    onQueueTrackClick = ::playQueuedTrack,
+                    onQueueMove = ::moveQueueTrack,
+                    onQueuePlayNext = ::playTrackNext,
+                    onDismiss = closePlayer
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding)
+                        .imePadding(),
+                    contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
                 if (connectedSession == null) {
                     item {
                         SettingsSectionHeader("Connection")
@@ -1947,39 +1960,38 @@ private fun Modifier.swipeDownToDismiss(
 ): Modifier = pointerInput(onDismiss, startZone) {
     val startZonePx = startZone.toPx()
     val dismissDistancePx = dismissDistance.toPx()
-    var startsInTopZone = false
-    var totalDragX = 0f
-    var totalDragY = 0f
+    awaitEachGesture {
+        val down = awaitFirstDown(pass = PointerEventPass.Initial, requireUnconsumed = false)
+        val startsInTopZone = down.position.y <= startZonePx
+        var totalDragX = 0f
+        var totalDragY = 0f
+        var dismissed = false
 
-    detectDragGestures(
-        onDragStart = { offset ->
-            startsInTopZone = offset.y <= startZonePx
-            totalDragX = 0f
-            totalDragY = 0f
-        },
-        onDragEnd = {
-            if (
-                startsInTopZone &&
-                totalDragY > dismissDistancePx &&
-                totalDragY > abs(totalDragX) * 1.4f
-            ) {
-                onDismiss()
-            }
-            startsInTopZone = false
-        },
-        onDragCancel = {
-            startsInTopZone = false
-        },
-        onDrag = { change, dragAmount ->
+        while (true) {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+            if (!change.pressed) break
+
             if (startsInTopZone) {
+                val dragAmount = change.position - change.previousPosition
                 totalDragX += dragAmount.x
                 totalDragY += dragAmount.y
                 if (totalDragY > 0f) {
                     change.consume()
                 }
+                if (
+                    !dismissed &&
+                    totalDragY > dismissDistancePx &&
+                    totalDragY > abs(totalDragX) * 1.2f
+                ) {
+                    dismissed = true
+                    onDismiss()
+                    change.consume()
+                    break
+                }
             }
         }
-    )
+    }
 }
 
 @Composable
