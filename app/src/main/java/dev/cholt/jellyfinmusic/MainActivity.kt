@@ -786,17 +786,20 @@ private fun JellyfinMusicApp() {
                         }
 
                         else -> {
+                            val isHomeTab = selectedDestination == AppDestination.Home
                             val isSearchTab = selectedDestination == AppDestination.Search
-                            item {
-                                LibraryHeader(
-                                    title = if (isSearchTab) "Search" else "Library",
-                                    showSearch = isSearchTab,
-                                    searchQuery = searchQuery,
-                                    isBusy = isBusy,
-                                    statusText = statusText,
-                                    onSearchQueryChange = { searchQuery = it },
-                                    onRefresh = { loadLibrary(connectedSession) }
-                                )
+                            if (!isHomeTab) {
+                                item {
+                                    LibraryHeader(
+                                        title = if (isSearchTab) "Search" else "Library",
+                                        showSearch = isSearchTab,
+                                        searchQuery = searchQuery,
+                                        isBusy = isBusy,
+                                        statusText = statusText,
+                                        onSearchQueryChange = { searchQuery = it },
+                                        onRefresh = { loadLibrary(connectedSession) }
+                                    )
+                                }
                             }
                             item {
                                 LibraryTabs(
