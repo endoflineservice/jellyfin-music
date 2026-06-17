@@ -1522,14 +1522,14 @@ private fun DiscAlbumStage(
                 .padding(top = 38.dp, end = 38.dp)
                 .size(48.dp),
             shape = CircleShape,
-            color = Color(0xFFD84B8B),
+            color = MaterialTheme.colorScheme.primary,
             tonalElevation = 3.dp
         ) {
             Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
                 Icon(
                     imageVector = Icons.Filled.Favorite,
                     contentDescription = null,
-                    tint = Color.White,
+                    tint = MaterialTheme.colorScheme.onPrimary,
                     modifier = Modifier.size(25.dp)
                 )
             }
@@ -1685,7 +1685,7 @@ private fun TurntableArmOverlay(progress: Float, modifier: Modifier = Modifier) 
     val colorScheme = MaterialTheme.colorScheme
     Canvas(modifier = modifier) {
         val p = progress.coerceIn(0f, 1f)
-        val accent = Color(0xFFD84B8B)
+        val accent = colorScheme.primary
         val pivot = Offset(size.width * 0.18f, size.height * 0.16f)
         val elbow = Offset(size.width * (0.16f + p * 0.025f), size.height * (0.34f + p * 0.02f))
         val stylus = Offset(size.width * (0.24f + p * 0.08f), size.height * (0.56f - p * 0.035f))
@@ -1745,9 +1745,10 @@ private fun TurntableArmOverlay(progress: Float, modifier: Modifier = Modifier) 
 
 @Composable
 private fun VinylDisc(tint: Color, modifier: Modifier = Modifier) {
-    val surface = MaterialTheme.colorScheme.surface
-    val labelColor = Color(0xFFD84B8B)
-    val labelDark = Color(0xFFA93872)
+    val colorScheme = MaterialTheme.colorScheme
+    val surface = colorScheme.surface
+    val labelColor = colorScheme.primary
+    val labelDark = colorScheme.primaryContainer
     Canvas(
         modifier = modifier
             .clip(CircleShape)
@@ -2084,7 +2085,14 @@ private fun WavySeekBar(
         waveThickness = 5.dp,
         trackThickness = 5.dp,
         incremental = true,
-        thumb = {}
+        thumb = {
+            Box(
+                modifier = Modifier
+                    .size(14.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary)
+            )
+        }
     )
 }
 
