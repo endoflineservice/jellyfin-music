@@ -3,5 +3,6 @@ build/
 app/build/
 local.properties
 *.iml
+*.hprof
 .idea/
 .DS_Store

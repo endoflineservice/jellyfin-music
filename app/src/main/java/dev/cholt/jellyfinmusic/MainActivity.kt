@@ -21,7 +21,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -36,10 +35,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -49,6 +46,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -89,6 +87,8 @@ import java.util.Locale
 import kotlin.concurrent.thread
 import kotlin.math.PI
 import kotlin.math.sin
+import ir.mahozad.multiplatform.wavyslider.WaveDirection.HEAD
+import ir.mahozad.multiplatform.wavyslider.material3.WavySlider
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -312,7 +312,8 @@ private fun JellyfinMusicApp() {
                     progress = player.progress,
                     status = player.status,
                     onToggle = { player.toggle() },
-                    onReplay = { player.play(activeTrack, activeSession) }
+                    onReplay = { player.play(activeTrack, activeSession) },
+                    onSeek = { player.seekToFraction(it) }
                 )
             }
         },
@@ -670,7 +671,8 @@ private fun NowPlayingBar(
     progress: Float,
     status: String,
     onToggle: () -> Unit,
-    onReplay: () -> Unit
+    onReplay: () -> Unit,
+    onSeek: (Float) -> Unit
 ) {
     Surface(
         modifier = Modifier
@@ -710,13 +712,12 @@ private fun NowPlayingBar(
                 }
             }
             Spacer(Modifier.height(10.dp))
-            WavyProgressBar(
+            WavySeekBar(
                 progress = progress,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(18.dp),
-                progressColor = MaterialTheme.colorScheme.primary,
-                trackColor = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.16f)
+                    .height(28.dp),
+                onSeek = onSeek
             )
             if (!isPlaying && status == "Ended") {
                 TextButton(onClick = onReplay, modifier = Modifier.align(Alignment.End)) {
@@ -769,56 +770,29 @@ private fun TopBarSineVisualizer(modifier: Modifier = Modifier, color: Color) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun WavyProgressBar(
+private fun WavySeekBar(
     progress: Float,
     modifier: Modifier = Modifier,
-    progressColor: Color,
-    trackColor: Color
+    onSeek: (Float) -> Unit
 ) {
-    val transition = rememberInfiniteTransition(label = "wave")
-    val phase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = (PI * 2).toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1300, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
+    WavySlider(
+        value = progress.coerceIn(0f, 1f),
+        onValueChange = onSeek,
+        modifier = modifier,
+        colors = SliderDefaults.colors(
+            activeTrackColor = MaterialTheme.colorScheme.primary,
+            inactiveTrackColor = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.18f)
         ),
-        label = "phase"
+        waveLength = 18.dp,
+        waveHeight = 8.dp,
+        waveVelocity = 22.dp to HEAD,
+        waveThickness = 5.dp,
+        trackThickness = 5.dp,
+        incremental = true,
+        thumb = {}
     )
-
-    Canvas(modifier = modifier) {
-        val strokeWidth = 5.dp.toPx()
-        val centerY = size.height / 2f
-        val amplitude = size.height * 0.2f
-        val wavelength = size.width / 4.5f
-        val endX = size.width * progress.coerceIn(0f, 1f)
-
-        fun buildPath(toX: Float, animated: Boolean): Path {
-            val path = Path()
-            var x = 0f
-            path.moveTo(0f, centerY)
-            while (x <= toX) {
-                val localAmp = if (animated) amplitude else amplitude * 0.45f
-                val y = centerY + sin((x / wavelength) * PI.toFloat() * 2f + if (animated) phase else 0f) * localAmp
-                path.lineTo(x, y)
-                x += 4f
-            }
-            path.lineTo(toX, centerY)
-            return path
-        }
-
-        drawPath(
-            path = buildPath(size.width, animated = false),
-            color = trackColor,
-            style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
-        )
-        drawPath(
-            path = buildPath(endX, animated = true),
-            color = progressColor,
-            style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
-        )
-    }
 }
 
 private class JellyfinPlayer(private val context: Context) {
@@ -889,6 +863,21 @@ private class JellyfinPlayer(private val context: Context) {
             val duration = activePlayer.duration
             if (duration > 0) {
                 progress = activePlayer.currentPosition.toFloat() / duration.toFloat()
+            }
+        }
+    }
+
+    fun seekToFraction(fraction: Float) {
+        val activePlayer = mediaPlayer ?: return
+        runCatching {
+            val duration = activePlayer.duration
+            if (duration > 0) {
+                val target = (duration * fraction.coerceIn(0f, 1f)).toInt()
+                activePlayer.seekTo(target)
+                progress = target.toFloat() / duration.toFloat()
+                if (!isPlaying && status != "Ended") {
+                    status = "Paused"
+                }
             }
         }
     }
