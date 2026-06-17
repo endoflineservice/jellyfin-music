@@ -43,6 +43,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -51,6 +52,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -63,6 +65,8 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
@@ -256,6 +260,7 @@ private fun JellyfinMusicApp() {
     var isBusy by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf<String?>(null) }
     var showPlayer by remember { mutableStateOf(false) }
+    var playQueue by remember { mutableStateOf(emptyList<MusicTrack>()) }
     var shuffleEnabled by remember { mutableStateOf(false) }
     var repeatEnabled by remember { mutableStateOf(false) }
     var selectedDestination by remember { mutableStateOf(AppDestination.Home) }
@@ -315,13 +320,15 @@ private fun JellyfinMusicApp() {
         clearSavedSession(context)
         session = null
         tracks = emptyList()
+        playQueue = emptyList()
         statusText = null
         showPlayer = false
         selectedDestination = AppDestination.Home
     }
 
-    fun playTrack(track: MusicTrack, openPlayer: Boolean = false) {
+    fun playTrack(track: MusicTrack, openPlayer: Boolean = false, source: List<MusicTrack> = tracks) {
         session?.let { activeSession ->
+            playQueue = source.queueStartingAt(track).ifEmpty { listOf(track) }
             player.play(track, activeSession)
             if (openPlayer) {
                 selectedDestination = AppDestination.Player
@@ -332,14 +339,40 @@ private fun JellyfinMusicApp() {
 
     fun playAdjacent(offset: Int) {
         val activeTrack = player.currentTrack ?: return
-        if (tracks.isEmpty()) return
-        val index = tracks.indexOfFirst { it.id == activeTrack.id }.takeIf { it >= 0 } ?: return
-        val nextIndex = if (shuffleEnabled && tracks.size > 1) {
-            (index + Random.nextInt(1, tracks.size)) % tracks.size
+        val baseQueue = playQueue
+            .ifEmpty { tracks.queueStartingAt(activeTrack) }
+            .ifEmpty { listOf(activeTrack) }
+            .queueStartingAt(activeTrack)
+        if (baseQueue.isEmpty()) return
+        val nextIndex = if (shuffleEnabled && baseQueue.size > 1 && offset > 0) {
+            Random.nextInt(1, baseQueue.size)
         } else {
-            (index + offset + tracks.size) % tracks.size
+            (offset + baseQueue.size) % baseQueue.size
         }
-        playTrack(tracks[nextIndex], openPlayer = true)
+        playTrack(baseQueue[nextIndex], openPlayer = true, source = baseQueue)
+    }
+
+    fun playQueuedTrack(track: MusicTrack) {
+        val source = playQueue.ifEmpty { tracks }
+        playTrack(track, openPlayer = true, source = source)
+    }
+
+    fun moveQueueTrack(fromIndex: Int, toIndex: Int) {
+        if (fromIndex <= 0 || playQueue.size <= 1) return
+        playQueue = playQueue.moveQueueItem(
+            fromIndex = fromIndex,
+            toIndex = toIndex.coerceIn(1, playQueue.lastIndex)
+        )
+    }
+
+    fun playTrackNext(track: MusicTrack) {
+        val activeTrack = player.currentTrack
+        val baseQueue = if (activeTrack != null) {
+            playQueue.ifEmpty { tracks.queueStartingAt(activeTrack) }.queueStartingAt(activeTrack)
+        } else {
+            playQueue.ifEmpty { tracks }
+        }
+        playQueue = baseQueue.withTrackPlayNext(track, activeTrack)
     }
 
     DisposableEffect(Unit) {
@@ -488,6 +521,7 @@ private fun JellyfinMusicApp() {
                 progress = player.progress,
                 visualizerLevels = player.visualizerLevels,
                 status = player.status,
+                queue = playQueue.ifEmpty { tracks.queueStartingAt(activeTrack) },
                 modifier = Modifier.padding(innerPadding),
                 onToggle = { player.toggle() },
                 onSeek = { player.seekToFraction(it) },
@@ -500,6 +534,9 @@ private fun JellyfinMusicApp() {
                 repeatEnabled = repeatEnabled,
                 onToggleShuffle = { shuffleEnabled = !shuffleEnabled },
                 onToggleRepeat = { repeatEnabled = !repeatEnabled },
+                onQueueTrackClick = ::playQueuedTrack,
+                onQueueMove = ::moveQueueTrack,
+                onQueuePlayNext = ::playTrackNext,
                 onDismiss = closePlayer
             )
         } else {
@@ -578,7 +615,7 @@ private fun JellyfinMusicApp() {
                                             TrackRow(
                                                 track = track,
                                                 isCurrent = player.currentTrack?.id == track.id,
-                                                onClick = { playTrack(track, openPlayer = true) }
+                                                onClick = { playTrack(track, openPlayer = true, source = filteredTracks) }
                                             )
                                         }
                                     }
@@ -592,7 +629,13 @@ private fun JellyfinMusicApp() {
                                         items(groups, key = { it.title }) { group ->
                                             GroupRow(
                                                 group = group,
-                                                onClick = { playTrack(group.tracks.first(), openPlayer = true) }
+                                                onClick = {
+                                                    playTrack(
+                                                        group.tracks.first(),
+                                                        openPlayer = true,
+                                                        source = group.tracks
+                                                    )
+                                                }
                                             )
                                         }
                                     }
@@ -606,7 +649,13 @@ private fun JellyfinMusicApp() {
                                         items(groups, key = { it.title }) { group ->
                                             GroupRow(
                                                 group = group,
-                                                onClick = { playTrack(group.tracks.first(), openPlayer = true) }
+                                                onClick = {
+                                                    playTrack(
+                                                        group.tracks.first(),
+                                                        openPlayer = true,
+                                                        source = group.tracks
+                                                    )
+                                                }
                                             )
                                         }
                                     }
@@ -1133,6 +1182,7 @@ private fun FullPlayerScreen(
     progress: Float,
     visualizerLevels: FloatArray,
     status: String,
+    queue: List<MusicTrack>,
     modifier: Modifier = Modifier,
     onToggle: () -> Unit,
     onSeek: (Float) -> Unit,
@@ -1145,9 +1195,15 @@ private fun FullPlayerScreen(
     repeatEnabled: Boolean,
     onToggleShuffle: () -> Unit,
     onToggleRepeat: () -> Unit,
+    onQueueTrackClick: (MusicTrack) -> Unit,
+    onQueueMove: (Int, Int) -> Unit,
+    onQueuePlayNext: (MusicTrack) -> Unit,
     onDismiss: () -> Unit
 ) {
-    Column(
+    var showQueue by remember { mutableStateOf(false) }
+    val displayQueue = queue.ifEmpty { listOf(track) }
+
+    Box(
         modifier = modifier
             .fillMaxSize()
             .swipeDownToDismiss(
@@ -1155,104 +1211,384 @@ private fun FullPlayerScreen(
                 startZone = 220.dp,
                 dismissDistance = 110.dp
             )
-            .navigationBarsPadding()
-            .padding(horizontal = 22.dp, vertical = 12.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        DiscAlbumStage(
-            track = track,
-            isPlaying = isPlaying,
-            progress = progress,
-            onSeek = onSeek,
-            onScratch = onScratch,
-            onScratchEnd = onScratchEnd
-        )
-        Spacer(Modifier.height(22.dp))
-        Text(
-            text = track.title,
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.SemiBold,
-            textAlign = TextAlign.Center,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.fillMaxWidth()
-        )
-        Text(
-            text = "${track.artist} - ${track.album}",
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.fillMaxWidth()
-        )
-        Spacer(Modifier.height(20.dp))
-        AudioBarsVisualizer(
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(32.dp),
-            color = MaterialTheme.colorScheme.primary,
-            active = isPlaying,
-            levels = visualizerLevels
-        )
-        Spacer(Modifier.height(4.dp))
-        WavySeekBar(
-            progress = progress,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(32.dp),
-            onSeek = onSeek
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
+                .fillMaxSize()
+                .navigationBarsPadding()
+                .padding(horizontal = 22.dp, vertical = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            DiscAlbumStage(
+                track = track,
+                isPlaying = isPlaying,
+                progress = progress,
+                onSeek = onSeek,
+                onScratch = onScratch,
+                onScratchEnd = onScratchEnd
+            )
+            Spacer(Modifier.height(16.dp))
             Text(
-                text = formatDuration((track.durationMs * progress.coerceIn(0f, 1f)).toLong()),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                text = track.title,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth()
             )
             Text(
-                text = formatDuration(track.durationMs),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                text = "${track.artist} - ${track.album}",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(16.dp))
+            AudioBarsVisualizer(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(28.dp),
+                color = MaterialTheme.colorScheme.primary,
+                active = isPlaying,
+                levels = visualizerLevels
+            )
+            Spacer(Modifier.height(2.dp))
+            WavySeekBar(
+                progress = progress,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(30.dp),
+                onSeek = onSeek
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = formatDuration((track.durationMs * progress.coerceIn(0f, 1f)).toLong()),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = formatDuration(track.durationMs),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                RoundedPlaybackButton(
+                    icon = PlayerGlyph.Shuffle,
+                    contentDescription = if (shuffleEnabled) "Shuffle on" else "Shuffle",
+                    active = shuffleEnabled,
+                    onClick = onToggleShuffle
+                )
+                RoundedPlaybackButton(
+                    icon = PlayerGlyph.Previous,
+                    contentDescription = "Previous track",
+                    onClick = onPrevious
+                )
+                RoundedPlaybackButton(
+                    icon = if (isPlaying) PlayerGlyph.Pause else PlayerGlyph.Play,
+                    contentDescription = if (isPlaying) "Pause" else "Play",
+                    onClick = if (!isPlaying && status == "Ended") onReplay else onToggle,
+                    prominent = true,
+                    modifier = Modifier.size(70.dp)
+                )
+                RoundedPlaybackButton(
+                    icon = PlayerGlyph.Next,
+                    contentDescription = "Next track",
+                    onClick = onNext
+                )
+                RoundedPlaybackButton(
+                    icon = PlayerGlyph.Repeat,
+                    contentDescription = if (repeatEnabled) "Repeat on" else "Repeat",
+                    active = repeatEnabled,
+                    onClick = onToggleRepeat
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+            QueuePullHandle(
+                queueCount = (displayQueue.size - 1).coerceAtLeast(0),
+                onOpen = { showQueue = true }
             )
         }
-        Spacer(Modifier.height(18.dp))
+
+        if (showQueue) {
+            QueueBottomSheet(
+                currentTrack = track,
+                queue = displayQueue,
+                onDismiss = { showQueue = false },
+                onTrackClick = onQueueTrackClick,
+                onMove = onQueueMove,
+                onPlayNext = onQueuePlayNext,
+                modifier = Modifier.align(Alignment.BottomCenter)
+            )
+        }
+    }
+}
+
+@Composable
+private fun QueuePullHandle(
+    queueCount: Int,
+    onOpen: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(46.dp)
+            .swipeUpToOpen(onOpen)
+            .clickable(onClick = onOpen),
+        shape = RoundedCornerShape(23.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        tonalElevation = 2.dp
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 7.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(44.dp)
+                    .height(5.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(MaterialTheme.colorScheme.primary)
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Icon(
+                    imageVector = PlayerGlyph.Queue.imageVector(),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = "Up next $queueCount",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
+                )
+            }
+        }
+    }
+}
+
+private fun Modifier.swipeUpToOpen(
+    onOpen: () -> Unit,
+    openDistance: Dp = 46.dp
+): Modifier = pointerInput(onOpen, openDistance) {
+    val openDistancePx = openDistance.toPx()
+    var totalDragY = 0f
+
+    detectDragGestures(
+        onDragStart = { totalDragY = 0f },
+        onDragEnd = {
+            if (totalDragY < -openDistancePx) {
+                onOpen()
+            }
+            totalDragY = 0f
+        },
+        onDragCancel = { totalDragY = 0f },
+        onDrag = { change, dragAmount ->
+            totalDragY += dragAmount.y
+            if (dragAmount.y < 0f) {
+                change.consume()
+            }
+        }
+    )
+}
+
+@Composable
+private fun QueueBottomSheet(
+    currentTrack: MusicTrack,
+    queue: List<MusicTrack>,
+    onDismiss: () -> Unit,
+    onTrackClick: (MusicTrack) -> Unit,
+    onMove: (Int, Int) -> Unit,
+    onPlayNext: (MusicTrack) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.24f))
+                .clickable(onClick = onDismiss)
+        )
+        Surface(
+            modifier = modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.72f)
+                .navigationBarsPadding(),
+            shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 8.dp
+        ) {
+            Column(
+                modifier = Modifier.padding(start = 16.dp, top = 10.dp, end = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .width(48.dp)
+                        .height(5.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.32f))
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "Now playing",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "${(queue.size - 1).coerceAtLeast(0)} up next",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    TextButton(onClick = onDismiss) {
+                        Text("Done")
+                    }
+                }
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 18.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    itemsIndexed(queue, key = { _, track -> track.id }) { index, item ->
+                        QueueTrackRow(
+                            track = item,
+                            index = index,
+                            lastIndex = queue.lastIndex,
+                            isCurrent = item.id == currentTrack.id,
+                            onClick = { onTrackClick(item) },
+                            onMoveUp = { onMove(index, index - 1) },
+                            onMoveDown = { onMove(index, index + 1) },
+                            onPlayNext = { onPlayNext(item) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QueueTrackRow(
+    track: MusicTrack,
+    index: Int,
+    lastIndex: Int,
+    isCurrent: Boolean,
+    onClick: () -> Unit,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
+    onPlayNext: () -> Unit
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(20.dp),
+        color = if (isCurrent) {
+            MaterialTheme.colorScheme.primaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLow
+        },
+        tonalElevation = if (isCurrent) 2.dp else 0.dp
+    ) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            RoundedPlaybackButton(
-                icon = PlayerGlyph.Shuffle,
-                contentDescription = if (shuffleEnabled) "Shuffle on" else "Shuffle",
-                active = shuffleEnabled,
-                onClick = onToggleShuffle
-            )
-            RoundedPlaybackButton(
-                icon = PlayerGlyph.Previous,
-                contentDescription = "Previous track",
-                onClick = onPrevious
-            )
-            RoundedPlaybackButton(
-                icon = if (isPlaying) PlayerGlyph.Pause else PlayerGlyph.Play,
-                contentDescription = if (isPlaying) "Pause" else "Play",
-                onClick = if (!isPlaying && status == "Ended") onReplay else onToggle,
-                prominent = true,
-                modifier = Modifier.size(70.dp)
-            )
-            RoundedPlaybackButton(
-                icon = PlayerGlyph.Next,
-                contentDescription = "Next track",
-                onClick = onNext
-            )
-            RoundedPlaybackButton(
-                icon = PlayerGlyph.Repeat,
-                contentDescription = if (repeatEnabled) "Repeat on" else "Repeat",
-                active = repeatEnabled,
-                onClick = onToggleRepeat
-            )
+            AlbumTile(tint = track.tint, modifier = Modifier.size(46.dp))
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = track.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = if (isCurrent) "Playing now" else "${track.artist} - ${track.album}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (!isCurrent) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    IconButton(
+                        onClick = onMoveUp,
+                        enabled = index > 1,
+                        modifier = Modifier.size(30.dp)
+                    ) {
+                        Icon(
+                            imageVector = PlayerGlyph.MoveUp.imageVector(),
+                            contentDescription = "Move up",
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    IconButton(
+                        onClick = onMoveDown,
+                        enabled = index < lastIndex,
+                        modifier = Modifier.size(30.dp)
+                    ) {
+                        Icon(
+                            imageVector = PlayerGlyph.MoveDown.imageVector(),
+                            contentDescription = "Move down",
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+            Box {
+                IconButton(
+                    onClick = { menuExpanded = true },
+                    modifier = Modifier.size(38.dp)
+                ) {
+                    Icon(
+                        imageVector = PlayerGlyph.More.imageVector(),
+                        contentDescription = "Track options",
+                        modifier = Modifier.size(23.dp)
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Play next") },
+                        enabled = !isCurrent,
+                        onClick = {
+                            menuExpanded = false
+                            onPlayNext()
+                        }
+                    )
+                }
+            }
         }
     }
 }
@@ -1264,7 +1600,11 @@ private enum class PlayerGlyph {
     Pause,
     Next,
     Repeat,
-    Replay
+    Replay,
+    Queue,
+    More,
+    MoveUp,
+    MoveDown
 }
 
 @Composable
@@ -1315,6 +1655,10 @@ private fun PlayerGlyph.imageVector(): ImageVector = when (this) {
     PlayerGlyph.Next -> PlayerIconVectors.SkipNext
     PlayerGlyph.Repeat -> PlayerIconVectors.Repeat
     PlayerGlyph.Replay -> PlayerIconVectors.Replay
+    PlayerGlyph.Queue -> PlayerIconVectors.Queue
+    PlayerGlyph.More -> PlayerIconVectors.MoreVertical
+    PlayerGlyph.MoveUp -> PlayerIconVectors.MoveUp
+    PlayerGlyph.MoveDown -> PlayerIconVectors.MoveDown
 }
 
 private object PlayerIconVectors {
@@ -1463,6 +1807,100 @@ private object PlayerIconVectors {
             curveTo(4.78f, 18.15f, 8.07f, 21f, 12f, 21f)
             curveTo(16.42f, 21f, 20f, 17.42f, 20f, 13f)
             curveTo(20f, 8.58f, 16.42f, 5f, 12f, 5f)
+        }
+    }.build()
+
+    val Queue: ImageVector = ImageVector.Builder(
+        name = "Queue",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(
+            fill = null,
+            stroke = stroke,
+            strokeLineWidth = 2f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round
+        ) {
+            moveTo(5f, 7f)
+            horizontalLineTo(19f)
+            moveTo(5f, 12f)
+            horizontalLineTo(15f)
+            moveTo(5f, 17f)
+            horizontalLineTo(12f)
+            moveTo(17f, 15f)
+            verticalLineTo(21f)
+            lineTo(21f, 18f)
+            close()
+        }
+    }.build()
+
+    val MoreVertical: ImageVector = ImageVector.Builder(
+        name = "MoreVertical",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(fill = stroke) {
+            moveTo(12f, 8f)
+            moveToRelative(-2f, 0f)
+            arcToRelative(2f, 2f, 0f, true, true, 4f, 0f)
+            arcToRelative(2f, 2f, 0f, true, true, -4f, 0f)
+            moveTo(12f, 14f)
+            moveToRelative(-2f, 0f)
+            arcToRelative(2f, 2f, 0f, true, true, 4f, 0f)
+            arcToRelative(2f, 2f, 0f, true, true, -4f, 0f)
+            moveTo(12f, 20f)
+            moveToRelative(-2f, 0f)
+            arcToRelative(2f, 2f, 0f, true, true, 4f, 0f)
+            arcToRelative(2f, 2f, 0f, true, true, -4f, 0f)
+        }
+    }.build()
+
+    val MoveUp: ImageVector = ImageVector.Builder(
+        name = "MoveUp",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(
+            fill = null,
+            stroke = stroke,
+            strokeLineWidth = 2f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round
+        ) {
+            moveTo(12f, 19f)
+            verticalLineTo(5f)
+            moveTo(6f, 11f)
+            lineTo(12f, 5f)
+            lineTo(18f, 11f)
+        }
+    }.build()
+
+    val MoveDown: ImageVector = ImageVector.Builder(
+        name = "MoveDown",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(
+            fill = null,
+            stroke = stroke,
+            strokeLineWidth = 2f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round
+        ) {
+            moveTo(12f, 5f)
+            verticalLineTo(19f)
+            moveTo(6f, 13f)
+            lineTo(12f, 19f)
+            lineTo(18f, 13f)
         }
     }.build()
 }
@@ -2542,6 +2980,33 @@ private fun clearSavedSession(context: Context) {
         .edit()
         .clear()
         .apply()
+}
+
+private fun List<MusicTrack>.queueStartingAt(track: MusicTrack): List<MusicTrack> {
+    if (isEmpty()) return emptyList()
+    val startIndex = indexOfFirst { it.id == track.id }
+    if (startIndex < 0) return listOf(track) + filterNot { it.id == track.id }
+    return drop(startIndex) + take(startIndex)
+}
+
+private fun List<MusicTrack>.moveQueueItem(fromIndex: Int, toIndex: Int): List<MusicTrack> {
+    if (fromIndex !in indices || toIndex !in indices || fromIndex == toIndex) return this
+    return toMutableList().apply {
+        val item = removeAt(fromIndex)
+        add(toIndex, item)
+    }
+}
+
+private fun List<MusicTrack>.withTrackPlayNext(track: MusicTrack, currentTrack: MusicTrack?): List<MusicTrack> {
+    if (currentTrack?.id == track.id) return this
+    val normalized = currentTrack?.let { queueStartingAt(it) } ?: this
+    val withoutTrack = normalized.filterNot { it.id == track.id }.toMutableList()
+    val currentIndex = currentTrack?.let { active ->
+        withoutTrack.indexOfFirst { it.id == active.id }
+    } ?: -1
+    val insertIndex = if (currentIndex >= 0) currentIndex + 1 else 0
+    withoutTrack.add(insertIndex.coerceIn(0, withoutTrack.size), track)
+    return withoutTrack
 }
 
 private fun normalizeServerUrl(input: String): String {
