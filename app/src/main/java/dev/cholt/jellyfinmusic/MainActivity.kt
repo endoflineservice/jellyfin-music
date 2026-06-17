@@ -20,6 +20,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,6 +38,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
@@ -74,13 +76,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
@@ -97,6 +102,8 @@ import java.net.URLEncoder
 import java.util.Locale
 import kotlin.concurrent.thread
 import kotlin.math.PI
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.random.Random
 import ir.mahozad.multiplatform.wavyslider.WaveDirection.HEAD
@@ -1045,7 +1052,7 @@ private fun FullPlayerScreen(
     onReplay: () -> Unit,
     shuffleEnabled: Boolean,
     repeatEnabled: Boolean,
-            onToggleShuffle: () -> Unit,
+    onToggleShuffle: () -> Unit,
     onToggleRepeat: () -> Unit
 ) {
     Column(
@@ -1055,9 +1062,11 @@ private fun FullPlayerScreen(
             .padding(horizontal = 22.dp, vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        LargeAlbumStage(
+        DiscAlbumStage(
             track = track,
             isPlaying = isPlaying,
+            progress = progress,
+            onSeek = onSeek,
             onToggle = onToggle
         )
         Spacer(Modifier.height(22.dp))
@@ -1140,29 +1149,57 @@ private fun FullPlayerScreen(
 }
 
 @Composable
-private fun LargeAlbumStage(track: MusicTrack, isPlaying: Boolean, onToggle: () -> Unit) {
+private fun DiscAlbumStage(
+    track: MusicTrack,
+    isPlaying: Boolean,
+    progress: Float,
+    onSeek: (Float) -> Unit,
+    onToggle: () -> Unit
+) {
+    val transition = rememberInfiniteTransition(label = "disc-spin")
+    val rotation by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 14000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "disc-rotation"
+    )
+    val discRotation = if (isPlaying) rotation else 0f
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .aspectRatio(1f)
-            .clip(RoundedCornerShape(34.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+            .padding(horizontal = 6.dp),
         contentAlignment = Alignment.Center
     ) {
-        AlbumBackdrop(tint = track.tint, modifier = Modifier.fillMaxSize())
-        AudioBarsVisualizer(
+        Surface(
             modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .height(86.dp)
-                .padding(horizontal = 24.dp, vertical = 18.dp),
-            color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.78f),
-            active = isPlaying
+                .fillMaxSize()
+                .padding(18.dp),
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            tonalElevation = 4.dp
+        ) {}
+        CircularSeekRing(
+            progress = progress,
+            onSeek = onSeek,
+            modifier = Modifier.fillMaxSize(),
+            activeColor = MaterialTheme.colorScheme.primary,
+            trackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.18f)
+        )
+        VinylDisc(
+            tint = track.tint,
+            modifier = Modifier
+                .fillMaxSize(0.74f)
+                .rotate(discRotation)
         )
         FilledTonalButton(
             onClick = onToggle,
-            modifier = Modifier.size(76.dp),
-            shape = RoundedCornerShape(38.dp),
+            modifier = Modifier.size(72.dp),
+            shape = CircleShape,
             contentPadding = PaddingValues(0.dp)
         ) {
             Text(if (isPlaying) "II" else ">", style = MaterialTheme.typography.titleLarge)
@@ -1171,25 +1208,123 @@ private fun LargeAlbumStage(track: MusicTrack, isPlaying: Boolean, onToggle: () 
 }
 
 @Composable
-private fun AlbumBackdrop(tint: Color, modifier: Modifier = Modifier) {
+private fun CircularSeekRing(
+    progress: Float,
+    onSeek: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+    activeColor: Color,
+    trackColor: Color
+) {
+    Canvas(
+        modifier = modifier.pointerInput(Unit) {
+            detectTapGestures { offset ->
+                val centerX = size.width / 2f
+                val centerY = size.height / 2f
+                val dx = offset.x - centerX
+                val dy = offset.y - centerY
+                var degrees = Math.toDegrees(atan2(dy, dx).toDouble()).toFloat() + 90f
+                if (degrees < 0f) degrees += 360f
+                onSeek((degrees / 360f).coerceIn(0f, 1f))
+            }
+        }
+    ) {
+        val strokeWidth = 10.dp.toPx()
+        val inset = strokeWidth / 2f + 8.dp.toPx()
+        val diameter = size.minDimension - inset * 2f
+        val topLeft = Offset((size.width - diameter) / 2f, (size.height - diameter) / 2f)
+        val arcSize = Size(diameter, diameter)
+        val clampedProgress = progress.coerceIn(0f, 1f)
+
+        drawArc(
+            color = trackColor,
+            startAngle = -90f,
+            sweepAngle = 360f,
+            useCenter = false,
+            topLeft = topLeft,
+            size = arcSize,
+            style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+        )
+        drawArc(
+            color = activeColor,
+            startAngle = -90f,
+            sweepAngle = clampedProgress * 360f,
+            useCenter = false,
+            topLeft = topLeft,
+            size = arcSize,
+            style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+        )
+
+        val angleRadians = ((clampedProgress * 360f - 90f) * PI / 180f).toFloat()
+        val radius = diameter / 2f
+        val center = Offset(size.width / 2f, size.height / 2f)
+        val knobCenter = Offset(
+            x = center.x + cos(angleRadians) * radius,
+            y = center.y + sin(angleRadians) * radius
+        )
+        drawCircle(color = activeColor, radius = 8.dp.toPx(), center = knobCenter)
+        drawCircle(color = Color.White.copy(alpha = 0.86f), radius = 4.dp.toPx(), center = knobCenter)
+    }
+}
+
+@Composable
+private fun VinylDisc(tint: Color, modifier: Modifier = Modifier) {
     val surface = MaterialTheme.colorScheme.surface
-    Canvas(modifier = modifier.background(tint.copy(alpha = 0.22f))) {
-        drawRect(
-            brush = Brush.linearGradient(
-                colors = listOf(tint.copy(alpha = 0.92f), surface.copy(alpha = 0.18f)),
-                start = Offset(0f, 0f),
-                end = Offset(size.width, size.height)
-            )
+    Canvas(
+        modifier = modifier
+            .clip(CircleShape)
+            .background(tint.copy(alpha = 0.18f))
+    ) {
+        val radius = size.minDimension / 2f
+        val center = Offset(size.width / 2f, size.height / 2f)
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    tint.copy(alpha = 0.94f),
+                    tint.copy(alpha = 0.58f),
+                    Color.Black.copy(alpha = 0.84f)
+                ),
+                center = Offset(size.width * 0.34f, size.height * 0.24f),
+                radius = radius * 1.18f
+            ),
+            radius = radius,
+            center = center
         )
         drawCircle(
-            color = Color.White.copy(alpha = 0.16f),
-            radius = size.minDimension * 0.46f,
-            center = Offset(size.width * 0.78f, size.height * 0.22f)
+            color = Color.White.copy(alpha = 0.12f),
+            radius = radius * 0.82f,
+            center = center,
+            style = Stroke(width = 1.4.dp.toPx())
         )
         drawCircle(
-            color = Color.Black.copy(alpha = 0.12f),
-            radius = size.minDimension * 0.58f,
-            center = Offset(size.width * 0.18f, size.height * 0.92f)
+            color = Color.White.copy(alpha = 0.1f),
+            radius = radius * 0.62f,
+            center = center,
+            style = Stroke(width = 1.dp.toPx())
+        )
+        drawCircle(
+            color = Color.White.copy(alpha = 0.08f),
+            radius = radius * 0.43f,
+            center = center,
+            style = Stroke(width = 1.dp.toPx())
+        )
+        drawCircle(
+            color = Color.Black.copy(alpha = 0.34f),
+            radius = radius * 0.24f,
+            center = center
+        )
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(tint.copy(alpha = 0.94f), surface.copy(alpha = 0.9f)),
+                center = center,
+                radius = radius * 0.2f
+            ),
+            radius = radius * 0.16f,
+            center = center
+        )
+        drawCircle(
+            color = Color.Black.copy(alpha = 0.82f),
+            radius = radius * 0.052f,
+            center = center
         )
     }
 }
