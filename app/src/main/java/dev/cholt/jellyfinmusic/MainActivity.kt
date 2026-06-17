@@ -764,6 +764,11 @@ private fun ConnectCard(
                 label = { Text("Server URL") },
                 placeholder = { Text("https://jellyfin.example.com") }
             )
+            Text(
+                text = "Use the server root URL, not the /web page.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             OutlinedTextField(
                 value = username,
                 onValueChange = onUsernameChange,
@@ -1451,8 +1456,9 @@ private class JellyfinRepository(private val context: Context) {
     fun login(serverUrl: String, username: String, password: String): JellyfinSession {
         val normalizedUrl = normalizeServerUrl(serverUrl)
         val payload = JSONObject()
-            .put("Username", username)
+            .put("Username", username.trim())
             .put("Pw", password)
+            .put("Password", password)
             .toString()
 
         val response = request(
@@ -1465,7 +1471,7 @@ private class JellyfinRepository(private val context: Context) {
         val user = json.getJSONObject("User")
         return JellyfinSession(
             serverUrl = normalizedUrl,
-            username = user.optString("Name", username),
+            username = user.optString("Name", username.trim()),
             userId = user.getString("Id"),
             token = json.getString("AccessToken")
         )
@@ -1515,8 +1521,11 @@ private class JellyfinRepository(private val context: Context) {
             requestMethod = method
             connectTimeout = 12_000
             readTimeout = 20_000
+            val authHeader = authorizationHeader(session)
             setRequestProperty("Accept", "application/json")
-            setRequestProperty("Authorization", authorizationHeader(session))
+            setRequestProperty("Authorization", authHeader)
+            setRequestProperty("X-Emby-Authorization", authHeader)
+            setRequestProperty("User-Agent", "Jellyfin Music/0.1.0 Android")
             session?.token?.let { setRequestProperty("X-Emby-Token", it) }
             if (body != null) {
                 doOutput = true
@@ -1535,7 +1544,7 @@ private class JellyfinRepository(private val context: Context) {
             val stream = if (code in 200..299) connection.inputStream else connection.errorStream
             val response = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
             if (code !in 200..299) {
-                throw IOException("Jellyfin returned HTTP $code ${response.take(160)}".trim())
+                throw JellyfinHttpException(code, response, url)
             }
             return response
         } finally {
@@ -1547,6 +1556,20 @@ private class JellyfinRepository(private val context: Context) {
         val base = "MediaBrowser Client=\"Jellyfin Music\", Device=\"Android\", DeviceId=\"$deviceId\", Version=\"0.1.0\""
         return session?.let { "$base, Token=\"${it.token}\"" } ?: base
     }
+}
+
+private class JellyfinHttpException(
+    val code: Int,
+    private val response: String,
+    private val requestUrl: String
+) : IOException("HTTP $code") {
+    fun displayMessage(): String =
+        when (code) {
+            401 -> "401 Unauthorized. Check username/password and use the Jellyfin server root URL, not /web. Reverse-proxy login can also block app clients."
+            403 -> "403 Forbidden. Your server or reverse proxy blocked this app request."
+            404 -> "404 Not Found. Check the server URL; if you copied Jellyfin from a browser, remove /web."
+            else -> "Jellyfin returned HTTP $code ${response.take(160)}".trim()
+        }.plus(if (requestUrl.contains("/web", ignoreCase = true)) " URL still contains /web." else "")
 }
 
 private fun loadSavedSession(context: Context): JellyfinSession? {
@@ -1576,12 +1599,19 @@ private fun clearSavedSession(context: Context) {
 }
 
 private fun normalizeServerUrl(input: String): String {
-    val trimmed = input.trim().removeSuffix("/")
-    return if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-        trimmed
-    } else {
-        "https://$trimmed"
+    val withScheme = input.trim().let { raw ->
+        if (raw.startsWith("http://", ignoreCase = true) || raw.startsWith("https://", ignoreCase = true)) {
+            raw
+        } else {
+            "https://$raw"
+        }
     }
+    return withScheme
+        .substringBefore("#")
+        .substringBefore("?")
+        .removeSuffix("/")
+        .replace(Regex("/web(/index\\.html)?$", RegexOption.IGNORE_CASE), "")
+        .removeSuffix("/")
 }
 
 private fun List<MusicTrack>.filterBy(query: String): List<MusicTrack> {
@@ -1649,7 +1679,10 @@ private fun String.toHostLabel(): String =
     runCatching { Uri.parse(this).host ?: this }.getOrDefault(this)
 
 private fun Throwable.readableMessage(): String =
-    message?.takeIf { it.isNotBlank() } ?: "Something went wrong"
+    when (this) {
+        is JellyfinHttpException -> displayMessage()
+        else -> message?.takeIf { it.isNotBlank() } ?: "Something went wrong"
+    }
 
 private fun encode(value: String): String =
     URLEncoder.encode(value, Charsets.UTF_8.name())
