@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="widget_music_card_description">Jellyfin Music player widget</string>
+    <string name="widget_music_compact_description">Compact Jellyfin Music widget</string>
+</resources>

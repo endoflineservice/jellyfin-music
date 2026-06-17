@@ -10,6 +10,7 @@ A small native Android prototype for a clean Jellyfin-focused music player.
 - Real song library loading from the Jellyfin API.
 - Search plus songs, albums, and artists library views.
 - Full-screen player with large rounded art, animated visualizer bars, wavy seek, shuffle, repeat, auto-next, play, pause, and replay.
+- Home-screen widgets: a vinyl-inspired 4x2 player card and a compact 2x1 mini widget.
 - App label and package identity set to `Jellyfin Music`.
 
 ## Study Plan

@@ -120,14 +120,14 @@ private val AlbumTints = listOf(
 
 private const val PREFS_NAME = "jellyfin_music"
 
-private data class JellyfinSession(
+data class JellyfinSession(
     val serverUrl: String,
     val username: String,
     val userId: String,
     val token: String
 )
 
-private data class MusicTrack(
+data class MusicTrack(
     val id: String,
     val title: String,
     val artist: String,
@@ -1096,6 +1096,7 @@ private class JellyfinPlayer(private val context: Context) {
         currentTrack = track
         status = "Buffering"
         progress = 0f
+        saveWidgetState(context, track, status, progress)
 
         val nextPlayer = MediaPlayer()
         mediaPlayer = nextPlayer
@@ -1110,21 +1111,25 @@ private class JellyfinPlayer(private val context: Context) {
                 isPlaying = true
                 status = "Playing"
                 syncProgress()
+                saveWidgetState(context, track, status, progress)
             }
             nextPlayer.setOnCompletionListener {
                 isPlaying = false
                 status = "Ended"
                 progress = 1f
+                saveWidgetState(context, track, status, progress)
             }
             nextPlayer.setOnErrorListener { _, _, _ ->
                 isPlaying = false
                 status = "Playback error"
+                saveWidgetState(context, track, status, progress)
                 true
             }
             nextPlayer.prepareAsync()
         }.onFailure {
             isPlaying = false
             status = it.readableMessage()
+            saveWidgetState(context, track, status, progress)
         }
     }
 
@@ -1134,10 +1139,12 @@ private class JellyfinPlayer(private val context: Context) {
             activePlayer.pause()
             isPlaying = false
             status = "Paused"
+            saveWidgetState(context, currentTrack, status, progress)
         } else {
             activePlayer.start()
             isPlaying = true
             status = "Playing"
+            saveWidgetState(context, currentTrack, status, progress)
         }
     }
 
@@ -1162,6 +1169,7 @@ private class JellyfinPlayer(private val context: Context) {
                 if (!isPlaying && status != "Ended") {
                     status = "Paused"
                 }
+                saveWidgetState(context, currentTrack, status, progress)
             }
         }
     }
@@ -1171,6 +1179,7 @@ private class JellyfinPlayer(private val context: Context) {
         currentTrack = null
         status = "Ready"
         progress = 0f
+        saveWidgetState(context, null, status, progress)
     }
 
     private fun releasePlayer() {
