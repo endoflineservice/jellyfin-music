@@ -137,10 +137,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
 import java.net.URLEncoder
+import java.security.MessageDigest
 import java.util.Collections
 import java.util.LinkedHashMap
 import java.util.Locale
@@ -204,6 +207,9 @@ private const val PREFS_NAME = "jellyfin_music"
 private const val PREF_USE_ALBUM_ART_COLORS = "use_album_art_colors"
 private const val PREF_VISUALIZER_ENABLED = "visualizer_enabled"
 private const val PREF_THEME_MODE = "theme_mode"
+private const val LIBRARY_CACHE_VERSION = 1
+private const val ALBUM_ART_CACHE_DIR = "album_art_cache"
+private const val MAX_ALBUM_ART_CACHE_FILES = 320
 private const val DISC_SCRATCH_SEEK_SCALE = 0.55f
 private const val DISC_SCRATCH_DEAD_ZONE = 0.22f
 private const val VISUALIZER_BAR_COUNT = 28
@@ -282,6 +288,12 @@ private data class LibraryGroup(
     val subtitle: String,
     val tint: Color,
     val tracks: List<MusicTrack>
+)
+
+private val MusicTrackSort = compareBy<MusicTrack>(
+    { it.title.lowercase(Locale.getDefault()) },
+    { it.artist.lowercase(Locale.getDefault()) },
+    { it.album.lowercase(Locale.getDefault()) }
 )
 
 @Composable
@@ -490,6 +502,12 @@ private fun composeColor(argb: Int): Color =
         alpha = AndroidColor.alpha(argb) / 255f
     )
 
+private fun stableCacheKey(value: String): String =
+    MessageDigest
+        .getInstance("SHA-256")
+        .digest(value.toByteArray(Charsets.UTF_8))
+        .joinToString(separator = "") { "%02x".format(it.toInt() and 0xFF) }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun JellyfinMusicApp() {
@@ -503,7 +521,7 @@ private fun JellyfinMusicApp() {
     var serverUrl by remember { mutableStateOf(session?.serverUrl.orEmpty()) }
     var username by remember { mutableStateOf(session?.username.orEmpty()) }
     var password by remember { mutableStateOf("") }
-    var tracks by remember { mutableStateOf(emptyList<MusicTrack>()) }
+    var tracks by remember { mutableStateOf(session?.let { loadCachedLibrary(context, it) } ?: emptyList()) }
     var selectedTab by remember { mutableStateOf(LibraryTab.Songs) }
     var searchQuery by remember { mutableStateOf("") }
     var isBusy by remember { mutableStateOf(false) }
@@ -540,7 +558,20 @@ private fun JellyfinMusicApp() {
 
     fun loadLibrary(activeSession: JellyfinSession) {
         runTask {
-            val result = runCatching { repository.fetchTracks(activeSession) }
+            var partialTracks = emptyList<MusicTrack>()
+            val result = runCatching {
+                repository.fetchTracks(activeSession) { loadedTracks ->
+                    partialTracks = loadedTracks
+                    saveCachedLibrary(context, activeSession, loadedTracks)
+                    mainHandler.post {
+                        tracks = loadedTracks
+                        statusText = null
+                    }
+                }.also { loadedTracks ->
+                    saveCachedLibrary(context, activeSession, loadedTracks)
+                    warmAlbumArtCache(context, activeSession, loadedTracks)
+                }
+            }
             mainHandler.post {
                 isBusy = false
                 result
@@ -548,7 +579,13 @@ private fun JellyfinMusicApp() {
                         tracks = loadedTracks
                         statusText = if (loadedTracks.isEmpty()) "No music found" else null
                     }
-                    .onFailure { statusText = it.readableMessage() }
+                    .onFailure {
+                        statusText = if (partialTracks.isNotEmpty()) {
+                            "Library refresh incomplete: ${it.readableMessage()}"
+                        } else {
+                            it.readableMessage()
+                        }
+                    }
             }
         }
     }
@@ -560,10 +597,27 @@ private fun JellyfinMusicApp() {
         }
 
         runTask {
+            var partialTracks = emptyList<MusicTrack>()
             val result = runCatching {
                 val activeSession = repository.login(serverUrl, username, password)
                 saveSession(context, activeSession)
-                activeSession to repository.fetchTracks(activeSession)
+                mainHandler.post {
+                    session = activeSession
+                    serverUrl = activeSession.serverUrl
+                    username = activeSession.username
+                    password = ""
+                }
+                val loadedTracks = repository.fetchTracks(activeSession) { loadedTracks ->
+                    partialTracks = loadedTracks
+                    saveCachedLibrary(context, activeSession, loadedTracks)
+                    mainHandler.post {
+                        tracks = loadedTracks
+                        statusText = null
+                    }
+                }
+                saveCachedLibrary(context, activeSession, loadedTracks)
+                warmAlbumArtCache(context, activeSession, loadedTracks)
+                activeSession to loadedTracks
             }
             mainHandler.post {
                 isBusy = false
@@ -576,7 +630,13 @@ private fun JellyfinMusicApp() {
                         tracks = loadedTracks
                         statusText = if (loadedTracks.isEmpty()) "Connected, but no music found" else null
                     }
-                    .onFailure { statusText = it.readableMessage() }
+                    .onFailure {
+                        statusText = if (partialTracks.isNotEmpty()) {
+                            "Library refresh incomplete: ${it.readableMessage()}"
+                        } else {
+                            it.readableMessage()
+                        }
+                    }
             }
         }
     }
@@ -652,6 +712,8 @@ private fun JellyfinMusicApp() {
         val activeSession = session
         if (activeSession != null && tracks.isEmpty()) {
             loadLibrary(activeSession)
+        } else if (activeSession != null && tracks.isNotEmpty()) {
+            warmAlbumArtCache(context, activeSession, tracks)
         }
     }
 
@@ -948,7 +1010,7 @@ private fun JellyfinMusicApp() {
                             when (selectedTab) {
                                 LibraryTab.Songs -> {
                                     if (filteredTracks.isEmpty()) {
-                                        item { EmptyLibraryMessage(isBusy = isBusy) }
+                                        item { EmptyLibraryMessage(isBusy = isBusy, statusText = statusText) }
                                     } else {
                                         items(filteredTracks, key = { it.id }) { track ->
                                             TrackRow(
@@ -964,7 +1026,7 @@ private fun JellyfinMusicApp() {
                                 LibraryTab.Albums -> {
                                     val groups = filteredTracks.groupByAlbum()
                                     if (groups.isEmpty()) {
-                                        item { EmptyLibraryMessage(isBusy = isBusy) }
+                                        item { EmptyLibraryMessage(isBusy = isBusy, statusText = statusText) }
                                     } else {
                                         items(groups, key = { it.title }) { group ->
                                             GroupRow(
@@ -985,7 +1047,7 @@ private fun JellyfinMusicApp() {
                                 LibraryTab.Artists -> {
                                     val groups = filteredTracks.groupByArtist()
                                     if (groups.isEmpty()) {
-                                        item { EmptyLibraryMessage(isBusy = isBusy) }
+                                        item { EmptyLibraryMessage(isBusy = isBusy, statusText = statusText) }
                                     } else {
                                         items(groups, key = { it.title }) { group ->
                                             GroupRow(
@@ -1687,7 +1749,8 @@ private fun AlbumTile(
     AlbumArtworkImage(
         track = track,
         session = session,
-        modifier = modifier.clip(RoundedCornerShape(14.dp))
+        modifier = modifier.clip(RoundedCornerShape(14.dp)),
+        imageSize = 160
     )
 }
 
@@ -1696,9 +1759,10 @@ private fun AlbumArtworkImage(
     track: MusicTrack?,
     session: JellyfinSession?,
     modifier: Modifier = Modifier,
-    contentScale: ContentScale = ContentScale.Crop
+    contentScale: ContentScale = ContentScale.Crop,
+    imageSize: Int = 512
 ) {
-    val imageUrl = track?.imageUrl(session)
+    val imageUrl = track?.imageUrl(session, size = imageSize)
     val bitmap by rememberAlbumBitmap(imageUrl, session?.token)
     Box(modifier = modifier) {
         if (bitmap != null) {
@@ -1743,6 +1807,7 @@ private fun GeneratedAlbumTile(tint: Color, modifier: Modifier = Modifier) {
 
 @Composable
 private fun rememberAlbumBitmap(imageUrl: String?, token: String?): State<Bitmap?> {
+    val context = LocalContext.current.applicationContext
     var bitmap by remember(imageUrl) {
         mutableStateOf(imageUrl?.let { AlbumArtCache[it] })
     }
@@ -1752,19 +1817,27 @@ private fun rememberAlbumBitmap(imageUrl: String?, token: String?): State<Bitmap
             bitmap = null
             return@LaunchedEffect
         }
-        bitmap = AlbumArtCache[imageUrl] ?: loadAlbumBitmap(imageUrl, token)
+        bitmap = AlbumArtCache[imageUrl] ?: loadAlbumBitmap(context, imageUrl, token)
     }
 
     return rememberUpdatedState(bitmap)
 }
 
-private suspend fun loadAlbumBitmap(imageUrl: String, token: String?): Bitmap? = withContext(Dispatchers.IO) {
-    AlbumArtCache[imageUrl]?.let { return@withContext it }
+private suspend fun loadAlbumBitmap(context: Context, imageUrl: String, token: String?): Bitmap? = withContext(Dispatchers.IO) {
+    loadAlbumBitmapBlocking(context, imageUrl, token)
+}
+
+private fun loadAlbumBitmapBlocking(context: Context, imageUrl: String, token: String?): Bitmap? {
+    AlbumArtCache[imageUrl]?.let { return it }
+    loadAlbumBitmapFromDisk(context, imageUrl)?.let { bitmap ->
+        AlbumArtCache[imageUrl] = bitmap
+        return bitmap
+    }
     runCatching {
         val connection = (URL(imageUrl).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
-            connectTimeout = 10_000
-            readTimeout = 18_000
+            connectTimeout = 6_000
+            readTimeout = 10_000
             setRequestProperty("Accept", "image/*")
             token?.let { setRequestProperty("X-Emby-Token", it) }
         }
@@ -1773,27 +1846,72 @@ private suspend fun loadAlbumBitmap(imageUrl: String, token: String?): Bitmap? =
                 null
             } else {
                 connection.inputStream.use { input ->
-                    BitmapFactory.decodeStream(input)
+                    val bytes = input.readBytes()
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.also {
+                        saveAlbumBitmapToDisk(context, imageUrl, bytes)
+                    }
                 }
             }
         } finally {
             connection.disconnect()
         }
     }.getOrNull()?.also { AlbumArtCache[imageUrl] = it }
+    return AlbumArtCache[imageUrl]
+}
+
+private fun loadAlbumBitmapFromDisk(context: Context, imageUrl: String): Bitmap? {
+    val file = albumArtCacheFile(context, imageUrl)
+    if (!file.isFile) return null
+    return BitmapFactory.decodeFile(file.absolutePath)?.also {
+        file.setLastModified(System.currentTimeMillis())
+    }
+}
+
+private fun saveAlbumBitmapToDisk(context: Context, imageUrl: String, bytes: ByteArray) {
+    runCatching {
+        val file = albumArtCacheFile(context, imageUrl)
+        file.parentFile?.mkdirs()
+        file.writeBytes(bytes)
+        file.setLastModified(System.currentTimeMillis())
+        pruneAlbumArtCache(file.parentFile)
+    }
+}
+
+private fun albumArtCacheFile(context: Context, imageUrl: String): File =
+    File(File(context.cacheDir, ALBUM_ART_CACHE_DIR), "${stableCacheKey(imageUrl)}.img")
+
+private fun pruneAlbumArtCache(directory: File?) {
+    val files = directory
+        ?.listFiles()
+        ?.filter { it.isFile }
+        ?: return
+    if (files.size <= MAX_ALBUM_ART_CACHE_FILES) return
+    files
+        .sortedBy { it.lastModified() }
+        .take(files.size - MAX_ALBUM_ART_CACHE_FILES)
+        .forEach { it.delete() }
 }
 
 @Composable
-private fun EmptyLibraryMessage(isBusy: Boolean) {
+private fun EmptyLibraryMessage(isBusy: Boolean, statusText: String?) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow
     ) {
         Text(
-            text = if (isBusy) "Loading library" else "No matching music",
+            text = when {
+                isBusy -> "Loading library"
+                statusText != null -> statusText
+                else -> "No matching music"
+            },
             modifier = Modifier.padding(18.dp),
             style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = if (statusText != null && !isBusy) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            }
         )
     }
 }
@@ -3640,8 +3758,11 @@ private class JellyfinRepository(private val context: Context) {
         )
     }
 
-    fun fetchTracks(session: JellyfinSession): List<MusicTrack> {
-        val pageSize = 500
+    fun fetchTracks(
+        session: JellyfinSession,
+        onPartial: ((List<MusicTrack>) -> Unit)? = null
+    ): List<MusicTrack> {
+        val pageSize = 250
         return buildList {
             var startIndex = 0
             var totalRecordCount = Int.MAX_VALUE
@@ -3652,8 +3773,6 @@ private class JellyfinRepository(private val context: Context) {
                     append(encode(session.userId))
                     append("/Items?Recursive=true")
                     append("&IncludeItemTypes=Audio")
-                    append("&SortBy=SortName")
-                    append("&SortOrder=Ascending")
                     append("&Fields=Album,AlbumId,AlbumPrimaryImageTag,Artists,ImageTags,PrimaryImageItemId,RunTimeTicks")
                     append("&StartIndex=$startIndex")
                     append("&Limit=$pageSize")
@@ -3698,9 +3817,12 @@ private class JellyfinRepository(private val context: Context) {
                     )
                 }
                 startIndex += items.length()
+                if (isNotEmpty()) {
+                    onPartial?.invoke(toList().sortedWith(MusicTrackSort))
+                }
                 if (items.length() < pageSize) break
             }
-        }
+        }.sortedWith(MusicTrackSort)
     }
 
     private fun request(
@@ -3711,8 +3833,8 @@ private class JellyfinRepository(private val context: Context) {
     ): String {
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = method
-            connectTimeout = 12_000
-            readTimeout = 20_000
+            connectTimeout = 8_000
+            readTimeout = 15_000
             val authHeader = authorizationHeader(session)
             setRequestProperty("Accept", "application/json")
             setRequestProperty("Authorization", authHeader)
@@ -3781,6 +3903,78 @@ private fun saveSession(context: Context, session: JellyfinSession) {
         .putString("userId", session.userId)
         .putString("token", session.token)
         .apply()
+}
+
+private fun loadCachedLibrary(context: Context, session: JellyfinSession): List<MusicTrack> {
+    val file = libraryCacheFile(context, session)
+    if (!file.isFile) return emptyList()
+    return runCatching {
+        val root = JSONObject(file.readText())
+        if (root.optInt("version") != LIBRARY_CACHE_VERSION) return@runCatching emptyList()
+        val items = root.optJSONArray("tracks") ?: return@runCatching emptyList()
+        buildList {
+            for (index in 0 until items.length()) {
+                val item = items.optJSONObject(index) ?: continue
+                val id = item.optString("id")
+                if (id.isBlank()) continue
+                add(
+                    MusicTrack(
+                        id = id,
+                        title = item.optString("title", "Untitled"),
+                        artist = item.optString("artist", "Unknown artist"),
+                        album = item.optString("album", "Unknown album"),
+                        durationMs = item.optLong("durationMs", 0L),
+                        imageItemId = item.optString("imageItemId").takeIf { it.isNotBlank() },
+                        imageTag = item.optString("imageTag").takeIf { it.isNotBlank() },
+                        tint = if (item.has("tintArgb")) composeColor(item.optInt("tintArgb")) else tintFor(id)
+                    )
+                )
+            }
+        }
+    }.getOrDefault(emptyList())
+}
+
+private fun saveCachedLibrary(context: Context, session: JellyfinSession, tracks: List<MusicTrack>) {
+    runCatching {
+        val items = JSONArray()
+        tracks.forEach { track ->
+            items.put(
+                JSONObject()
+                    .put("id", track.id)
+                    .put("title", track.title)
+                    .put("artist", track.artist)
+                    .put("album", track.album)
+                    .put("durationMs", track.durationMs)
+                    .put("imageItemId", track.imageItemId.orEmpty())
+                    .put("imageTag", track.imageTag.orEmpty())
+                    .put("tintArgb", track.tint.toArgb())
+            )
+        }
+        val root = JSONObject()
+            .put("version", LIBRARY_CACHE_VERSION)
+            .put("updatedAt", System.currentTimeMillis())
+            .put("tracks", items)
+        libraryCacheFile(context, session).writeText(root.toString())
+    }
+}
+
+private fun libraryCacheFile(context: Context, session: JellyfinSession): File =
+    File(context.filesDir, "library-${stableCacheKey("${session.serverUrl}|${session.userId}")}.json")
+
+private fun warmAlbumArtCache(context: Context, session: JellyfinSession, tracks: List<MusicTrack>) {
+    val appContext = context.applicationContext
+    val urls = tracks
+        .asSequence()
+        .mapNotNull { it.imageUrl(session, size = 160) }
+        .distinct()
+        .take(64)
+        .toList()
+    if (urls.isEmpty()) return
+    thread(name = "album-art-cache-warmup") {
+        urls.forEach { imageUrl ->
+            loadAlbumBitmapBlocking(appContext, imageUrl, session.token)
+        }
+    }
 }
 
 private fun clearSavedSession(context: Context) {
@@ -3940,6 +4134,7 @@ private fun String.toHostLabel(): String =
 private fun Throwable.readableMessage(): String =
     when (this) {
         is JellyfinHttpException -> displayMessage()
+        is SocketTimeoutException -> "Jellyfin is not responding. Check that the server is awake and reachable from this device."
         else -> message?.takeIf { it.isNotBlank() } ?: "Something went wrong"
     }
 
