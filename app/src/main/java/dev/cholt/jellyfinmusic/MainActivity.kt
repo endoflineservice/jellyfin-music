@@ -183,6 +183,7 @@ private val AlbumTints = listOf(
 
 private const val PREFS_NAME = "jellyfin_music"
 private const val PREF_USE_ALBUM_ART_COLORS = "use_album_art_colors"
+private const val PREF_VISUALIZER_ENABLED = "visualizer_enabled"
 private const val DISC_SCRATCH_SEEK_SCALE = 0.55f
 private const val DISC_SCRATCH_DEAD_ZONE = 0.22f
 private const val VISUALIZER_BAR_COUNT = 28
@@ -423,7 +424,12 @@ private fun JellyfinMusicApp() {
     var shuffleEnabled by remember { mutableStateOf(false) }
     var repeatEnabled by remember { mutableStateOf(false) }
     var useAlbumArtColors by remember { mutableStateOf(loadUseAlbumArtColors(context)) }
+    var visualizerEnabled by remember { mutableStateOf(loadVisualizerEnabled(context)) }
     var selectedDestination by remember { mutableStateOf(AppDestination.Home) }
+
+    LaunchedEffect(visualizerEnabled) {
+        player.setVisualizerEnabled(visualizerEnabled)
+    }
 
     fun runTask(task: () -> Unit) {
         if (!isBusy) {
@@ -719,6 +725,7 @@ private fun JellyfinMusicApp() {
                 onScratchEnd = { scratchEngine.stop() },
                 shuffleEnabled = shuffleEnabled,
                 repeatEnabled = repeatEnabled,
+                visualizerEnabled = visualizerEnabled,
                 onToggleShuffle = { shuffleEnabled = !shuffleEnabled },
                 onToggleRepeat = { repeatEnabled = !repeatEnabled },
                 onQueueTrackClick = ::playQueuedTrack,
@@ -766,11 +773,16 @@ private fun JellyfinMusicApp() {
                             item {
                                 AppearanceCard(
                                     useAlbumArtColors = useAlbumArtColors,
+                                    visualizerEnabled = visualizerEnabled,
                                     currentTrack = player.currentTrack,
                                     albumAccentColor = albumAccentColor,
                                     onUseAlbumArtColorsChange = { enabled ->
                                         useAlbumArtColors = enabled
                                         saveUseAlbumArtColors(context, enabled)
+                                    },
+                                    onVisualizerEnabledChange = { enabled ->
+                                        visualizerEnabled = enabled
+                                        saveVisualizerEnabled(context, enabled)
                                     }
                                 )
                             }
@@ -960,9 +972,11 @@ private fun AccountCard(
 @Composable
 private fun AppearanceCard(
     useAlbumArtColors: Boolean,
+    visualizerEnabled: Boolean,
     currentTrack: MusicTrack?,
     albumAccentColor: Color?,
-    onUseAlbumArtColorsChange: (Boolean) -> Unit
+    onUseAlbumArtColorsChange: (Boolean) -> Unit,
+    onVisualizerEnabledChange: (Boolean) -> Unit
 ) {
     Card(
         shape = RoundedCornerShape(26.dp),
@@ -1010,6 +1024,70 @@ private fun AppearanceCard(
                     onCheckedChange = onUseAlbumArtColorsChange
                 )
             }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    modifier = Modifier.size(46.dp),
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    tonalElevation = 2.dp
+                ) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                        VisualizerSettingIcon(color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = "Visualizer",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = if (visualizerEnabled) "Show audio motion on Now Playing" else "Hide audio motion",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Switch(
+                    checked = visualizerEnabled,
+                    onCheckedChange = onVisualizerEnabledChange
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun VisualizerSettingIcon(color: Color) {
+    val transition = rememberInfiniteTransition(label = "settings-visualizer")
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = (PI * 2).toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1800, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "settings-visualizer-phase"
+    )
+    Canvas(modifier = Modifier.size(28.dp, 18.dp)) {
+        val barCount = 9
+        val step = size.width / barCount
+        val baseline = size.height * 0.82f
+        for (index in 0 until barCount) {
+            val level = 0.3f + ((sin(phase + index * 0.7f) + 1f) / 2f) * 0.62f
+            val x = step * index + step / 2f
+            drawLine(
+                color = color.copy(alpha = 0.72f),
+                start = Offset(x, baseline),
+                end = Offset(x, baseline - size.height * level),
+                strokeWidth = 2.3.dp.toPx(),
+                cap = StrokeCap.Round
+            )
         }
     }
 }
@@ -1550,6 +1628,7 @@ private fun FullPlayerScreen(
     onScratchEnd: () -> Unit,
     shuffleEnabled: Boolean,
     repeatEnabled: Boolean,
+    visualizerEnabled: Boolean,
     onToggleShuffle: () -> Unit,
     onToggleRepeat: () -> Unit,
     onQueueTrackClick: (MusicTrack) -> Unit,
@@ -1604,16 +1683,20 @@ private fun FullPlayerScreen(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.fillMaxWidth()
             )
-            Spacer(Modifier.height(16.dp))
-            AudioBarsVisualizer(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(28.dp),
-                color = MaterialTheme.colorScheme.primary,
-                active = isPlaying,
-                levels = visualizerLevels
-            )
-            Spacer(Modifier.height(2.dp))
+            if (visualizerEnabled) {
+                Spacer(Modifier.height(16.dp))
+                AudioBarsVisualizer(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(28.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    active = isPlaying,
+                    levels = visualizerLevels
+                )
+                Spacer(Modifier.height(2.dp))
+            } else {
+                Spacer(Modifier.height(20.dp))
+            }
             WavySeekBar(
                 progress = progress,
                 modifier = Modifier
@@ -2961,6 +3044,7 @@ private class JellyfinPlayer(private val context: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var mediaPlayer: MediaPlayer? = null
     private var visualizer: Visualizer? = null
+    private var visualizerEnabled = true
     private var smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
 
     fun play(track: MusicTrack, session: JellyfinSession) {
@@ -2995,7 +3079,9 @@ private class JellyfinPlayer(private val context: Context) {
                 it.start()
                 isPlaying = true
                 status = "Playing"
-                attachVisualizer(it.audioSessionId)
+                if (visualizerEnabled) {
+                    attachVisualizer(it.audioSessionId)
+                }
                 syncProgress()
                 saveWidgetState(context, track, status, progress)
             }
@@ -3035,10 +3121,27 @@ private class JellyfinPlayer(private val context: Context) {
             saveWidgetState(context, currentTrack, status, progress)
         } else {
             activePlayer.start()
-            visualizer?.runCatching { enabled = true }
+            if (visualizerEnabled) {
+                if (visualizer == null) {
+                    attachVisualizer(activePlayer.audioSessionId)
+                } else {
+                    visualizer?.runCatching { enabled = true }
+                }
+            }
             isPlaying = true
             status = "Playing"
             saveWidgetState(context, currentTrack, status, progress)
+        }
+    }
+
+    fun setVisualizerEnabled(enabled: Boolean) {
+        visualizerEnabled = enabled
+        if (!enabled) {
+            releaseVisualizer()
+            smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+            visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+        } else if (isPlaying) {
+            mediaPlayer?.audioSessionId?.let(::attachVisualizer)
         }
     }
 
@@ -3091,6 +3194,7 @@ private class JellyfinPlayer(private val context: Context) {
 
     private fun attachVisualizer(audioSessionId: Int) {
         releaseVisualizer()
+        if (!visualizerEnabled) return
         if (audioSessionId == AudioManager.ERROR || audioSessionId == 0) return
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             return
@@ -3460,6 +3564,17 @@ private fun saveUseAlbumArtColors(context: Context, enabled: Boolean) {
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
         .putBoolean(PREF_USE_ALBUM_ART_COLORS, enabled)
+        .apply()
+}
+
+private fun loadVisualizerEnabled(context: Context): Boolean =
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getBoolean(PREF_VISUALIZER_ENABLED, true)
+
+private fun saveVisualizerEnabled(context: Context, enabled: Boolean) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(PREF_VISUALIZER_ENABLED, enabled)
         .apply()
 }
 
