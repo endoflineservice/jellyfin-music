@@ -54,6 +54,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Person
@@ -66,6 +67,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -96,10 +98,12 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
@@ -108,6 +112,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import org.json.JSONArray
@@ -370,17 +375,26 @@ private fun JellyfinMusicApp() {
             }
         }
     }
+    val closePlayer = {
+        selectedDestination = AppDestination.Home
+        showPlayer = false
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
+                modifier = if (showPlayer) {
+                    Modifier.swipeDownToDismiss(closePlayer, startZone = 96.dp)
+                } else {
+                    Modifier
+                },
                 navigationIcon = {
                     if (showPlayer) {
-                        TextButton(onClick = {
-                            showPlayer = false
-                            selectedDestination = AppDestination.Home
-                        }) {
-                            Text("<")
+                        IconButton(onClick = closePlayer) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back to Home"
+                            )
                         }
                     }
                 },
@@ -485,7 +499,8 @@ private fun JellyfinMusicApp() {
                 shuffleEnabled = shuffleEnabled,
                 repeatEnabled = repeatEnabled,
                 onToggleShuffle = { shuffleEnabled = !shuffleEnabled },
-                onToggleRepeat = { repeatEnabled = !repeatEnabled }
+                onToggleRepeat = { repeatEnabled = !repeatEnabled },
+                onDismiss = closePlayer
             )
         } else {
             LazyColumn(
@@ -1069,6 +1084,48 @@ private fun EmptyLibraryMessage(isBusy: Boolean) {
     }
 }
 
+private fun Modifier.swipeDownToDismiss(
+    onDismiss: () -> Unit,
+    startZone: Dp,
+    dismissDistance: Dp = 88.dp
+): Modifier = pointerInput(onDismiss, startZone) {
+    val startZonePx = startZone.toPx()
+    val dismissDistancePx = dismissDistance.toPx()
+    var startsInTopZone = false
+    var totalDragX = 0f
+    var totalDragY = 0f
+
+    detectDragGestures(
+        onDragStart = { offset ->
+            startsInTopZone = offset.y <= startZonePx
+            totalDragX = 0f
+            totalDragY = 0f
+        },
+        onDragEnd = {
+            if (
+                startsInTopZone &&
+                totalDragY > dismissDistancePx &&
+                totalDragY > abs(totalDragX) * 1.4f
+            ) {
+                onDismiss()
+            }
+            startsInTopZone = false
+        },
+        onDragCancel = {
+            startsInTopZone = false
+        },
+        onDrag = { change, dragAmount ->
+            if (startsInTopZone) {
+                totalDragX += dragAmount.x
+                totalDragY += dragAmount.y
+                if (totalDragY > 0f) {
+                    change.consume()
+                }
+            }
+        }
+    )
+}
+
 @Composable
 private fun FullPlayerScreen(
     track: MusicTrack,
@@ -1087,11 +1144,17 @@ private fun FullPlayerScreen(
     shuffleEnabled: Boolean,
     repeatEnabled: Boolean,
     onToggleShuffle: () -> Unit,
-    onToggleRepeat: () -> Unit
+    onToggleRepeat: () -> Unit,
+    onDismiss: () -> Unit
 ) {
     Column(
         modifier = modifier
             .fillMaxSize()
+            .swipeDownToDismiss(
+                onDismiss = onDismiss,
+                startZone = 220.dp,
+                dismissDistance = 110.dp
+            )
             .navigationBarsPadding()
             .padding(horizontal = 22.dp, vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally
@@ -1234,178 +1297,174 @@ private fun RoundedPlaybackButton(
         tonalElevation = if (prominent || active) 4.dp else 1.dp
     ) {
         Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-            PlaybackGlyph(
-                icon = icon,
-                color = contentColor,
+            Icon(
+                imageVector = icon.imageVector(),
+                contentDescription = null,
+                tint = contentColor,
                 modifier = Modifier.size(if (prominent) 32.dp else 27.dp)
             )
         }
     }
 }
 
-@Composable
-private fun PlaybackGlyph(icon: PlayerGlyph, color: Color, modifier: Modifier = Modifier) {
-    Canvas(modifier = modifier) {
-        val w = size.width
-        val h = size.height
-        val stroke = size.minDimension * 0.12f
-        when (icon) {
-            PlayerGlyph.Play -> {
-                val path = Path().apply {
-                    moveTo(w * 0.34f, h * 0.24f)
-                    lineTo(w * 0.34f, h * 0.76f)
-                    lineTo(w * 0.76f, h * 0.5f)
-                    close()
-                }
-                drawPath(path = path, color = color)
-            }
-
-            PlayerGlyph.Pause -> {
-                drawLine(
-                    color = color,
-                    start = Offset(w * 0.38f, h * 0.26f),
-                    end = Offset(w * 0.38f, h * 0.74f),
-                    strokeWidth = stroke,
-                    cap = StrokeCap.Round
-                )
-                drawLine(
-                    color = color,
-                    start = Offset(w * 0.62f, h * 0.26f),
-                    end = Offset(w * 0.62f, h * 0.74f),
-                    strokeWidth = stroke,
-                    cap = StrokeCap.Round
-                )
-            }
-
-            PlayerGlyph.Previous -> {
-                drawLine(
-                    color = color,
-                    start = Offset(w * 0.24f, h * 0.25f),
-                    end = Offset(w * 0.24f, h * 0.75f),
-                    strokeWidth = stroke * 0.82f,
-                    cap = StrokeCap.Round
-                )
-                drawPath(
-                    path = Path().apply {
-                        moveTo(w * 0.78f, h * 0.24f)
-                        lineTo(w * 0.78f, h * 0.76f)
-                        lineTo(w * 0.38f, h * 0.5f)
-                        close()
-                    },
-                    color = color
-                )
-            }
-
-            PlayerGlyph.Next -> {
-                drawLine(
-                    color = color,
-                    start = Offset(w * 0.76f, h * 0.25f),
-                    end = Offset(w * 0.76f, h * 0.75f),
-                    strokeWidth = stroke * 0.82f,
-                    cap = StrokeCap.Round
-                )
-                drawPath(
-                    path = Path().apply {
-                        moveTo(w * 0.22f, h * 0.24f)
-                        lineTo(w * 0.22f, h * 0.76f)
-                        lineTo(w * 0.62f, h * 0.5f)
-                        close()
-                    },
-                    color = color
-                )
-            }
-
-            PlayerGlyph.Shuffle -> {
-                drawLine(
-                    color = color,
-                    start = Offset(w * 0.16f, h * 0.32f),
-                    end = Offset(w * 0.78f, h * 0.68f),
-                    strokeWidth = stroke * 0.72f,
-                    cap = StrokeCap.Round
-                )
-                drawLine(
-                    color = color,
-                    start = Offset(w * 0.16f, h * 0.68f),
-                    end = Offset(w * 0.78f, h * 0.32f),
-                    strokeWidth = stroke * 0.72f,
-                    cap = StrokeCap.Round
-                )
-                drawArrowHead(color, Offset(w * 0.78f, h * 0.68f), 0.52f, stroke)
-                drawArrowHead(color, Offset(w * 0.78f, h * 0.32f), -0.52f, stroke)
-            }
-
-            PlayerGlyph.Repeat -> {
-                drawLine(
-                    color = color,
-                    start = Offset(w * 0.24f, h * 0.34f),
-                    end = Offset(w * 0.76f, h * 0.34f),
-                    strokeWidth = stroke * 0.72f,
-                    cap = StrokeCap.Round
-                )
-                drawLine(
-                    color = color,
-                    start = Offset(w * 0.76f, h * 0.34f),
-                    end = Offset(w * 0.76f, h * 0.5f),
-                    strokeWidth = stroke * 0.72f,
-                    cap = StrokeCap.Round
-                )
-                drawLine(
-                    color = color,
-                    start = Offset(w * 0.76f, h * 0.66f),
-                    end = Offset(w * 0.24f, h * 0.66f),
-                    strokeWidth = stroke * 0.72f,
-                    cap = StrokeCap.Round
-                )
-                drawLine(
-                    color = color,
-                    start = Offset(w * 0.24f, h * 0.66f),
-                    end = Offset(w * 0.24f, h * 0.5f),
-                    strokeWidth = stroke * 0.72f,
-                    cap = StrokeCap.Round
-                )
-                drawArrowHead(color, Offset(w * 0.76f, h * 0.34f), 0f, stroke)
-                drawArrowHead(color, Offset(w * 0.24f, h * 0.66f), PI.toFloat(), stroke)
-            }
-
-            PlayerGlyph.Replay -> {
-                drawArc(
-                    color = color,
-                    startAngle = 35f,
-                    sweepAngle = 285f,
-                    useCenter = false,
-                    topLeft = Offset(w * 0.22f, h * 0.22f),
-                    size = Size(w * 0.56f, h * 0.56f),
-                    style = Stroke(width = stroke * 0.72f, cap = StrokeCap.Round)
-                )
-                drawArrowHead(color, Offset(w * 0.32f, h * 0.32f), 3.95f, stroke)
-            }
-        }
-    }
+private fun PlayerGlyph.imageVector(): ImageVector = when (this) {
+    PlayerGlyph.Shuffle -> PlayerIconVectors.Shuffle
+    PlayerGlyph.Previous -> PlayerIconVectors.SkipPrevious
+    PlayerGlyph.Play -> Icons.Filled.PlayArrow
+    PlayerGlyph.Pause -> PlayerIconVectors.Pause
+    PlayerGlyph.Next -> PlayerIconVectors.SkipNext
+    PlayerGlyph.Repeat -> PlayerIconVectors.Repeat
+    PlayerGlyph.Replay -> PlayerIconVectors.Replay
 }
 
-private fun DrawScope.drawArrowHead(color: Color, tip: Offset, angle: Float, stroke: Float) {
-    val length = stroke * 1.75f
-    val spread = 0.72f
-    drawLine(
-        color = color,
-        start = tip,
-        end = Offset(
-            x = tip.x - cos(angle - spread) * length,
-            y = tip.y - sin(angle - spread) * length
-        ),
-        strokeWidth = stroke * 0.68f,
-        cap = StrokeCap.Round
-    )
-    drawLine(
-        color = color,
-        start = tip,
-        end = Offset(
-            x = tip.x - cos(angle + spread) * length,
-            y = tip.y - sin(angle + spread) * length
-        ),
-        strokeWidth = stroke * 0.68f,
-        cap = StrokeCap.Round
-    )
+private object PlayerIconVectors {
+    private val stroke = SolidColor(Color.Black)
+
+    val Pause: ImageVector = ImageVector.Builder(
+        name = "Pause",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(fill = stroke) {
+            moveTo(6f, 5f)
+            horizontalLineTo(10f)
+            verticalLineTo(19f)
+            horizontalLineTo(6f)
+            close()
+            moveTo(14f, 5f)
+            horizontalLineTo(18f)
+            verticalLineTo(19f)
+            horizontalLineTo(14f)
+            close()
+        }
+    }.build()
+
+    val SkipPrevious: ImageVector = ImageVector.Builder(
+        name = "SkipPrevious",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(fill = stroke) {
+            moveTo(6f, 5f)
+            horizontalLineTo(8.2f)
+            verticalLineTo(19f)
+            horizontalLineTo(6f)
+            close()
+            moveTo(18f, 5f)
+            verticalLineTo(19f)
+            lineTo(9f, 12f)
+            close()
+        }
+    }.build()
+
+    val SkipNext: ImageVector = ImageVector.Builder(
+        name = "SkipNext",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(fill = stroke) {
+            moveTo(15.8f, 5f)
+            horizontalLineTo(18f)
+            verticalLineTo(19f)
+            horizontalLineTo(15.8f)
+            close()
+            moveTo(6f, 5f)
+            verticalLineTo(19f)
+            lineTo(15f, 12f)
+            close()
+        }
+    }.build()
+
+    val Shuffle: ImageVector = ImageVector.Builder(
+        name = "Shuffle",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(
+            fill = null,
+            stroke = stroke,
+            strokeLineWidth = 2f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round
+        ) {
+            moveTo(4f, 7f)
+            lineTo(7.4f, 7f)
+            lineTo(16.4f, 17f)
+            lineTo(20f, 17f)
+            moveTo(18f, 15f)
+            lineTo(20f, 17f)
+            lineTo(18f, 19f)
+            moveTo(4f, 17f)
+            lineTo(7.4f, 17f)
+            lineTo(10f, 14.1f)
+            moveTo(14f, 9.9f)
+            lineTo(16.4f, 7f)
+            lineTo(20f, 7f)
+            moveTo(18f, 5f)
+            lineTo(20f, 7f)
+            lineTo(18f, 9f)
+        }
+    }.build()
+
+    val Repeat: ImageVector = ImageVector.Builder(
+        name = "Repeat",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(
+            fill = null,
+            stroke = stroke,
+            strokeLineWidth = 2f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round
+        ) {
+            moveTo(7f, 7f)
+            horizontalLineTo(17f)
+            verticalLineTo(10f)
+            moveTo(15f, 5f)
+            lineTo(17f, 7f)
+            lineTo(15f, 9f)
+            moveTo(17f, 17f)
+            horizontalLineTo(7f)
+            verticalLineTo(14f)
+            moveTo(9f, 19f)
+            lineTo(7f, 17f)
+            lineTo(9f, 15f)
+        }
+    }.build()
+
+    val Replay: ImageVector = ImageVector.Builder(
+        name = "Replay",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(fill = stroke) {
+            moveTo(12f, 5f)
+            verticalLineTo(1f)
+            lineTo(7f, 6f)
+            lineTo(12f, 11f)
+            verticalLineTo(7f)
+            curveTo(15.31f, 7f, 18f, 9.69f, 18f, 13f)
+            curveTo(18f, 16.31f, 15.31f, 19f, 12f, 19f)
+            curveTo(9.16f, 19f, 6.79f, 17.03f, 6.17f, 14.39f)
+            horizontalLineTo(4.11f)
+            curveTo(4.78f, 18.15f, 8.07f, 21f, 12f, 21f)
+            curveTo(16.42f, 21f, 20f, 17.42f, 20f, 13f)
+            curveTo(20f, 8.58f, 16.42f, 5f, 12f, 5f)
+        }
+    }.build()
 }
 
 @Composable
