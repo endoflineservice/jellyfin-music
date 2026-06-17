@@ -9,7 +9,7 @@ A small native Android prototype for a clean Jellyfin-focused music player.
 - Jellyfin server login with saved session.
 - Real song library loading from the Jellyfin API.
 - Search plus songs, albums, and artists library views.
-- Basic network music streaming with play, pause, replay, seek, and a Material 3 wavy slider.
+- Full-screen player with large rounded art, animated visualizer bars, wavy seek, shuffle, repeat, auto-next, play, pause, and replay.
 - App label and package identity set to `Jellyfin Music`.
 
 ## Study Plan

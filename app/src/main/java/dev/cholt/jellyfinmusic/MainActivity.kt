@@ -21,10 +21,12 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -72,6 +74,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -87,6 +90,7 @@ import java.util.Locale
 import kotlin.concurrent.thread
 import kotlin.math.PI
 import kotlin.math.sin
+import kotlin.random.Random
 import ir.mahozad.multiplatform.wavyslider.WaveDirection.HEAD
 import ir.mahozad.multiplatform.wavyslider.material3.WavySlider
 
@@ -193,6 +197,9 @@ private fun JellyfinMusicApp() {
     var searchQuery by remember { mutableStateOf("") }
     var isBusy by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf<String?>(null) }
+    var showPlayer by remember { mutableStateOf(false) }
+    var shuffleEnabled by remember { mutableStateOf(false) }
+    var repeatEnabled by remember { mutableStateOf(false) }
 
     fun runTask(task: () -> Unit) {
         if (!isBusy) {
@@ -250,6 +257,26 @@ private fun JellyfinMusicApp() {
         session = null
         tracks = emptyList()
         statusText = null
+        showPlayer = false
+    }
+
+    fun playTrack(track: MusicTrack, openPlayer: Boolean = false) {
+        session?.let { activeSession ->
+            player.play(track, activeSession)
+            if (openPlayer) showPlayer = true
+        }
+    }
+
+    fun playAdjacent(offset: Int) {
+        val activeTrack = player.currentTrack ?: return
+        if (tracks.isEmpty()) return
+        val index = tracks.indexOfFirst { it.id == activeTrack.id }.takeIf { it >= 0 } ?: return
+        val nextIndex = if (shuffleEnabled && tracks.size > 1) {
+            (index + Random.nextInt(1, tracks.size)) % tracks.size
+        } else {
+            (index + offset + tracks.size) % tracks.size
+        }
+        playTrack(tracks[nextIndex], openPlayer = true)
     }
 
     DisposableEffect(Unit) {
@@ -270,13 +297,33 @@ private fun JellyfinMusicApp() {
         }
     }
 
+    LaunchedEffect(player.status) {
+        val activeTrack = player.currentTrack
+        val activeSession = session
+        if (player.status == "Ended" && activeTrack != null && activeSession != null) {
+            delay(450)
+            if (repeatEnabled) {
+                player.play(activeTrack, activeSession)
+            } else {
+                playAdjacent(1)
+            }
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
+                navigationIcon = {
+                    if (showPlayer) {
+                        TextButton(onClick = { showPlayer = false }) {
+                            Text("<")
+                        }
+                    }
+                },
                 title = {
                     Column {
                         Text(
-                            text = "Jellyfin Music",
+                            text = if (showPlayer) "Now Playing" else "Jellyfin Music",
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1
@@ -305,100 +352,123 @@ private fun JellyfinMusicApp() {
         bottomBar = {
             val activeSession = session
             val activeTrack = player.currentTrack
-            if (activeSession != null && activeTrack != null) {
+            if (activeSession != null && activeTrack != null && !showPlayer) {
                 NowPlayingBar(
                     track = activeTrack,
                     isPlaying = player.isPlaying,
                     progress = player.progress,
                     status = player.status,
+                    onOpen = { showPlayer = true },
                     onToggle = { player.toggle() },
                     onReplay = { player.play(activeTrack, activeSession) },
-                    onSeek = { player.seekToFraction(it) }
+                    onSeek = { player.seekToFraction(it) },
+                    onPrevious = { playAdjacent(-1) },
+                    onNext = { playAdjacent(1) }
                 )
             }
         },
         containerColor = MaterialTheme.colorScheme.background
     ) { innerPadding ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .imePadding(),
-            contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            if (session == null) {
-                item {
-                    ConnectCard(
-                        serverUrl = serverUrl,
-                        username = username,
-                        password = password,
-                        isBusy = isBusy,
-                        statusText = statusText,
-                        onServerUrlChange = { serverUrl = it },
-                        onUsernameChange = { username = it },
-                        onPasswordChange = { password = it },
-                        onConnect = ::connect
-                    )
-                }
-            } else {
-                item {
-                    LibraryHeader(
-                        searchQuery = searchQuery,
-                        isBusy = isBusy,
-                        statusText = statusText,
-                        onSearchQueryChange = { searchQuery = it },
-                        onRefresh = { session?.let(::loadLibrary) },
-                        onSignOut = ::signOut
-                    )
-                }
-                item {
-                    LibraryTabs(
-                        selectedTab = selectedTab,
-                        onTabSelected = { selectedTab = it }
-                    )
-                }
-
-                val filteredTracks = tracks.filterBy(searchQuery)
-                when (selectedTab) {
-                    LibraryTab.Songs -> {
-                        if (filteredTracks.isEmpty()) {
-                            item { EmptyLibraryMessage(isBusy = isBusy) }
-                        } else {
-                            items(filteredTracks, key = { it.id }) { track ->
-                                TrackRow(
-                                    track = track,
-                                    isCurrent = player.currentTrack?.id == track.id,
-                                    onClick = { session?.let { player.play(track, it) } }
-                                )
-                            }
-                        }
+        val activeTrack = player.currentTrack
+        if (showPlayer && activeTrack != null) {
+            FullPlayerScreen(
+                track = activeTrack,
+                isPlaying = player.isPlaying,
+                progress = player.progress,
+                status = player.status,
+                modifier = Modifier.padding(innerPadding),
+                onToggle = { player.toggle() },
+                onSeek = { player.seekToFraction(it) },
+                onPrevious = { playAdjacent(-1) },
+                onNext = { playAdjacent(1) },
+                onReplay = { session?.let { player.play(activeTrack, it) } },
+                shuffleEnabled = shuffleEnabled,
+                repeatEnabled = repeatEnabled,
+                onToggleShuffle = { shuffleEnabled = !shuffleEnabled },
+                onToggleRepeat = { repeatEnabled = !repeatEnabled }
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .imePadding(),
+                contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                if (session == null) {
+                    item {
+                        ConnectCard(
+                            serverUrl = serverUrl,
+                            username = username,
+                            password = password,
+                            isBusy = isBusy,
+                            statusText = statusText,
+                            onServerUrlChange = { serverUrl = it },
+                            onUsernameChange = { username = it },
+                            onPasswordChange = { password = it },
+                            onConnect = ::connect
+                        )
+                    }
+                } else {
+                    item {
+                        LibraryHeader(
+                            searchQuery = searchQuery,
+                            isBusy = isBusy,
+                            statusText = statusText,
+                            onSearchQueryChange = { searchQuery = it },
+                            onRefresh = { session?.let(::loadLibrary) },
+                            onSignOut = ::signOut
+                        )
+                    }
+                    item {
+                        LibraryTabs(
+                            selectedTab = selectedTab,
+                            onTabSelected = { selectedTab = it }
+                        )
                     }
 
-                    LibraryTab.Albums -> {
-                        val groups = filteredTracks.groupByAlbum()
-                        if (groups.isEmpty()) {
-                            item { EmptyLibraryMessage(isBusy = isBusy) }
-                        } else {
-                            items(groups, key = { it.title }) { group ->
-                                GroupRow(
-                                    group = group,
-                                    onClick = { session?.let { player.play(group.tracks.first(), it) } }
-                                )
+                    val filteredTracks = tracks.filterBy(searchQuery)
+                    when (selectedTab) {
+                        LibraryTab.Songs -> {
+                            if (filteredTracks.isEmpty()) {
+                                item { EmptyLibraryMessage(isBusy = isBusy) }
+                            } else {
+                                items(filteredTracks, key = { it.id }) { track ->
+                                    TrackRow(
+                                        track = track,
+                                        isCurrent = player.currentTrack?.id == track.id,
+                                        onClick = { playTrack(track, openPlayer = true) }
+                                    )
+                                }
                             }
                         }
-                    }
 
-                    LibraryTab.Artists -> {
-                        val groups = filteredTracks.groupByArtist()
-                        if (groups.isEmpty()) {
-                            item { EmptyLibraryMessage(isBusy = isBusy) }
-                        } else {
-                            items(groups, key = { it.title }) { group ->
-                                GroupRow(
-                                    group = group,
-                                    onClick = { session?.let { player.play(group.tracks.first(), it) } }
-                                )
+                        LibraryTab.Albums -> {
+                            val groups = filteredTracks.groupByAlbum()
+                            if (groups.isEmpty()) {
+                                item { EmptyLibraryMessage(isBusy = isBusy) }
+                            } else {
+                                items(groups, key = { it.title }) { group ->
+                                    GroupRow(
+                                        group = group,
+                                        onClick = { playTrack(group.tracks.first(), openPlayer = true) }
+                                    )
+                                }
+                            }
+                        }
+
+                        LibraryTab.Artists -> {
+                            val groups = filteredTracks.groupByArtist()
+                            if (groups.isEmpty()) {
+                                item { EmptyLibraryMessage(isBusy = isBusy) }
+                            } else {
+                                items(groups, key = { it.title }) { group ->
+                                    GroupRow(
+                                        group = group,
+                                        onClick = { playTrack(group.tracks.first(), openPlayer = true) }
+                                    )
+                                }
                             }
                         }
                     }
@@ -665,28 +735,232 @@ private fun EmptyLibraryMessage(isBusy: Boolean) {
 }
 
 @Composable
+private fun FullPlayerScreen(
+    track: MusicTrack,
+    isPlaying: Boolean,
+    progress: Float,
+    status: String,
+    modifier: Modifier = Modifier,
+    onToggle: () -> Unit,
+    onSeek: (Float) -> Unit,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    onReplay: () -> Unit,
+    shuffleEnabled: Boolean,
+    repeatEnabled: Boolean,
+            onToggleShuffle: () -> Unit,
+    onToggleRepeat: () -> Unit
+) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .navigationBarsPadding()
+            .padding(horizontal = 22.dp, vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        LargeAlbumStage(
+            track = track,
+            isPlaying = isPlaying,
+            onToggle = onToggle
+        )
+        Spacer(Modifier.height(22.dp))
+        Text(
+            text = track.title,
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Text(
+            text = "${track.artist} - ${track.album}",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(20.dp))
+        AudioBarsVisualizer(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(68.dp),
+            color = MaterialTheme.colorScheme.primary,
+            active = isPlaying
+        )
+        Spacer(Modifier.height(8.dp))
+        WavySeekBar(
+            progress = progress,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(32.dp),
+            onSeek = onSeek
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = formatDuration((track.durationMs * progress.coerceIn(0f, 1f)).toLong()),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = formatDuration(track.durationMs),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(Modifier.height(18.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = onToggleShuffle) {
+                Text(if (shuffleEnabled) "Mix on" else "Mix")
+            }
+            FilledTonalButton(onClick = onPrevious, shape = RoundedCornerShape(18.dp)) {
+                Text("|<")
+            }
+            Button(
+                onClick = if (!isPlaying && status == "Ended") onReplay else onToggle,
+                shape = RoundedCornerShape(22.dp),
+                contentPadding = PaddingValues(horizontal = 26.dp, vertical = 14.dp)
+            ) {
+                Text(if (isPlaying) "Pause" else "Play")
+            }
+            FilledTonalButton(onClick = onNext, shape = RoundedCornerShape(18.dp)) {
+                Text(">|")
+            }
+            TextButton(onClick = onToggleRepeat) {
+                Text(if (repeatEnabled) "Loop on" else "Loop")
+            }
+        }
+    }
+}
+
+@Composable
+private fun LargeAlbumStage(track: MusicTrack, isPlaying: Boolean, onToggle: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(34.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+        contentAlignment = Alignment.Center
+    ) {
+        AlbumBackdrop(tint = track.tint, modifier = Modifier.fillMaxSize())
+        AudioBarsVisualizer(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(86.dp)
+                .padding(horizontal = 24.dp, vertical = 18.dp),
+            color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.78f),
+            active = isPlaying
+        )
+        FilledTonalButton(
+            onClick = onToggle,
+            modifier = Modifier.size(76.dp),
+            shape = RoundedCornerShape(38.dp),
+            contentPadding = PaddingValues(0.dp)
+        ) {
+            Text(if (isPlaying) "II" else ">", style = MaterialTheme.typography.titleLarge)
+        }
+    }
+}
+
+@Composable
+private fun AlbumBackdrop(tint: Color, modifier: Modifier = Modifier) {
+    val surface = MaterialTheme.colorScheme.surface
+    Canvas(modifier = modifier.background(tint.copy(alpha = 0.22f))) {
+        drawRect(
+            brush = Brush.linearGradient(
+                colors = listOf(tint.copy(alpha = 0.92f), surface.copy(alpha = 0.18f)),
+                start = Offset(0f, 0f),
+                end = Offset(size.width, size.height)
+            )
+        )
+        drawCircle(
+            color = Color.White.copy(alpha = 0.16f),
+            radius = size.minDimension * 0.46f,
+            center = Offset(size.width * 0.78f, size.height * 0.22f)
+        )
+        drawCircle(
+            color = Color.Black.copy(alpha = 0.12f),
+            radius = size.minDimension * 0.58f,
+            center = Offset(size.width * 0.18f, size.height * 0.92f)
+        )
+    }
+}
+
+@Composable
+private fun AudioBarsVisualizer(modifier: Modifier = Modifier, color: Color, active: Boolean) {
+    val transition = rememberInfiniteTransition(label = "bars")
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = (PI * 2).toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = if (active) 900 else 2200, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "bars-phase"
+    )
+
+    Canvas(modifier = modifier) {
+        val barCount = 30
+        val gap = size.width / (barCount * 1.8f)
+        val strokeWidth = gap.coerceAtLeast(3f)
+        val step = size.width / barCount
+        val baseline = size.height * 0.88f
+        for (index in 0 until barCount) {
+            val wave = (sin(phase + index * 0.63f) + 1f) / 2f
+            val stable = ((index * 37) % 9) / 10f
+            val height = size.height * (0.18f + (if (active) wave else stable) * 0.68f)
+            val x = step * index + step / 2f
+            drawLine(
+                color = color.copy(alpha = 0.28f + wave * 0.62f),
+                start = Offset(x, baseline),
+                end = Offset(x, baseline - height),
+                strokeWidth = strokeWidth,
+                cap = StrokeCap.Round
+            )
+        }
+    }
+}
+
+@Composable
 private fun NowPlayingBar(
     track: MusicTrack,
     isPlaying: Boolean,
     progress: Float,
     status: String,
+    onOpen: () -> Unit,
     onToggle: () -> Unit,
     onReplay: () -> Unit,
-    onSeek: (Float) -> Unit
+    onSeek: (Float) -> Unit,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit
 ) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
             .padding(horizontal = 12.dp, vertical = 8.dp),
-        shape = RoundedCornerShape(28.dp),
-        color = MaterialTheme.colorScheme.primaryContainer,
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
         tonalElevation = 3.dp
     ) {
         Column(Modifier.padding(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                AlbumTile(tint = track.tint, modifier = Modifier.size(48.dp))
-                Spacer(Modifier.width(12.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onOpen),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Column(Modifier.weight(1f)) {
                     Text(
                         text = track.title,
@@ -703,22 +977,32 @@ private fun NowPlayingBar(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                FilledTonalButton(
-                    onClick = onToggle,
-                    shape = RoundedCornerShape(18.dp),
-                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp)
-                ) {
-                    Text(if (isPlaying) "Pause" else "Play")
-                }
+                Spacer(Modifier.width(12.dp))
+                AlbumTile(tint = track.tint, modifier = Modifier.size(64.dp))
             }
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(8.dp))
             WavySeekBar(
                 progress = progress,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(28.dp),
+                    .height(24.dp),
                 onSeek = onSeek
             )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onPrevious) { Text("|<") }
+                FilledTonalButton(
+                    onClick = onToggle,
+                    shape = RoundedCornerShape(18.dp),
+                    contentPadding = PaddingValues(horizontal = 22.dp, vertical = 8.dp)
+                ) {
+                    Text(if (isPlaying) "Pause" else "Play")
+                }
+                TextButton(onClick = onNext) { Text(">|") }
+            }
             if (!isPlaying && status == "Ended") {
                 TextButton(onClick = onReplay, modifier = Modifier.align(Alignment.End)) {
                     Text("Replay")
