@@ -81,6 +81,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -111,6 +112,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.input.pointer.pointerInput
@@ -179,6 +181,7 @@ private val AlbumTints = listOf(
 )
 
 private const val PREFS_NAME = "jellyfin_music"
+private const val PREF_USE_ALBUM_ART_COLORS = "use_album_art_colors"
 private const val DISC_SCRATCH_SEEK_SCALE = 0.55f
 private const val DISC_SCRATCH_DEAD_ZONE = 0.22f
 private const val VISUALIZER_BAR_COUNT = 28
@@ -247,29 +250,147 @@ private data class LibraryGroup(
 )
 
 @Composable
-private fun JellyfinMusicTheme(content: @Composable () -> Unit) {
+private fun JellyfinMusicTheme(
+    albumAccentColor: Color? = null,
+    content: @Composable () -> Unit
+) {
     val context = LocalContext.current
-    val colorScheme = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        dynamicLightColorScheme(context)
-    } else {
-        lightColorScheme(
-            primary = SeedPrimary,
-            secondary = SeedSecondary,
-            tertiary = SeedTertiary,
-            background = Color(0xFFFBFCFA),
-            surface = Color(0xFFFBFCFA),
-            surfaceVariant = Color(0xFFE5ECE8),
-            primaryContainer = Color(0xFFD8EDE7),
-            secondaryContainer = Color(0xFFFFD9E3),
-            tertiaryContainer = Color(0xFFFFDF9A)
-        )
-    }
+    val colorScheme = albumAccentColor?.let(::albumArtLightColorScheme)
+        ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            dynamicLightColorScheme(context)
+        } else {
+            lightColorScheme(
+                primary = SeedPrimary,
+                secondary = SeedSecondary,
+                tertiary = SeedTertiary,
+                background = Color(0xFFFBFCFA),
+                surface = Color(0xFFFBFCFA),
+                surfaceVariant = Color(0xFFE5ECE8),
+                primaryContainer = Color(0xFFD8EDE7),
+                secondaryContainer = Color(0xFFFFD9E3),
+                tertiaryContainer = Color(0xFFFFDF9A)
+            )
+        }
 
     MaterialTheme(
         colorScheme = colorScheme,
         content = content
     )
 }
+
+private fun albumArtLightColorScheme(rawAccent: Color) = lightColorScheme(
+    primary = normalizeAlbumAccent(rawAccent),
+    onPrimary = readableOnColor(normalizeAlbumAccent(rawAccent)),
+    primaryContainer = blendColors(normalizeAlbumAccent(rawAccent), Color.White, 0.78f),
+    onPrimaryContainer = blendColors(normalizeAlbumAccent(rawAccent), Color.Black, 0.24f),
+    secondary = shiftedAccent(normalizeAlbumAccent(rawAccent), hueShift = 24f, saturationMultiplier = 0.7f),
+    onSecondary = Color.White,
+    secondaryContainer = blendColors(shiftedAccent(normalizeAlbumAccent(rawAccent), 24f, 0.7f), Color.White, 0.78f),
+    onSecondaryContainer = Color(0xFF241B20),
+    tertiary = shiftedAccent(normalizeAlbumAccent(rawAccent), hueShift = -42f, saturationMultiplier = 0.78f),
+    onTertiary = Color.White,
+    tertiaryContainer = blendColors(shiftedAccent(normalizeAlbumAccent(rawAccent), -42f, 0.78f), Color.White, 0.78f),
+    onTertiaryContainer = Color(0xFF201C10),
+    background = blendColors(normalizeAlbumAccent(rawAccent), Color.White, 0.94f),
+    onBackground = Color(0xFF191C1B),
+    surface = blendColors(normalizeAlbumAccent(rawAccent), Color.White, 0.96f),
+    onSurface = Color(0xFF191C1B),
+    surfaceVariant = blendColors(normalizeAlbumAccent(rawAccent), Color.White, 0.84f),
+    onSurfaceVariant = Color(0xFF434844),
+    outline = blendColors(normalizeAlbumAccent(rawAccent), Color(0xFF747974), 0.54f),
+    inverseSurface = Color(0xFF2D312F),
+    inverseOnSurface = Color(0xFFEFF1EE),
+    inversePrimary = blendColors(normalizeAlbumAccent(rawAccent), Color.White, 0.42f)
+)
+
+private fun Bitmap.extractAlbumAccentColor(): Color? {
+    if (width <= 0 || height <= 0) return null
+    val stride = maxOf(1, minOf(width, height) / 42)
+    val hsv = FloatArray(3)
+    var redTotal = 0.0
+    var greenTotal = 0.0
+    var blueTotal = 0.0
+    var weightTotal = 0.0
+
+    var y = 0
+    while (y < height) {
+        var x = 0
+        while (x < width) {
+            val pixel = getPixel(x, y)
+            val alpha = AndroidColor.alpha(pixel)
+            if (alpha >= 160) {
+                AndroidColor.colorToHSV(pixel, hsv)
+                val saturation = hsv[1]
+                val value = hsv[2]
+                val isUsefulNeutral = saturation >= 0.08f && value in 0.16f..0.94f
+                val isUsefulColor = saturation >= 0.18f && value in 0.12f..0.96f
+                if (isUsefulNeutral || isUsefulColor) {
+                    val weight = (0.3f + saturation * 1.7f) * (0.55f + value)
+                    redTotal += AndroidColor.red(pixel) * weight
+                    greenTotal += AndroidColor.green(pixel) * weight
+                    blueTotal += AndroidColor.blue(pixel) * weight
+                    weightTotal += weight
+                }
+            }
+            x += stride
+        }
+        y += stride
+    }
+
+    if (weightTotal <= 0.0) return null
+    return normalizeAlbumAccent(
+        Color(
+            red = (redTotal / weightTotal / 255.0).toFloat().coerceIn(0f, 1f),
+            green = (greenTotal / weightTotal / 255.0).toFloat().coerceIn(0f, 1f),
+            blue = (blueTotal / weightTotal / 255.0).toFloat().coerceIn(0f, 1f),
+            alpha = 1f
+        )
+    )
+}
+
+private fun normalizeAlbumAccent(color: Color): Color {
+    val hsv = FloatArray(3)
+    AndroidColor.colorToHSV(color.toArgb(), hsv)
+    hsv[1] = hsv[1].coerceIn(0.34f, 0.76f)
+    hsv[2] = hsv[2].coerceIn(0.38f, 0.68f)
+    return composeColor(AndroidColor.HSVToColor(hsv))
+}
+
+private fun shiftedAccent(
+    color: Color,
+    hueShift: Float,
+    saturationMultiplier: Float
+): Color {
+    val hsv = FloatArray(3)
+    AndroidColor.colorToHSV(color.toArgb(), hsv)
+    hsv[0] = (hsv[0] + hueShift + 360f) % 360f
+    hsv[1] = (hsv[1] * saturationMultiplier).coerceIn(0.28f, 0.66f)
+    hsv[2] = hsv[2].coerceIn(0.36f, 0.62f)
+    return composeColor(AndroidColor.HSVToColor(hsv))
+}
+
+private fun blendColors(from: Color, to: Color, amount: Float): Color {
+    val t = amount.coerceIn(0f, 1f)
+    return Color(
+        red = from.red + (to.red - from.red) * t,
+        green = from.green + (to.green - from.green) * t,
+        blue = from.blue + (to.blue - from.blue) * t,
+        alpha = from.alpha + (to.alpha - from.alpha) * t
+    )
+}
+
+private fun readableOnColor(background: Color): Color {
+    val luminance = background.red * 0.299f + background.green * 0.587f + background.blue * 0.114f
+    return if (luminance > 0.55f) Color(0xFF111412) else Color.White
+}
+
+private fun composeColor(argb: Int): Color =
+    Color(
+        red = AndroidColor.red(argb) / 255f,
+        green = AndroidColor.green(argb) / 255f,
+        blue = AndroidColor.blue(argb) / 255f,
+        alpha = AndroidColor.alpha(argb) / 255f
+    )
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -293,6 +414,7 @@ private fun JellyfinMusicApp() {
     var playQueue by remember { mutableStateOf(emptyList<MusicTrack>()) }
     var shuffleEnabled by remember { mutableStateOf(false) }
     var repeatEnabled by remember { mutableStateOf(false) }
+    var useAlbumArtColors by remember { mutableStateOf(loadUseAlbumArtColors(context)) }
     var selectedDestination by remember { mutableStateOf(AppDestination.Home) }
 
     fun runTask(task: () -> Unit) {
@@ -442,8 +564,23 @@ private fun JellyfinMusicApp() {
         selectedDestination = AppDestination.Home
         showPlayer = false
     }
+    val themeTrack = player.currentTrack
+    val themeImageUrl = if (useAlbumArtColors) {
+        themeTrack?.imageUrl(session, size = 128)
+    } else {
+        null
+    }
+    val themeBitmap by rememberAlbumBitmap(themeImageUrl, if (useAlbumArtColors) session?.token else null)
+    val albumAccentColor = remember(useAlbumArtColors, themeBitmap, themeTrack?.id) {
+        if (useAlbumArtColors) {
+            themeBitmap?.extractAlbumAccentColor() ?: themeTrack?.tint
+        } else {
+            null
+        }
+    }
 
-    Scaffold(
+    JellyfinMusicTheme(albumAccentColor = albumAccentColor) {
+        Scaffold(
         topBar = {
             TopAppBar(
                 modifier = if (showPlayer) {
@@ -542,7 +679,7 @@ private fun JellyfinMusicApp() {
             }
         },
         containerColor = MaterialTheme.colorScheme.background
-    ) { innerPadding ->
+        ) { innerPadding ->
         val activeTrack = player.currentTrack
         val connectedSession = session
         if (showPlayer && activeTrack != null) {
@@ -606,6 +743,17 @@ private fun JellyfinMusicApp() {
                                     isBusy = isBusy,
                                     onRefresh = { loadLibrary(connectedSession) },
                                     onSignOut = ::signOut
+                                )
+                            }
+                            item {
+                                AppearanceCard(
+                                    useAlbumArtColors = useAlbumArtColors,
+                                    currentTrack = player.currentTrack,
+                                    albumAccentColor = albumAccentColor,
+                                    onUseAlbumArtColorsChange = { enabled ->
+                                        useAlbumArtColors = enabled
+                                        saveUseAlbumArtColors(context, enabled)
+                                    }
                                 )
                             }
                             item {
@@ -702,6 +850,7 @@ private fun JellyfinMusicApp() {
             }
         }
     }
+    }
 }
 
 @Composable
@@ -776,6 +925,63 @@ private fun AccountCard(
             }
             if (isBusy) {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppearanceCard(
+    useAlbumArtColors: Boolean,
+    currentTrack: MusicTrack?,
+    albumAccentColor: Color?,
+    onUseAlbumArtColorsChange: (Boolean) -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(26.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                text = "Appearance",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    modifier = Modifier.size(46.dp),
+                    shape = CircleShape,
+                    color = albumAccentColor ?: MaterialTheme.colorScheme.primary,
+                    tonalElevation = 3.dp
+                ) {
+                    Box(Modifier.fillMaxSize())
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = "Album art colors",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = currentTrack?.let { "Sampling ${it.title}" } ?: "Start a song to sample artwork",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Switch(
+                    checked = useAlbumArtColors,
+                    onCheckedChange = onUseAlbumArtColorsChange
+                )
             }
         }
     }
@@ -3140,7 +3346,21 @@ private fun saveSession(context: Context, session: JellyfinSession) {
 private fun clearSavedSession(context: Context) {
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
-        .clear()
+        .remove("serverUrl")
+        .remove("username")
+        .remove("userId")
+        .remove("token")
+        .apply()
+}
+
+private fun loadUseAlbumArtColors(context: Context): Boolean =
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getBoolean(PREF_USE_ALBUM_ART_COLORS, false)
+
+private fun saveUseAlbumArtColors(context: Context, enabled: Boolean) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(PREF_USE_ALBUM_ART_COLORS, enabled)
         .apply()
 }
 
