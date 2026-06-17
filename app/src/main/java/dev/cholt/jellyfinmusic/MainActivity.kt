@@ -599,6 +599,12 @@ private fun JellyfinMusicApp() {
                     }
                 },
                 title = {
+                    val subtitle = when {
+                        showPlayer -> player.currentTrack?.artist
+                        session == null -> "Not connected"
+                        selectedDestination == AppDestination.Profile -> "Settings"
+                        else -> null
+                    }
                     Column {
                         Text(
                             text = if (showPlayer) "Now Playing" else "Jellyfin Music",
@@ -606,13 +612,15 @@ private fun JellyfinMusicApp() {
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1
                         )
-                        Text(
-                            text = session?.serverUrl?.toHostLabel() ?: "Not connected",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        if (subtitle != null) {
+                            Text(
+                                text = subtitle,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
