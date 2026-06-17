@@ -1,12 +1,15 @@
 package dev.cholt.jellyfinmusic
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.Color as AndroidColor
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
 import android.media.MediaPlayer
+import android.media.audiofx.Visualizer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -18,6 +21,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -131,6 +136,9 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.light(AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT)
         )
         super.onCreate(savedInstanceState)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 42)
+        }
         setContent {
             JellyfinMusicTheme {
                 JellyfinMusicApp()
@@ -154,6 +162,7 @@ private val AlbumTints = listOf(
 private const val PREFS_NAME = "jellyfin_music"
 private const val DISC_SCRATCH_SEEK_SCALE = 0.55f
 private const val DISC_SCRATCH_DEAD_ZONE = 0.22f
+private const val VISUALIZER_BAR_COUNT = 28
 
 data class JellyfinSession(
     val serverUrl: String,
@@ -463,6 +472,7 @@ private fun JellyfinMusicApp() {
                 track = activeTrack,
                 isPlaying = player.isPlaying,
                 progress = player.progress,
+                visualizerLevels = player.visualizerLevels,
                 status = player.status,
                 modifier = Modifier.padding(innerPadding),
                 onToggle = { player.toggle() },
@@ -1064,6 +1074,7 @@ private fun FullPlayerScreen(
     track: MusicTrack,
     isPlaying: Boolean,
     progress: Float,
+    visualizerLevels: FloatArray,
     status: String,
     modifier: Modifier = Modifier,
     onToggle: () -> Unit,
@@ -1116,11 +1127,12 @@ private fun FullPlayerScreen(
         AudioBarsVisualizer(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(68.dp),
+                .height(32.dp),
             color = MaterialTheme.colorScheme.primary,
-            active = isPlaying
+            active = isPlaying,
+            levels = visualizerLevels
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(4.dp))
         WavySeekBar(
             progress = progress,
             modifier = Modifier
@@ -1783,7 +1795,12 @@ private fun VinylDisc(tint: Color, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun AudioBarsVisualizer(modifier: Modifier = Modifier, color: Color, active: Boolean) {
+private fun AudioBarsVisualizer(
+    modifier: Modifier = Modifier,
+    color: Color,
+    active: Boolean,
+    levels: FloatArray
+) {
     val transition = rememberInfiniteTransition(label = "bars")
     val phase by transition.animateFloat(
         initialValue = 0f,
@@ -1794,20 +1811,26 @@ private fun AudioBarsVisualizer(modifier: Modifier = Modifier, color: Color, act
         ),
         label = "bars-phase"
     )
+    val hasLiveLevels = active && levels.any { it > 0.035f }
 
     Canvas(modifier = modifier) {
-        val barCount = 30
-        val gap = size.width / (barCount * 1.8f)
-        val strokeWidth = gap.coerceAtLeast(3f)
+        val barCount = 28
+        val gap = size.width / (barCount * 2.05f)
+        val strokeWidth = gap.coerceAtLeast(2.5f)
         val step = size.width / barCount
-        val baseline = size.height * 0.88f
+        val baseline = size.height * 0.86f
         for (index in 0 until barCount) {
-            val wave = (sin(phase + index * 0.63f) + 1f) / 2f
+            val fallbackWave = (sin(phase + index * 0.63f) + 1f) / 2f
             val stable = ((index * 37) % 9) / 10f
-            val height = size.height * (0.18f + (if (active) wave else stable) * 0.68f)
+            val level = when {
+                hasLiveLevels -> levels.getOrElse(index) { 0f }
+                active -> fallbackWave * 0.72f
+                else -> stable * 0.42f
+            }.coerceIn(0f, 1f)
+            val height = size.height * (0.16f + level * 0.76f)
             val x = step * index + step / 2f
             drawLine(
-                color = color.copy(alpha = 0.28f + wave * 0.62f),
+                color = color.copy(alpha = 0.26f + level * 0.66f),
                 start = Offset(x, baseline),
                 end = Offset(x, baseline - height),
                 strokeWidth = strokeWidth,
@@ -1987,19 +2010,35 @@ private class JellyfinPlayer(private val context: Context) {
         private set
     var progress by mutableFloatStateOf(0f)
         private set
+    var visualizerLevels by mutableStateOf(FloatArray(VISUALIZER_BAR_COUNT))
+        private set
 
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var mediaPlayer: MediaPlayer? = null
+    private var visualizer: Visualizer? = null
 
     fun play(track: MusicTrack, session: JellyfinSession) {
         releasePlayer()
         currentTrack = track
         status = "Buffering"
         progress = 0f
+        visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         saveWidgetState(context, track, status, progress)
 
         val nextPlayer = MediaPlayer()
         mediaPlayer = nextPlayer
         runCatching {
+            nextPlayer.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .apply {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            setAllowedCapturePolicy(AudioAttributes.ALLOW_CAPTURE_BY_ALL)
+                        }
+                    }
+                    .build()
+            )
             nextPlayer.setDataSource(
                 context,
                 Uri.parse(track.streamUrl(session)),
@@ -2009,18 +2048,23 @@ private class JellyfinPlayer(private val context: Context) {
                 it.start()
                 isPlaying = true
                 status = "Playing"
+                attachVisualizer(it.audioSessionId)
                 syncProgress()
                 saveWidgetState(context, track, status, progress)
             }
             nextPlayer.setOnCompletionListener {
+                visualizer?.runCatching { enabled = false }
                 isPlaying = false
                 status = "Ended"
                 progress = 1f
+                visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
                 saveWidgetState(context, track, status, progress)
             }
             nextPlayer.setOnErrorListener { _, _, _ ->
+                visualizer?.runCatching { enabled = false }
                 isPlaying = false
                 status = "Playback error"
+                visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
                 saveWidgetState(context, track, status, progress)
                 true
             }
@@ -2036,11 +2080,13 @@ private class JellyfinPlayer(private val context: Context) {
         val activePlayer = mediaPlayer ?: return
         if (isPlaying) {
             activePlayer.pause()
+            visualizer?.runCatching { enabled = false }
             isPlaying = false
             status = "Paused"
             saveWidgetState(context, currentTrack, status, progress)
         } else {
             activePlayer.start()
+            visualizer?.runCatching { enabled = true }
             isPlaying = true
             status = "Playing"
             saveWidgetState(context, currentTrack, status, progress)
@@ -2082,6 +2128,7 @@ private class JellyfinPlayer(private val context: Context) {
     }
 
     private fun releasePlayer() {
+        releaseVisualizer()
         mediaPlayer?.runCatching {
             if (isPlaying) stop()
             reset()
@@ -2089,6 +2136,76 @@ private class JellyfinPlayer(private val context: Context) {
         }
         mediaPlayer = null
         isPlaying = false
+        visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+    }
+
+    private fun attachVisualizer(audioSessionId: Int) {
+        releaseVisualizer()
+        if (audioSessionId == AudioManager.ERROR || audioSessionId == 0) return
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+
+        runCatching {
+            val captureSize = Visualizer.getCaptureSizeRange()[1].coerceAtMost(1024)
+            val nextVisualizer = Visualizer(audioSessionId).apply {
+                enabled = false
+                setCaptureSize(captureSize)
+                setDataCaptureListener(
+                    object : Visualizer.OnDataCaptureListener {
+                        override fun onWaveFormDataCapture(
+                            visualizer: Visualizer?,
+                            waveform: ByteArray?,
+                            samplingRate: Int
+                        ) {
+                            val data = waveform ?: return
+                            val nextLevels = waveformToBars(data)
+                            mainHandler.post { visualizerLevels = nextLevels }
+                        }
+
+                        override fun onFftDataCapture(
+                            visualizer: Visualizer?,
+                            fft: ByteArray?,
+                            samplingRate: Int
+                        ) = Unit
+                    },
+                    (Visualizer.getMaxCaptureRate() / 3).coerceAtLeast(1_000),
+                    true,
+                    false
+                )
+                enabled = true
+            }
+            visualizer = nextVisualizer
+        }.onFailure {
+            visualizer = null
+            visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+        }
+    }
+
+    private fun waveformToBars(waveform: ByteArray): FloatArray {
+        if (waveform.isEmpty()) return FloatArray(VISUALIZER_BAR_COUNT)
+        val bars = FloatArray(VISUALIZER_BAR_COUNT)
+        val samplesPerBar = (waveform.size / VISUALIZER_BAR_COUNT).coerceAtLeast(1)
+        for (bar in bars.indices) {
+            val start = bar * samplesPerBar
+            val end = (start + samplesPerBar).coerceAtMost(waveform.size)
+            var sum = 0f
+            for (index in start until end) {
+                val sample = (waveform[index].toInt() and 0xFF) - 128
+                sum += abs(sample) / 128f
+            }
+            val average = sum / (end - start).coerceAtLeast(1)
+            bars[bar] = average.coerceIn(0f, 1f)
+        }
+        return bars
+    }
+
+    private fun releaseVisualizer() {
+        visualizer?.runCatching {
+            enabled = false
+            release()
+        }
+        visualizer = null
     }
 }
 
