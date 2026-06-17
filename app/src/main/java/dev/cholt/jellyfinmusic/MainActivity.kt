@@ -383,12 +383,6 @@ private fun JellyfinMusicApp() {
                         )
                     }
                 },
-                actions = {
-                    TopBarSineVisualizer(
-                        modifier = Modifier.padding(end = 12.dp),
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background,
                     scrolledContainerColor = MaterialTheme.colorScheme.surface
