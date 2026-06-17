@@ -3,6 +3,8 @@ package dev.cholt.jellyfinmusic
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color as AndroidColor
 import android.media.AudioAttributes
 import android.media.AudioFormat
@@ -21,6 +23,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.Image
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.compose.animation.core.LinearEasing
@@ -87,6 +90,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -105,10 +109,12 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -118,13 +124,17 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.util.Collections
+import java.util.LinkedHashMap
 import java.util.Locale
 import kotlin.concurrent.thread
 import kotlin.math.PI
@@ -173,6 +183,13 @@ private const val DISC_SCRATCH_SEEK_SCALE = 0.55f
 private const val DISC_SCRATCH_DEAD_ZONE = 0.22f
 private const val VISUALIZER_BAR_COUNT = 28
 
+private val AlbumArtCache = Collections.synchronizedMap(
+    object : LinkedHashMap<String, Bitmap>(96, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?): Boolean =
+            size > 96
+    }
+)
+
 data class JellyfinSession(
     val serverUrl: String,
     val username: String,
@@ -186,12 +203,25 @@ data class MusicTrack(
     val artist: String,
     val album: String,
     val durationMs: Long,
+    val imageItemId: String?,
+    val imageTag: String?,
     val tint: Color
 ) {
     fun streamUrl(session: JellyfinSession): String {
         val encodedId = encode(id)
         val encodedToken = encode(session.token)
         return "${session.serverUrl}/Audio/$encodedId/stream?Static=true&api_key=$encodedToken"
+    }
+
+    fun imageUrl(session: JellyfinSession?, size: Int = 512): String? {
+        val activeSession = session ?: return null
+        val itemId = imageItemId?.takeIf { it.isNotBlank() } ?: return null
+        val tagParameter = imageTag
+            ?.takeIf { it.isNotBlank() }
+            ?.let { "&tag=${encode(it)}" }
+            .orEmpty()
+        return "${activeSession.serverUrl}/Items/${encode(itemId)}/Images/Primary" +
+            "?fillWidth=$size&fillHeight=$size&quality=90$tagParameter&api_key=${encode(activeSession.token)}"
     }
 }
 
@@ -462,6 +492,7 @@ private fun JellyfinMusicApp() {
                     if (activeTrack != null) {
                         NowPlayingBar(
                             track = activeTrack,
+                            session = activeSession,
                             isPlaying = player.isPlaying,
                             progress = player.progress,
                             status = player.status,
@@ -522,6 +553,7 @@ private fun JellyfinMusicApp() {
                 visualizerLevels = player.visualizerLevels,
                 status = player.status,
                 queue = playQueue.ifEmpty { tracks.queueStartingAt(activeTrack) },
+                session = connectedSession,
                 modifier = Modifier.padding(innerPadding),
                 onToggle = { player.toggle() },
                 onSeek = { player.seekToFraction(it) },
@@ -614,6 +646,7 @@ private fun JellyfinMusicApp() {
                                         items(filteredTracks, key = { it.id }) { track ->
                                             TrackRow(
                                                 track = track,
+                                                session = connectedSession,
                                                 isCurrent = player.currentTrack?.id == track.id,
                                                 onClick = { playTrack(track, openPlayer = true, source = filteredTracks) }
                                             )
@@ -629,6 +662,7 @@ private fun JellyfinMusicApp() {
                                         items(groups, key = { it.title }) { group ->
                                             GroupRow(
                                                 group = group,
+                                                session = connectedSession,
                                                 onClick = {
                                                     playTrack(
                                                         group.tracks.first(),
@@ -649,6 +683,7 @@ private fun JellyfinMusicApp() {
                                         items(groups, key = { it.title }) { group ->
                                             GroupRow(
                                                 group = group,
+                                                session = connectedSession,
                                                 onClick = {
                                                     playTrack(
                                                         group.tracks.first(),
@@ -1011,7 +1046,12 @@ private fun LibraryTabs(selectedTab: LibraryTab, onTabSelected: (LibraryTab) -> 
 }
 
 @Composable
-private fun TrackRow(track: MusicTrack, isCurrent: Boolean, onClick: () -> Unit) {
+private fun TrackRow(
+    track: MusicTrack,
+    session: JellyfinSession?,
+    isCurrent: Boolean,
+    onClick: () -> Unit
+) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -1029,7 +1069,7 @@ private fun TrackRow(track: MusicTrack, isCurrent: Boolean, onClick: () -> Unit)
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            AlbumTile(tint = track.tint, modifier = Modifier.size(48.dp))
+            AlbumTile(track = track, session = session, modifier = Modifier.size(48.dp))
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
@@ -1057,7 +1097,11 @@ private fun TrackRow(track: MusicTrack, isCurrent: Boolean, onClick: () -> Unit)
 }
 
 @Composable
-private fun GroupRow(group: LibraryGroup, onClick: () -> Unit) {
+private fun GroupRow(
+    group: LibraryGroup,
+    session: JellyfinSession?,
+    onClick: () -> Unit
+) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -1070,7 +1114,7 @@ private fun GroupRow(group: LibraryGroup, onClick: () -> Unit) {
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            AlbumTile(tint = group.tint, modifier = Modifier.size(48.dp))
+            AlbumTile(track = group.tracks.firstOrNull(), session = session, modifier = Modifier.size(48.dp))
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
@@ -1093,11 +1137,49 @@ private fun GroupRow(group: LibraryGroup, onClick: () -> Unit) {
 }
 
 @Composable
-private fun AlbumTile(tint: Color, modifier: Modifier = Modifier) {
+private fun AlbumTile(
+    track: MusicTrack?,
+    session: JellyfinSession?,
+    modifier: Modifier = Modifier
+) {
+    AlbumArtworkImage(
+        track = track,
+        session = session,
+        modifier = modifier.clip(RoundedCornerShape(14.dp))
+    )
+}
+
+@Composable
+private fun AlbumArtworkImage(
+    track: MusicTrack?,
+    session: JellyfinSession?,
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop
+) {
+    val imageUrl = track?.imageUrl(session)
+    val bitmap by rememberAlbumBitmap(imageUrl, session?.token)
+    Box(modifier = modifier) {
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap!!.asImageBitmap(),
+                contentDescription = null,
+                contentScale = contentScale,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            GeneratedAlbumTile(
+                tint = track?.tint ?: SeedPrimary,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+    }
+}
+
+@Composable
+private fun GeneratedAlbumTile(tint: Color, modifier: Modifier = Modifier) {
     val centerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)
     Canvas(
         modifier = modifier
-            .clip(RoundedCornerShape(14.dp))
             .background(tint.copy(alpha = 0.18f))
     ) {
         drawCircle(
@@ -1115,6 +1197,47 @@ private fun AlbumTile(tint: Color, modifier: Modifier = Modifier) {
             center = center
         )
     }
+}
+
+@Composable
+private fun rememberAlbumBitmap(imageUrl: String?, token: String?): State<Bitmap?> {
+    var bitmap by remember(imageUrl) {
+        mutableStateOf(imageUrl?.let { AlbumArtCache[it] })
+    }
+
+    LaunchedEffect(imageUrl, token) {
+        if (imageUrl == null) {
+            bitmap = null
+            return@LaunchedEffect
+        }
+        bitmap = AlbumArtCache[imageUrl] ?: loadAlbumBitmap(imageUrl, token)
+    }
+
+    return rememberUpdatedState(bitmap)
+}
+
+private suspend fun loadAlbumBitmap(imageUrl: String, token: String?): Bitmap? = withContext(Dispatchers.IO) {
+    AlbumArtCache[imageUrl]?.let { return@withContext it }
+    runCatching {
+        val connection = (URL(imageUrl).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 10_000
+            readTimeout = 18_000
+            setRequestProperty("Accept", "image/*")
+            token?.let { setRequestProperty("X-Emby-Token", it) }
+        }
+        try {
+            if (connection.responseCode !in 200..299) {
+                null
+            } else {
+                connection.inputStream.use { input ->
+                    BitmapFactory.decodeStream(input)
+                }
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }.getOrNull()?.also { AlbumArtCache[imageUrl] = it }
 }
 
 @Composable
@@ -1183,6 +1306,7 @@ private fun FullPlayerScreen(
     visualizerLevels: FloatArray,
     status: String,
     queue: List<MusicTrack>,
+    session: JellyfinSession?,
     modifier: Modifier = Modifier,
     onToggle: () -> Unit,
     onSeek: (Float) -> Unit,
@@ -1223,6 +1347,7 @@ private fun FullPlayerScreen(
                 track = track,
                 isPlaying = isPlaying,
                 progress = progress,
+                session = session,
                 onSeek = onSeek,
                 onScratch = onScratch,
                 onScratchEnd = onScratchEnd
@@ -1325,6 +1450,7 @@ private fun FullPlayerScreen(
             QueueBottomSheet(
                 currentTrack = track,
                 queue = displayQueue,
+                session = session,
                 onDismiss = { showQueue = false },
                 onTrackClick = onQueueTrackClick,
                 onMove = onQueueMove,
@@ -1413,6 +1539,7 @@ private fun Modifier.swipeUpToOpen(
 private fun QueueBottomSheet(
     currentTrack: MusicTrack,
     queue: List<MusicTrack>,
+    session: JellyfinSession?,
     onDismiss: () -> Unit,
     onTrackClick: (MusicTrack) -> Unit,
     onMove: (Int, Int) -> Unit,
@@ -1476,6 +1603,7 @@ private fun QueueBottomSheet(
                     itemsIndexed(queue, key = { _, track -> track.id }) { index, item ->
                         QueueTrackRow(
                             track = item,
+                            session = session,
                             index = index,
                             lastIndex = queue.lastIndex,
                             isCurrent = item.id == currentTrack.id,
@@ -1494,6 +1622,7 @@ private fun QueueBottomSheet(
 @Composable
 private fun QueueTrackRow(
     track: MusicTrack,
+    session: JellyfinSession?,
     index: Int,
     lastIndex: Int,
     isCurrent: Boolean,
@@ -1520,7 +1649,7 @@ private fun QueueTrackRow(
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            AlbumTile(tint = track.tint, modifier = Modifier.size(46.dp))
+            AlbumTile(track = track, session = session, modifier = Modifier.size(46.dp))
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(
@@ -1910,6 +2039,7 @@ private fun DiscAlbumStage(
     track: MusicTrack,
     isPlaying: Boolean,
     progress: Float,
+    session: JellyfinSession?,
     onSeek: (Float) -> Unit,
     onScratch: (Float) -> Unit,
     onScratchEnd: () -> Unit
@@ -1973,7 +2103,8 @@ private fun DiscAlbumStage(
             }
         }
         VinylDisc(
-            tint = track.tint,
+            track = track,
+            session = session,
             modifier = Modifier
                 .fillMaxSize(0.74f)
                 .pointerInput(Unit) {
@@ -2182,141 +2313,153 @@ private fun TurntableArmOverlay(progress: Float, modifier: Modifier = Modifier) 
 }
 
 @Composable
-private fun VinylDisc(tint: Color, modifier: Modifier = Modifier) {
+private fun VinylDisc(
+    track: MusicTrack,
+    session: JellyfinSession?,
+    modifier: Modifier = Modifier
+) {
+    val tint = track.tint
     val colorScheme = MaterialTheme.colorScheme
     val surface = colorScheme.surface
     val labelColor = colorScheme.primary
     val labelDark = colorScheme.primaryContainer
-    Canvas(
+    Box(
         modifier = modifier
             .clip(CircleShape)
             .background(tint.copy(alpha = 0.18f))
     ) {
-        val radius = size.minDimension / 2f
-        val center = Offset(size.width / 2f, size.height / 2f)
+        AlbumArtworkImage(
+            track = track,
+            session = session,
+            modifier = Modifier.fillMaxSize().clip(CircleShape)
+        )
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val radius = size.minDimension / 2f
+            val center = Offset(size.width / 2f, size.height / 2f)
 
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    tint.copy(alpha = 0.95f),
-                    Color(0xFFEBD7FF).copy(alpha = 0.52f),
-                    Color(0xFF4AD9C7).copy(alpha = 0.42f),
-                    tint.copy(alpha = 0.68f)
-                ),
-                center = Offset(size.width * 0.31f, size.height * 0.24f),
-                radius = radius * 1.24f
-            ),
-            radius = radius,
-            center = center
-        )
-        drawCircle(
-            color = Color.White.copy(alpha = 0.2f),
-            radius = radius * 0.34f,
-            center = Offset(size.width * 0.36f, size.height * 0.3f)
-        )
-        drawArc(
-            color = tint.copy(alpha = 0.46f),
-            startAngle = 206f,
-            sweepAngle = 112f,
-            useCenter = true,
-            topLeft = Offset.Zero,
-            size = Size(size.minDimension, size.minDimension)
-        )
-        drawArc(
-            color = Color(0xFF6CE5DC).copy(alpha = 0.28f),
-            startAngle = 36f,
-            sweepAngle = 98f,
-            useCenter = true,
-            topLeft = Offset.Zero,
-            size = Size(size.minDimension, size.minDimension)
-        )
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    Color(0xFF141219).copy(alpha = 0.32f),
-                    Color(0xFF211B25).copy(alpha = 0.42f),
-                    Color(0xFF0E0D12).copy(alpha = 0.55f)
-                ),
-                center = Offset(size.width * 0.34f, size.height * 0.24f),
-                radius = radius * 1.18f
-            ),
-            radius = radius,
-            center = center
-        )
-        drawArc(
-            color = Color.White.copy(alpha = 0.16f),
-            startAngle = -33f,
-            sweepAngle = 47f,
-            useCenter = true,
-            topLeft = Offset.Zero,
-            size = Size(size.minDimension, size.minDimension)
-        )
-        for (index in 0..16) {
             drawCircle(
-                color = Color.White.copy(alpha = if (index % 4 == 0) 0.2f else 0.085f),
-                radius = radius * (0.28f + index * 0.038f),
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        tint.copy(alpha = 0.2f),
+                        Color(0xFFEBD7FF).copy(alpha = 0.14f),
+                        Color(0xFF4AD9C7).copy(alpha = 0.1f),
+                        tint.copy(alpha = 0.18f)
+                    ),
+                    center = Offset(size.width * 0.31f, size.height * 0.24f),
+                    radius = radius * 1.24f
+                ),
+                radius = radius,
+                center = center
+            )
+            drawCircle(
+                color = Color.White.copy(alpha = 0.12f),
+                radius = radius * 0.34f,
+                center = Offset(size.width * 0.36f, size.height * 0.3f)
+            )
+            drawArc(
+                color = tint.copy(alpha = 0.18f),
+                startAngle = 206f,
+                sweepAngle = 112f,
+                useCenter = true,
+                topLeft = Offset.Zero,
+                size = Size(size.minDimension, size.minDimension)
+            )
+            drawArc(
+                color = Color(0xFF6CE5DC).copy(alpha = 0.12f),
+                startAngle = 36f,
+                sweepAngle = 98f,
+                useCenter = true,
+                topLeft = Offset.Zero,
+                size = Size(size.minDimension, size.minDimension)
+            )
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        Color(0xFF141219).copy(alpha = 0.2f),
+                        Color(0xFF211B25).copy(alpha = 0.28f),
+                        Color(0xFF0E0D12).copy(alpha = 0.38f)
+                    ),
+                    center = Offset(size.width * 0.34f, size.height * 0.24f),
+                    radius = radius * 1.18f
+                ),
+                radius = radius,
+                center = center
+            )
+            drawArc(
+                color = Color.White.copy(alpha = 0.18f),
+                startAngle = -33f,
+                sweepAngle = 47f,
+                useCenter = true,
+                topLeft = Offset.Zero,
+                size = Size(size.minDimension, size.minDimension)
+            )
+            for (index in 0..16) {
+                drawCircle(
+                    color = Color.White.copy(alpha = if (index % 4 == 0) 0.2f else 0.085f),
+                    radius = radius * (0.28f + index * 0.038f),
+                    center = center,
+                    style = Stroke(width = if (index % 4 == 0) 1.dp.toPx() else 0.65.dp.toPx())
+                )
+            }
+            drawCircle(
+                color = Color.White.copy(alpha = 0.15f),
+                radius = radius * 0.82f,
                 center = center,
-                style = Stroke(width = if (index % 4 == 0) 1.dp.toPx() else 0.65.dp.toPx())
+                style = Stroke(width = 1.4.dp.toPx())
+            )
+            drawCircle(
+                color = Color.White.copy(alpha = 0.13f),
+                radius = radius * 0.62f,
+                center = center,
+                style = Stroke(width = 1.dp.toPx())
+            )
+            drawCircle(
+                color = Color.White.copy(alpha = 0.12f),
+                radius = radius * 0.43f,
+                center = center,
+                style = Stroke(width = 1.dp.toPx())
+            )
+            drawCircle(
+                color = Color.Black.copy(alpha = 0.22f),
+                radius = radius * 0.27f,
+                center = center
+            )
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(labelColor, labelDark),
+                    center = center,
+                    radius = radius * 0.28f
+                ),
+                radius = radius * 0.24f,
+                center = center
+            )
+            for (index in 0 until 6) {
+                val angle = (index * 60f + 22f) * PI.toFloat() / 180f
+                drawLine(
+                    color = labelDark.copy(alpha = 0.72f),
+                    start = Offset(
+                        x = center.x + cos(angle) * radius * 0.04f,
+                        y = center.y + sin(angle) * radius * 0.04f
+                    ),
+                    end = Offset(
+                        x = center.x + cos(angle) * radius * 0.22f,
+                        y = center.y + sin(angle) * radius * 0.22f
+                    ),
+                    strokeWidth = 2.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+            }
+            drawCircle(
+                color = surface.copy(alpha = 0.96f),
+                radius = radius * 0.03f,
+                center = center
+            )
+            drawCircle(
+                color = labelDark,
+                radius = radius * 0.015f,
+                center = center
             )
         }
-        drawCircle(
-            color = Color.White.copy(alpha = 0.15f),
-            radius = radius * 0.82f,
-            center = center,
-            style = Stroke(width = 1.4.dp.toPx())
-        )
-        drawCircle(
-            color = Color.White.copy(alpha = 0.13f),
-            radius = radius * 0.62f,
-            center = center,
-            style = Stroke(width = 1.dp.toPx())
-        )
-        drawCircle(
-            color = Color.White.copy(alpha = 0.12f),
-            radius = radius * 0.43f,
-            center = center,
-            style = Stroke(width = 1.dp.toPx())
-        )
-        drawCircle(
-            color = Color.Black.copy(alpha = 0.22f),
-            radius = radius * 0.27f,
-            center = center
-        )
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(labelColor, labelDark),
-                center = center,
-                radius = radius * 0.28f
-            ),
-            radius = radius * 0.24f,
-            center = center
-        )
-        for (index in 0 until 6) {
-            val angle = (index * 60f + 22f) * PI.toFloat() / 180f
-            drawLine(
-                color = labelDark.copy(alpha = 0.72f),
-                start = Offset(
-                    x = center.x + cos(angle) * radius * 0.04f,
-                    y = center.y + sin(angle) * radius * 0.04f
-                ),
-                end = Offset(
-                    x = center.x + cos(angle) * radius * 0.22f,
-                    y = center.y + sin(angle) * radius * 0.22f
-                ),
-                strokeWidth = 2.dp.toPx(),
-                cap = StrokeCap.Round
-            )
-        }
-        drawCircle(
-            color = surface.copy(alpha = 0.96f),
-            radius = radius * 0.03f,
-            center = center
-        )
-        drawCircle(
-            color = labelDark,
-            radius = radius * 0.015f,
-            center = center
-        )
     }
 }
 
@@ -2369,6 +2512,7 @@ private fun AudioBarsVisualizer(
 @Composable
 private fun NowPlayingBar(
     track: MusicTrack,
+    session: JellyfinSession?,
     isPlaying: Boolean,
     progress: Float,
     status: String,
@@ -2411,7 +2555,7 @@ private fun NowPlayingBar(
                     )
                 }
                 Spacer(Modifier.width(12.dp))
-                AlbumTile(tint = track.tint, modifier = Modifier.size(64.dp))
+                AlbumTile(track = track, session = session, modifier = Modifier.size(64.dp))
             }
             Spacer(Modifier.height(8.dp))
             WavySeekBar(
@@ -2870,7 +3014,7 @@ private class JellyfinRepository(private val context: Context) {
             append("&IncludeItemTypes=Audio")
             append("&SortBy=SortName")
             append("&SortOrder=Ascending")
-            append("&Fields=Album,Artists,RunTimeTicks")
+            append("&Fields=Album,AlbumId,AlbumPrimaryImageTag,Artists,ImageTags,PrimaryImageItemId,RunTimeTicks")
             append("&Limit=200")
         }
         val response = request(url = url, method = "GET", body = null, session = session)
@@ -2881,6 +3025,22 @@ private class JellyfinRepository(private val context: Context) {
                 val id = item.optString("Id")
                 if (id.isBlank()) continue
                 val artist = item.optJSONArray("Artists").joinOrFallback(item.optString("AlbumArtist", "Unknown artist"))
+                val imageTags = item.optJSONObject("ImageTags")
+                val primaryImageTag = imageTags?.optString("Primary").orEmpty()
+                val primaryImageItemId = item.optString("PrimaryImageItemId")
+                val albumId = item.optString("AlbumId")
+                val albumImageTag = item.optString("AlbumPrimaryImageTag")
+                val imageItemId = when {
+                    primaryImageTag.isNotBlank() -> id
+                    primaryImageItemId.isNotBlank() -> primaryImageItemId
+                    albumId.isNotBlank() && albumImageTag.isNotBlank() -> albumId
+                    else -> null
+                }
+                val imageTag = when {
+                    primaryImageTag.isNotBlank() -> primaryImageTag
+                    albumImageTag.isNotBlank() -> albumImageTag
+                    else -> null
+                }
                 add(
                     MusicTrack(
                         id = id,
@@ -2888,6 +3048,8 @@ private class JellyfinRepository(private val context: Context) {
                         artist = artist,
                         album = item.optString("Album", "Unknown album").ifBlank { "Unknown album" },
                         durationMs = item.optLong("RunTimeTicks", 0L) / 10_000L,
+                        imageItemId = imageItemId,
+                        imageTag = imageTag,
                         tint = tintFor(id)
                     )
                 )
