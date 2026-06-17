@@ -44,6 +44,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -2079,44 +2080,63 @@ private fun FullPlayerScreen(
             }
             Spacer(Modifier.weight(1f))
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(82.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                RoundedPlaybackButton(
-                    icon = PlayerGlyph.Shuffle,
-                    contentDescription = if (shuffleEnabled) "Shuffle on" else "Shuffle",
-                    active = shuffleEnabled,
-                    onClick = onToggleShuffle
-                )
-                RoundedPlaybackButton(
-                    icon = PlayerGlyph.Previous,
-                    contentDescription = "Previous track",
-                    onClick = onPrevious
-                )
-                RoundedPlaybackButton(
-                    icon = if (isPlaying) PlayerGlyph.Pause else PlayerGlyph.Play,
-                    contentDescription = if (isPlaying) "Pause" else "Play",
-                    onClick = if (!isPlaying && status == "Ended") onReplay else onToggle,
-                    prominent = true,
-                    modifier = Modifier.size(70.dp)
-                )
-                RoundedPlaybackButton(
-                    icon = PlayerGlyph.Next,
-                    contentDescription = "Next track",
-                    onClick = onNext
-                )
-                RoundedPlaybackButton(
-                    icon = PlayerGlyph.Repeat,
-                    contentDescription = if (repeatEnabled) "Repeat on" else "Repeat",
-                    active = repeatEnabled,
-                    onClick = onToggleRepeat
-                )
-                RoundedPlaybackButton(
-                    icon = PlayerGlyph.Favorite,
-                    contentDescription = "Favorite track",
-                    onClick = {}
-                )
+                PlaybackButtonSlot {
+                    RoundedPlaybackButton(
+                        icon = PlayerGlyph.Shuffle,
+                        contentDescription = if (shuffleEnabled) "Shuffle on" else "Shuffle",
+                        active = shuffleEnabled,
+                        onClick = onToggleShuffle,
+                        modifier = Modifier.size(56.dp)
+                    )
+                }
+                PlaybackButtonSlot {
+                    RoundedPlaybackButton(
+                        icon = PlayerGlyph.Previous,
+                        contentDescription = "Previous track",
+                        onClick = onPrevious,
+                        modifier = Modifier.size(56.dp)
+                    )
+                }
+                PlaybackButtonSlot(weight = 1.35f) {
+                    RoundedPlaybackButton(
+                        icon = if (isPlaying) PlayerGlyph.Pause else PlayerGlyph.Play,
+                        contentDescription = if (isPlaying) "Pause" else "Play",
+                        onClick = if (!isPlaying && status == "Ended") onReplay else onToggle,
+                        prominent = true,
+                        modifier = Modifier.size(78.dp)
+                    )
+                }
+                PlaybackButtonSlot {
+                    RoundedPlaybackButton(
+                        icon = PlayerGlyph.Next,
+                        contentDescription = "Next track",
+                        onClick = onNext,
+                        modifier = Modifier.size(56.dp)
+                    )
+                }
+                PlaybackButtonSlot {
+                    RoundedPlaybackButton(
+                        icon = PlayerGlyph.Repeat,
+                        contentDescription = if (repeatEnabled) "Repeat on" else "Repeat",
+                        active = repeatEnabled,
+                        onClick = onToggleRepeat,
+                        modifier = Modifier.size(56.dp)
+                    )
+                }
+                PlaybackButtonSlot {
+                    RoundedPlaybackButton(
+                        icon = PlayerGlyph.Favorite,
+                        contentDescription = "Favorite track",
+                        onClick = {},
+                        modifier = Modifier.size(56.dp)
+                    )
+                }
             }
             Spacer(Modifier.height(12.dp))
             QueuePullHandle(
@@ -2137,6 +2157,21 @@ private fun FullPlayerScreen(
                 modifier = Modifier.align(Alignment.BottomCenter)
             )
         }
+    }
+}
+
+@Composable
+private fun RowScope.PlaybackButtonSlot(
+    weight: Float = 1f,
+    content: @Composable () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxHeight()
+            .weight(weight),
+        contentAlignment = Alignment.Center
+    ) {
+        content()
     }
 }
 
@@ -2814,7 +2849,7 @@ private fun DiscAlbumStage(
             track = track,
             session = session,
             modifier = Modifier
-                .fillMaxSize(0.74f)
+                .fillMaxSize(0.86f)
                 .pointerInput(Unit) {
                     var lastAngle = 0f
                     var lastEventTime = 0L
@@ -2875,7 +2910,7 @@ private fun DiscAlbumStage(
         )
         TurntableArmOverlay(
             progress = stageProgress,
-            modifier = Modifier.fillMaxSize(0.86f)
+            modifier = Modifier.fillMaxSize()
         )
     }
 }
@@ -2963,58 +2998,84 @@ private fun TurntableArmOverlay(progress: Float, modifier: Modifier = Modifier) 
     Canvas(modifier = modifier) {
         val p = progress.coerceIn(0f, 1f)
         val accent = colorScheme.primary
-        val pivot = Offset(size.width * 0.18f, size.height * 0.16f)
-        val elbow = Offset(size.width * (0.16f + p * 0.025f), size.height * (0.34f + p * 0.02f))
-        val stylus = Offset(size.width * (0.24f + p * 0.08f), size.height * (0.56f - p * 0.035f))
+        val pivot = Offset(size.width * 0.205f, size.height * 0.16f)
+        val bend = Offset(size.width * (0.19f + p * 0.018f), size.height * (0.36f + p * 0.018f))
+        val stylus = Offset(size.width * (0.34f + p * 0.055f), size.height * (0.56f - p * 0.03f))
         val armPath = Path().apply {
             moveTo(pivot.x, pivot.y)
             cubicTo(
-                size.width * 0.12f,
-                size.height * 0.24f,
-                elbow.x,
-                elbow.y,
+                size.width * 0.13f,
+                size.height * 0.25f,
+                bend.x,
+                bend.y,
                 stylus.x,
                 stylus.y
             )
         }
-        drawPath(
-            path = armPath,
-            color = Color.Black.copy(alpha = 0.2f),
-            style = Stroke(width = 7.dp.toPx(), cap = StrokeCap.Round)
+        val cartridgeAngle = -0.72f
+        val cartridgeLength = size.minDimension * 0.105f
+        val cartridgeWidth = size.minDimension * 0.052f
+        val cartridgeBack = Offset(
+            x = stylus.x - cos(cartridgeAngle) * cartridgeLength,
+            y = stylus.y - sin(cartridgeAngle) * cartridgeLength
+        )
+        val normal = Offset(
+            x = -sin(cartridgeAngle) * cartridgeWidth,
+            y = cos(cartridgeAngle) * cartridgeWidth
         )
         drawPath(
             path = armPath,
-            color = colorScheme.surface.copy(alpha = 0.94f),
-            style = Stroke(width = 5.dp.toPx(), cap = StrokeCap.Round)
+            color = Color.Black.copy(alpha = 0.24f),
+            style = Stroke(width = 9.dp.toPx(), cap = StrokeCap.Round)
         )
         drawPath(
             path = armPath,
-            color = colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
-            style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round)
+            color = blendColors(colorScheme.surface, Color.White, 0.22f),
+            style = Stroke(width = 6.dp.toPx(), cap = StrokeCap.Round)
+        )
+        drawPath(
+            path = armPath,
+            color = colorScheme.onSurfaceVariant.copy(alpha = 0.42f),
+            style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
+        )
+        drawPath(
+            path = armPath,
+            color = Color.White.copy(alpha = 0.28f),
+            style = Stroke(width = 1.dp.toPx(), cap = StrokeCap.Round)
         )
 
         val cartridge = Path().apply {
-            moveTo(stylus.x - size.width * 0.018f, stylus.y - size.height * 0.045f)
-            lineTo(stylus.x + size.width * 0.035f, stylus.y - size.height * 0.026f)
-            lineTo(stylus.x + size.width * 0.023f, stylus.y + size.height * 0.036f)
-            lineTo(stylus.x - size.width * 0.03f, stylus.y + size.height * 0.022f)
+            moveTo(cartridgeBack.x - normal.x, cartridgeBack.y - normal.y)
+            lineTo(cartridgeBack.x + normal.x, cartridgeBack.y + normal.y)
+            lineTo(stylus.x + normal.x * 0.46f, stylus.y + normal.y * 0.46f)
+            lineTo(stylus.x - normal.x * 0.46f, stylus.y - normal.y * 0.46f)
             close()
         }
-        drawPath(path = cartridge, color = Color.Black.copy(alpha = 0.22f))
-        drawPath(path = cartridge, color = colorScheme.onSurfaceVariant.copy(alpha = 0.68f))
+        drawPath(path = cartridge, color = Color.Black.copy(alpha = 0.28f))
+        drawPath(path = cartridge, color = colorScheme.onSurfaceVariant.copy(alpha = 0.78f))
         drawCircle(
-            color = accent,
-            radius = 19.dp.toPx(),
+            color = colorScheme.primary.copy(alpha = 0.82f),
+            radius = 2.2.dp.toPx(),
+            center = stylus
+        )
+        drawCircle(
+            color = Color.Black.copy(alpha = 0.16f),
+            radius = 25.dp.toPx(),
+            center = pivot + Offset(0f, 2.dp.toPx())
+        )
+        drawCircle(
+            color = blendColors(accent, colorScheme.surface, 0.18f),
+            radius = 23.dp.toPx(),
             center = pivot
         )
         drawCircle(
             color = colorScheme.surface,
-            radius = 12.dp.toPx(),
+            radius = 14.dp.toPx(),
             center = pivot
         )
         drawCircle(
-            color = accent.copy(alpha = 0.88f),
-            radius = 6.dp.toPx(),
+            color = accent.copy(alpha = 0.9f),
+            radius = 7.dp.toPx(),
             center = pivot
         )
     }
@@ -3046,84 +3107,90 @@ private fun VinylDisc(
             val center = Offset(size.width / 2f, size.height / 2f)
 
             drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        tint.copy(alpha = 0.2f),
-                        Color(0xFFEBD7FF).copy(alpha = 0.14f),
-                        Color(0xFF4AD9C7).copy(alpha = 0.1f),
-                        tint.copy(alpha = 0.18f)
-                    ),
-                    center = Offset(size.width * 0.31f, size.height * 0.24f),
-                    radius = radius * 1.24f
-                ),
+                color = Color.Black.copy(alpha = 0.34f),
                 radius = radius,
                 center = center
             )
             drawCircle(
-                color = Color.White.copy(alpha = 0.12f),
-                radius = radius * 0.34f,
-                center = Offset(size.width * 0.36f, size.height * 0.3f)
-            )
-            drawArc(
-                color = tint.copy(alpha = 0.18f),
-                startAngle = 206f,
-                sweepAngle = 112f,
-                useCenter = true,
-                topLeft = Offset.Zero,
-                size = Size(size.minDimension, size.minDimension)
-            )
-            drawArc(
-                color = Color(0xFF6CE5DC).copy(alpha = 0.12f),
-                startAngle = 36f,
-                sweepAngle = 98f,
-                useCenter = true,
-                topLeft = Offset.Zero,
-                size = Size(size.minDimension, size.minDimension)
-            )
-            drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        Color(0xFF141219).copy(alpha = 0.2f),
-                        Color(0xFF211B25).copy(alpha = 0.28f),
-                        Color(0xFF0E0D12).copy(alpha = 0.38f)
+                        Color.White.copy(alpha = 0.08f),
+                        tint.copy(alpha = 0.1f),
+                        Color.Black.copy(alpha = 0.18f),
+                        Color.Black.copy(alpha = 0.5f)
                     ),
-                    center = Offset(size.width * 0.34f, size.height * 0.24f),
+                    center = Offset(size.width * 0.34f, size.height * 0.28f),
                     radius = radius * 1.18f
                 ),
                 radius = radius,
                 center = center
             )
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        Color.Transparent,
+                        Color.Black.copy(alpha = 0.14f),
+                        Color.Black.copy(alpha = 0.38f)
+                    ),
+                    center = center,
+                    radius = radius
+                ),
+                radius = radius,
+                center = center
+            )
             drawArc(
-                color = Color.White.copy(alpha = 0.18f),
-                startAngle = -33f,
-                sweepAngle = 47f,
+                color = Color.White.copy(alpha = 0.22f),
+                startAngle = -38f,
+                sweepAngle = 45f,
                 useCenter = true,
                 topLeft = Offset.Zero,
                 size = Size(size.minDimension, size.minDimension)
             )
-            for (index in 0..16) {
+            drawArc(
+                color = Color.White.copy(alpha = 0.08f),
+                startAngle = 154f,
+                sweepAngle = 36f,
+                useCenter = true,
+                topLeft = Offset.Zero,
+                size = Size(size.minDimension, size.minDimension)
+            )
+            drawArc(
+                color = Color.Black.copy(alpha = 0.2f),
+                startAngle = 206f,
+                sweepAngle = 80f,
+                useCenter = true,
+                topLeft = Offset.Zero,
+                size = Size(size.minDimension, size.minDimension)
+            )
+            drawCircle(
+                color = Color.White.copy(alpha = 0.14f),
+                radius = radius * 0.2f,
+                center = Offset(size.width * 0.36f, size.height * 0.26f)
+            )
+            for (index in 0..22) {
+                val grooveRadius = radius * (0.22f + index * 0.032f)
                 drawCircle(
-                    color = Color.White.copy(alpha = if (index % 4 == 0) 0.2f else 0.085f),
-                    radius = radius * (0.28f + index * 0.038f),
+                    color = Color.White.copy(alpha = if (index % 5 == 0) 0.17f else 0.075f),
+                    radius = grooveRadius,
                     center = center,
-                    style = Stroke(width = if (index % 4 == 0) 1.dp.toPx() else 0.65.dp.toPx())
+                    style = Stroke(width = if (index % 5 == 0) 0.9.dp.toPx() else 0.55.dp.toPx())
                 )
             }
             drawCircle(
-                color = Color.White.copy(alpha = 0.15f),
-                radius = radius * 0.82f,
+                color = Color.Black.copy(alpha = 0.24f),
+                radius = radius * 0.97f,
                 center = center,
-                style = Stroke(width = 1.4.dp.toPx())
-            )
-            drawCircle(
-                color = Color.White.copy(alpha = 0.13f),
-                radius = radius * 0.62f,
-                center = center,
-                style = Stroke(width = 1.dp.toPx())
+                style = Stroke(width = 2.dp.toPx())
             )
             drawCircle(
                 color = Color.White.copy(alpha = 0.12f),
-                radius = radius * 0.43f,
+                radius = radius * 0.78f,
+                center = center,
+                style = Stroke(width = 1.2.dp.toPx())
+            )
+            drawCircle(
+                color = Color.White.copy(alpha = 0.1f),
+                radius = radius * 0.53f,
                 center = center,
                 style = Stroke(width = 1.dp.toPx())
             )
