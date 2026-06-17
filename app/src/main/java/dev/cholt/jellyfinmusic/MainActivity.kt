@@ -90,10 +90,13 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -1139,27 +1142,243 @@ private fun FullPlayerScreen(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            TextButton(onClick = onToggleShuffle) {
-                Text(if (shuffleEnabled) "Mix on" else "Mix")
-            }
-            FilledTonalButton(onClick = onPrevious, shape = RoundedCornerShape(18.dp)) {
-                Text("|<")
-            }
-            Button(
+            RoundedPlaybackButton(
+                icon = PlayerGlyph.Shuffle,
+                contentDescription = if (shuffleEnabled) "Shuffle on" else "Shuffle",
+                active = shuffleEnabled,
+                onClick = onToggleShuffle
+            )
+            RoundedPlaybackButton(
+                icon = PlayerGlyph.Previous,
+                contentDescription = "Previous track",
+                onClick = onPrevious
+            )
+            RoundedPlaybackButton(
+                icon = if (isPlaying) PlayerGlyph.Pause else PlayerGlyph.Play,
+                contentDescription = if (isPlaying) "Pause" else "Play",
                 onClick = if (!isPlaying && status == "Ended") onReplay else onToggle,
-                shape = RoundedCornerShape(22.dp),
-                contentPadding = PaddingValues(horizontal = 26.dp, vertical = 14.dp)
-            ) {
-                Text(if (isPlaying) "Pause" else "Play")
+                prominent = true,
+                modifier = Modifier.size(70.dp)
+            )
+            RoundedPlaybackButton(
+                icon = PlayerGlyph.Next,
+                contentDescription = "Next track",
+                onClick = onNext
+            )
+            RoundedPlaybackButton(
+                icon = PlayerGlyph.Repeat,
+                contentDescription = if (repeatEnabled) "Repeat on" else "Repeat",
+                active = repeatEnabled,
+                onClick = onToggleRepeat
+            )
+        }
+    }
+}
+
+private enum class PlayerGlyph {
+    Shuffle,
+    Previous,
+    Play,
+    Pause,
+    Next,
+    Repeat,
+    Replay
+}
+
+@Composable
+private fun RoundedPlaybackButton(
+    icon: PlayerGlyph,
+    contentDescription: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    active: Boolean = false,
+    prominent: Boolean = false
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val backgroundColor = when {
+        prominent -> colorScheme.primary
+        active -> colorScheme.secondaryContainer
+        else -> colorScheme.surfaceContainerHigh
+    }
+    val contentColor = when {
+        prominent -> colorScheme.onPrimary
+        active -> colorScheme.onSecondaryContainer
+        else -> colorScheme.onSurfaceVariant
+    }
+    Surface(
+        modifier = modifier
+            .size(if (prominent) 64.dp else 52.dp)
+            .semantics { this.contentDescription = contentDescription }
+            .clickable(onClick = onClick),
+        shape = CircleShape,
+        color = backgroundColor,
+        tonalElevation = if (prominent || active) 4.dp else 1.dp
+    ) {
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+            PlaybackGlyph(
+                icon = icon,
+                color = contentColor,
+                modifier = Modifier.size(if (prominent) 32.dp else 27.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun PlaybackGlyph(icon: PlayerGlyph, color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val stroke = size.minDimension * 0.12f
+        when (icon) {
+            PlayerGlyph.Play -> {
+                val path = Path().apply {
+                    moveTo(w * 0.34f, h * 0.24f)
+                    lineTo(w * 0.34f, h * 0.76f)
+                    lineTo(w * 0.76f, h * 0.5f)
+                    close()
+                }
+                drawPath(path = path, color = color)
             }
-            FilledTonalButton(onClick = onNext, shape = RoundedCornerShape(18.dp)) {
-                Text(">|")
+
+            PlayerGlyph.Pause -> {
+                drawLine(
+                    color = color,
+                    start = Offset(w * 0.38f, h * 0.26f),
+                    end = Offset(w * 0.38f, h * 0.74f),
+                    strokeWidth = stroke,
+                    cap = StrokeCap.Round
+                )
+                drawLine(
+                    color = color,
+                    start = Offset(w * 0.62f, h * 0.26f),
+                    end = Offset(w * 0.62f, h * 0.74f),
+                    strokeWidth = stroke,
+                    cap = StrokeCap.Round
+                )
             }
-            TextButton(onClick = onToggleRepeat) {
-                Text(if (repeatEnabled) "Loop on" else "Loop")
+
+            PlayerGlyph.Previous -> {
+                drawLine(
+                    color = color,
+                    start = Offset(w * 0.24f, h * 0.25f),
+                    end = Offset(w * 0.24f, h * 0.75f),
+                    strokeWidth = stroke * 0.82f,
+                    cap = StrokeCap.Round
+                )
+                drawPath(
+                    path = Path().apply {
+                        moveTo(w * 0.78f, h * 0.24f)
+                        lineTo(w * 0.78f, h * 0.76f)
+                        lineTo(w * 0.38f, h * 0.5f)
+                        close()
+                    },
+                    color = color
+                )
+            }
+
+            PlayerGlyph.Next -> {
+                drawLine(
+                    color = color,
+                    start = Offset(w * 0.76f, h * 0.25f),
+                    end = Offset(w * 0.76f, h * 0.75f),
+                    strokeWidth = stroke * 0.82f,
+                    cap = StrokeCap.Round
+                )
+                drawPath(
+                    path = Path().apply {
+                        moveTo(w * 0.22f, h * 0.24f)
+                        lineTo(w * 0.22f, h * 0.76f)
+                        lineTo(w * 0.62f, h * 0.5f)
+                        close()
+                    },
+                    color = color
+                )
+            }
+
+            PlayerGlyph.Shuffle -> {
+                drawPath(
+                    path = Path().apply {
+                        moveTo(w * 0.16f, h * 0.32f)
+                        cubicTo(w * 0.34f, h * 0.32f, w * 0.43f, h * 0.5f, w * 0.6f, h * 0.5f)
+                        cubicTo(w * 0.72f, h * 0.5f, w * 0.78f, h * 0.4f, w * 0.86f, h * 0.28f)
+                    },
+                    color = color,
+                    style = Stroke(width = stroke * 0.72f, cap = StrokeCap.Round)
+                )
+                drawPath(
+                    path = Path().apply {
+                        moveTo(w * 0.16f, h * 0.68f)
+                        cubicTo(w * 0.34f, h * 0.68f, w * 0.43f, h * 0.5f, w * 0.6f, h * 0.5f)
+                        cubicTo(w * 0.72f, h * 0.5f, w * 0.78f, h * 0.6f, w * 0.86f, h * 0.72f)
+                    },
+                    color = color,
+                    style = Stroke(width = stroke * 0.72f, cap = StrokeCap.Round)
+                )
+                drawArrowHead(color, Offset(w * 0.86f, h * 0.28f), -0.85f, stroke)
+                drawArrowHead(color, Offset(w * 0.86f, h * 0.72f), 0.85f, stroke)
+            }
+
+            PlayerGlyph.Repeat -> {
+                drawPath(
+                    path = Path().apply {
+                        moveTo(w * 0.24f, h * 0.36f)
+                        cubicTo(w * 0.34f, h * 0.2f, w * 0.68f, h * 0.2f, w * 0.78f, h * 0.36f)
+                    },
+                    color = color,
+                    style = Stroke(width = stroke * 0.72f, cap = StrokeCap.Round)
+                )
+                drawPath(
+                    path = Path().apply {
+                        moveTo(w * 0.76f, h * 0.64f)
+                        cubicTo(w * 0.66f, h * 0.8f, w * 0.32f, h * 0.8f, w * 0.22f, h * 0.64f)
+                    },
+                    color = color,
+                    style = Stroke(width = stroke * 0.72f, cap = StrokeCap.Round)
+                )
+                drawArrowHead(color, Offset(w * 0.78f, h * 0.36f), 0.5f, stroke)
+                drawArrowHead(color, Offset(w * 0.22f, h * 0.64f), 3.65f, stroke)
+            }
+
+            PlayerGlyph.Replay -> {
+                drawArc(
+                    color = color,
+                    startAngle = 35f,
+                    sweepAngle = 285f,
+                    useCenter = false,
+                    topLeft = Offset(w * 0.22f, h * 0.22f),
+                    size = Size(w * 0.56f, h * 0.56f),
+                    style = Stroke(width = stroke * 0.72f, cap = StrokeCap.Round)
+                )
+                drawArrowHead(color, Offset(w * 0.32f, h * 0.32f), 3.95f, stroke)
             }
         }
     }
+}
+
+private fun DrawScope.drawArrowHead(color: Color, tip: Offset, angle: Float, stroke: Float) {
+    val length = stroke * 1.75f
+    val spread = 0.72f
+    drawLine(
+        color = color,
+        start = tip,
+        end = Offset(
+            x = tip.x - cos(angle - spread) * length,
+            y = tip.y - sin(angle - spread) * length
+        ),
+        strokeWidth = stroke * 0.68f,
+        cap = StrokeCap.Round
+    )
+    drawLine(
+        color = color,
+        start = tip,
+        end = Offset(
+            x = tip.x - cos(angle + spread) * length,
+            y = tip.y - sin(angle + spread) * length
+        ),
+        strokeWidth = stroke * 0.68f,
+        cap = StrokeCap.Round
+    )
 }
 
 @Composable
@@ -1643,20 +1862,35 @@ private fun NowPlayingBar(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                TextButton(onClick = onPrevious) { Text("|<") }
-                FilledTonalButton(
+                RoundedPlaybackButton(
+                    icon = PlayerGlyph.Previous,
+                    contentDescription = "Previous track",
+                    onClick = onPrevious,
+                    modifier = Modifier.size(48.dp)
+                )
+                RoundedPlaybackButton(
+                    icon = if (isPlaying) PlayerGlyph.Pause else PlayerGlyph.Play,
+                    contentDescription = if (isPlaying) "Pause" else "Play",
                     onClick = onToggle,
-                    shape = RoundedCornerShape(18.dp),
-                    contentPadding = PaddingValues(horizontal = 22.dp, vertical = 8.dp)
-                ) {
-                    Text(if (isPlaying) "Pause" else "Play")
-                }
-                TextButton(onClick = onNext) { Text(">|") }
+                    prominent = true,
+                    modifier = Modifier.size(58.dp)
+                )
+                RoundedPlaybackButton(
+                    icon = PlayerGlyph.Next,
+                    contentDescription = "Next track",
+                    onClick = onNext,
+                    modifier = Modifier.size(48.dp)
+                )
             }
             if (!isPlaying && status == "Ended") {
-                TextButton(onClick = onReplay, modifier = Modifier.align(Alignment.End)) {
-                    Text("Replay")
-                }
+                RoundedPlaybackButton(
+                    icon = PlayerGlyph.Replay,
+                    contentDescription = "Replay track",
+                    onClick = onReplay,
+                    modifier = Modifier
+                        .align(Alignment.End)
+                        .size(44.dp)
+                )
             }
         }
     }
