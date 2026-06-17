@@ -776,8 +776,11 @@ private fun JellyfinMusicApp() {
                         }
 
                         else -> {
+                            val isSearchTab = selectedDestination == AppDestination.Search
                             item {
                                 LibraryHeader(
+                                    title = if (isSearchTab) "Search" else "Library",
+                                    showSearch = isSearchTab,
                                     searchQuery = searchQuery,
                                     isBusy = isBusy,
                                     statusText = statusText,
@@ -792,7 +795,11 @@ private fun JellyfinMusicApp() {
                                 )
                             }
 
-                            val filteredTracks = tracks.filterBy(searchQuery)
+                            val filteredTracks = if (isSearchTab) {
+                                tracks.filterBy(searchQuery)
+                            } else {
+                                tracks
+                            }
                             when (selectedTab) {
                                 LibraryTab.Songs -> {
                                     if (filteredTracks.isEmpty()) {
@@ -1198,6 +1205,8 @@ private fun ConnectCard(
 
 @Composable
 private fun LibraryHeader(
+    title: String,
+    showSearch: Boolean,
     searchQuery: String,
     isBusy: Boolean,
     statusText: String?,
@@ -1212,7 +1221,7 @@ private fun LibraryHeader(
         ) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    text = "Library",
+                    text = title,
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -1228,13 +1237,15 @@ private fun LibraryHeader(
                 Text("Refresh")
             }
         }
-        OutlinedTextField(
-            value = searchQuery,
-            onValueChange = onSearchQueryChange,
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            label = { Text("Search music") }
-        )
+        if (showSearch) {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = onSearchQueryChange,
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Search music") }
+            )
+        }
         if (isBusy) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         }
