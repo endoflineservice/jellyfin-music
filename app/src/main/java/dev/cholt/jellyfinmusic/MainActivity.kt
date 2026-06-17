@@ -1087,8 +1087,7 @@ private fun FullPlayerScreen(
             progress = progress,
             onSeek = onSeek,
             onScratch = onScratch,
-            onScratchEnd = onScratchEnd,
-            onToggle = onToggle
+            onScratchEnd = onScratchEnd
         )
         Spacer(Modifier.height(22.dp))
         Text(
@@ -1176,8 +1175,7 @@ private fun DiscAlbumStage(
     progress: Float,
     onSeek: (Float) -> Unit,
     onScratch: (Float) -> Unit,
-    onScratchEnd: () -> Unit,
-    onToggle: () -> Unit
+    onScratchEnd: () -> Unit
 ) {
     val transition = rememberInfiniteTransition(label = "disc-spin")
     val rotation by transition.animateFloat(
@@ -1227,6 +1225,24 @@ private fun DiscAlbumStage(
             activeColor = MaterialTheme.colorScheme.primary,
             trackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.18f)
         )
+        Surface(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 38.dp, end = 38.dp)
+                .size(48.dp),
+            shape = CircleShape,
+            color = Color(0xFFD84B8B),
+            tonalElevation = 3.dp
+        ) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                Icon(
+                    imageVector = Icons.Filled.Favorite,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(25.dp)
+                )
+            }
+        }
         VinylDisc(
             tint = track.tint,
             modifier = Modifier
@@ -1293,14 +1309,6 @@ private fun DiscAlbumStage(
             progress = stageProgress,
             modifier = Modifier.fillMaxSize(0.86f)
         )
-        FilledTonalButton(
-            onClick = onToggle,
-            modifier = Modifier.size(72.dp),
-            shape = CircleShape,
-            contentPadding = PaddingValues(0.dp)
-        ) {
-            Text(if (isPlaying) "II" else ">", style = MaterialTheme.typography.titleLarge)
-        }
     }
 }
 
@@ -1386,14 +1394,15 @@ private fun TurntableArmOverlay(progress: Float, modifier: Modifier = Modifier) 
     val colorScheme = MaterialTheme.colorScheme
     Canvas(modifier = modifier) {
         val p = progress.coerceIn(0f, 1f)
-        val pivot = Offset(size.width * 0.78f, size.height * 0.17f)
-        val elbow = Offset(size.width * (0.73f - p * 0.025f), size.height * (0.35f + p * 0.025f))
-        val stylus = Offset(size.width * (0.64f - p * 0.075f), size.height * (0.55f + p * 0.06f))
+        val accent = Color(0xFFD84B8B)
+        val pivot = Offset(size.width * 0.18f, size.height * 0.16f)
+        val elbow = Offset(size.width * (0.16f + p * 0.025f), size.height * (0.34f + p * 0.02f))
+        val stylus = Offset(size.width * (0.24f + p * 0.08f), size.height * (0.56f - p * 0.035f))
         val armPath = Path().apply {
             moveTo(pivot.x, pivot.y)
             cubicTo(
-                size.width * 0.75f,
-                size.height * 0.27f,
+                size.width * 0.12f,
+                size.height * 0.24f,
                 elbow.x,
                 elbow.y,
                 stylus.x,
@@ -1417,27 +1426,27 @@ private fun TurntableArmOverlay(progress: Float, modifier: Modifier = Modifier) 
         )
 
         val cartridge = Path().apply {
-            moveTo(stylus.x - size.width * 0.036f, stylus.y - size.height * 0.002f)
-            lineTo(stylus.x + size.width * 0.002f, stylus.y - size.height * 0.038f)
-            lineTo(stylus.x + size.width * 0.052f, stylus.y + size.height * 0.004f)
-            lineTo(stylus.x + size.width * 0.012f, stylus.y + size.height * 0.042f)
+            moveTo(stylus.x - size.width * 0.018f, stylus.y - size.height * 0.045f)
+            lineTo(stylus.x + size.width * 0.035f, stylus.y - size.height * 0.026f)
+            lineTo(stylus.x + size.width * 0.023f, stylus.y + size.height * 0.036f)
+            lineTo(stylus.x - size.width * 0.03f, stylus.y + size.height * 0.022f)
             close()
         }
         drawPath(path = cartridge, color = Color.Black.copy(alpha = 0.22f))
         drawPath(path = cartridge, color = colorScheme.onSurfaceVariant.copy(alpha = 0.68f))
         drawCircle(
+            color = accent,
+            radius = 19.dp.toPx(),
+            center = pivot
+        )
+        drawCircle(
             color = colorScheme.surface,
-            radius = 9.dp.toPx(),
+            radius = 12.dp.toPx(),
             center = pivot
         )
         drawCircle(
-            color = colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
+            color = accent.copy(alpha = 0.88f),
             radius = 6.dp.toPx(),
-            center = pivot
-        )
-        drawCircle(
-            color = Color.White.copy(alpha = 0.76f),
-            radius = 3.5.dp.toPx(),
             center = pivot
         )
     }
@@ -1446,19 +1455,21 @@ private fun TurntableArmOverlay(progress: Float, modifier: Modifier = Modifier) 
 @Composable
 private fun VinylDisc(tint: Color, modifier: Modifier = Modifier) {
     val surface = MaterialTheme.colorScheme.surface
+    val labelColor = Color(0xFFD84B8B)
+    val labelDark = Color(0xFFA93872)
     Canvas(
         modifier = modifier
             .clip(CircleShape)
-            .background(tint.copy(alpha = 0.18f))
+            .background(Color(0xFF18161D))
     ) {
         val radius = size.minDimension / 2f
         val center = Offset(size.width / 2f, size.height / 2f)
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    tint.copy(alpha = 0.94f),
-                    tint.copy(alpha = 0.58f),
-                    Color.Black.copy(alpha = 0.84f)
+                    tint.copy(alpha = 0.3f),
+                    Color(0xFF2A232D),
+                    Color(0xFF141219)
                 ),
                 center = Offset(size.width * 0.34f, size.height * 0.24f),
                 radius = radius * 1.18f
@@ -1467,20 +1478,19 @@ private fun VinylDisc(tint: Color, modifier: Modifier = Modifier) {
             center = center
         )
         drawArc(
-            color = Color.White.copy(alpha = 0.08f),
-            startAngle = 205f,
-            sweepAngle = 54f,
-            useCenter = false,
-            topLeft = Offset(size.width * 0.08f, size.height * 0.08f),
-            size = Size(radius * 1.84f, radius * 1.84f),
-            style = Stroke(width = 11.dp.toPx(), cap = StrokeCap.Round)
+            color = Color.White.copy(alpha = 0.14f),
+            startAngle = -33f,
+            sweepAngle = 47f,
+            useCenter = true,
+            topLeft = Offset.Zero,
+            size = Size(size.minDimension, size.minDimension)
         )
-        for (index in 0..10) {
+        for (index in 0..16) {
             drawCircle(
-                color = Color.White.copy(alpha = if (index % 3 == 0) 0.11f else 0.065f),
-                radius = radius * (0.31f + index * 0.055f),
+                color = Color.White.copy(alpha = if (index % 4 == 0) 0.12f else 0.055f),
+                radius = radius * (0.28f + index * 0.038f),
                 center = center,
-                style = Stroke(width = if (index % 3 == 0) 1.15.dp.toPx() else 0.75.dp.toPx())
+                style = Stroke(width = if (index % 4 == 0) 1.dp.toPx() else 0.65.dp.toPx())
             )
         }
         drawCircle(
@@ -1503,21 +1513,42 @@ private fun VinylDisc(tint: Color, modifier: Modifier = Modifier) {
         )
         drawCircle(
             color = Color.Black.copy(alpha = 0.34f),
-            radius = radius * 0.24f,
+            radius = radius * 0.27f,
             center = center
         )
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf(tint.copy(alpha = 0.94f), surface.copy(alpha = 0.9f)),
+                colors = listOf(labelColor, labelDark),
                 center = center,
-                radius = radius * 0.2f
+                radius = radius * 0.28f
             ),
-            radius = radius * 0.16f,
+            radius = radius * 0.24f,
+            center = center
+        )
+        for (index in 0 until 6) {
+            val angle = (index * 60f + 22f) * PI.toFloat() / 180f
+            drawLine(
+                color = labelDark.copy(alpha = 0.72f),
+                start = Offset(
+                    x = center.x + cos(angle) * radius * 0.04f,
+                    y = center.y + sin(angle) * radius * 0.04f
+                ),
+                end = Offset(
+                    x = center.x + cos(angle) * radius * 0.22f,
+                    y = center.y + sin(angle) * radius * 0.22f
+                ),
+                strokeWidth = 2.dp.toPx(),
+                cap = StrokeCap.Round
+            )
+        }
+        drawCircle(
+            color = surface.copy(alpha = 0.96f),
+            radius = radius * 0.03f,
             center = center
         )
         drawCircle(
-            color = Color.Black.copy(alpha = 0.82f),
-            radius = radius * 0.052f,
+            color = labelDark,
+            radius = radius * 0.015f,
             center = center
         )
     }
