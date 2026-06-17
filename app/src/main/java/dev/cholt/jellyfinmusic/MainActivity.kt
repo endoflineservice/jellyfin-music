@@ -220,6 +220,8 @@ private const val MAX_ALBUM_ART_CACHE_FILES = 320
 private const val DISC_SCRATCH_SEEK_SCALE = 0.55f
 private const val DISC_SCRATCH_DEAD_ZONE = 0.22f
 private const val VISUALIZER_BAR_COUNT = 28
+private const val VISUALIZER_CAPTURE_STALE_MS = 650L
+private const val VISUALIZER_FALLBACK_FRAME_MS = 66L
 
 private val AlbumArtCache = Collections.synchronizedMap(
     object : LinkedHashMap<String, Bitmap>(96, 0.75f, true) {
@@ -3460,7 +3462,7 @@ private fun AudioBarsVisualizer(
     active: Boolean,
     levels: FloatArray
 ) {
-    val hasLiveLevels = active && levels.any { it > 0.045f }
+    val hasLiveLevels = active && levels.any { it > 0.008f }
 
     Canvas(modifier = modifier) {
         val barCount = VISUALIZER_BAR_COUNT
@@ -3473,7 +3475,11 @@ private fun AudioBarsVisualizer(
                 hasLiveLevels -> levels.getOrElse(index) { 0f }
                 else -> 0f
             }.coerceIn(0f, 1f)
-            val height = size.height * (0.1f + level * 0.72f)
+            val height = if (hasLiveLevels) {
+                size.height * (0.08f + level * 0.78f)
+            } else {
+                1.5.dp.toPx()
+            }
             val x = step * index + step / 2f
             drawLine(
                 color = color,
@@ -3681,6 +3687,21 @@ private class JellyfinPlayer(private val context: Context) {
     private var visualizer: Visualizer? = null
     private var visualizerEnabled = true
     private var smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+    private var lastVisualizerCaptureAt = 0L
+    private var visualizerPumpRunning = false
+    private val visualizerPump = object : Runnable {
+        override fun run() {
+            if (!isPlaying || !visualizerEnabled) {
+                visualizerPumpRunning = false
+                return
+            }
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastVisualizerCaptureAt > VISUALIZER_CAPTURE_STALE_MS) {
+                visualizerLevels = fallbackVisualizerLevels(now, currentTrack?.id)
+            }
+            mainHandler.postDelayed(this, VISUALIZER_FALLBACK_FRAME_MS)
+        }
+    }
 
     fun play(track: MusicTrack, session: JellyfinSession) {
         releasePlayer()
@@ -3689,6 +3710,7 @@ private class JellyfinPlayer(private val context: Context) {
         progress = 0f
         smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+        lastVisualizerCaptureAt = 0L
         saveWidgetState(context, track, status, progress)
 
         val nextPlayer = MediaPlayer()
@@ -3714,12 +3736,14 @@ private class JellyfinPlayer(private val context: Context) {
                 status = "Playing"
                 if (visualizerEnabled) {
                     attachVisualizer(it.audioSessionId)
+                    startVisualizerPump()
                 }
                 syncProgress()
                 saveWidgetState(context, track, status, progress)
             }
             nextPlayer.setOnCompletionListener {
                 visualizer?.runCatching { enabled = false }
+                stopVisualizerPump()
                 isPlaying = false
                 status = "Ended"
                 progress = 1f
@@ -3729,6 +3753,7 @@ private class JellyfinPlayer(private val context: Context) {
             }
             nextPlayer.setOnErrorListener { _, _, _ ->
                 visualizer?.runCatching { enabled = false }
+                stopVisualizerPump()
                 isPlaying = false
                 status = "Playback error"
                 smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
@@ -3749,20 +3774,22 @@ private class JellyfinPlayer(private val context: Context) {
         if (isPlaying) {
             activePlayer.pause()
             visualizer?.runCatching { enabled = false }
+            stopVisualizerPump()
             isPlaying = false
             status = "Paused"
             saveWidgetState(context, currentTrack, status, progress)
         } else {
             activePlayer.start()
+            isPlaying = true
+            status = "Playing"
             if (visualizerEnabled) {
                 if (visualizer == null) {
                     attachVisualizer(activePlayer.audioSessionId)
                 } else {
                     visualizer?.runCatching { enabled = true }
                 }
+                startVisualizerPump()
             }
-            isPlaying = true
-            status = "Playing"
             saveWidgetState(context, currentTrack, status, progress)
         }
     }
@@ -3770,11 +3797,13 @@ private class JellyfinPlayer(private val context: Context) {
     fun setVisualizerEnabled(enabled: Boolean) {
         visualizerEnabled = enabled
         if (!enabled) {
+            stopVisualizerPump()
             releaseVisualizer()
             smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
             visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         } else if (isPlaying) {
             mediaPlayer?.audioSessionId?.let(::attachVisualizer)
+            startVisualizerPump()
         }
     }
 
@@ -3813,6 +3842,7 @@ private class JellyfinPlayer(private val context: Context) {
     }
 
     private fun releasePlayer() {
+        stopVisualizerPump()
         releaseVisualizer()
         mediaPlayer?.runCatching {
             if (isPlaying) stop()
@@ -3846,19 +3876,21 @@ private class JellyfinPlayer(private val context: Context) {
                             samplingRate: Int
                         ) {
                             val data = waveform ?: return
-                            val nextLevels = smoothVisualizerLevels(waveformToBars(data))
-                            mainHandler.post { visualizerLevels = nextLevels }
+                            publishNativeVisualizerLevels(waveformToBars(data))
                         }
 
                         override fun onFftDataCapture(
                             visualizer: Visualizer?,
                             fft: ByteArray?,
                             samplingRate: Int
-                        ) = Unit
+                        ) {
+                            val data = fft ?: return
+                            publishNativeVisualizerLevels(fftToBars(data))
+                        }
                     },
                     (Visualizer.getMaxCaptureRate() / 3).coerceAtLeast(1_000),
                     true,
-                    false
+                    true
                 )
                 enabled = true
             }
@@ -3868,6 +3900,14 @@ private class JellyfinPlayer(private val context: Context) {
             smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
             visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         }
+    }
+
+    private fun publishNativeVisualizerLevels(target: FloatArray) {
+        val nextLevels = smoothVisualizerLevels(target)
+        if (nextLevels.any { it > 0.015f }) {
+            lastVisualizerCaptureAt = SystemClock.elapsedRealtime()
+        }
+        mainHandler.post { visualizerLevels = nextLevels }
     }
 
     private fun waveformToBars(waveform: ByteArray): FloatArray {
@@ -3885,7 +3925,7 @@ private class JellyfinPlayer(private val context: Context) {
                 sum += normalized * normalized
             }
             val rms = sqrt(sum / (end - start).coerceAtLeast(1))
-            rawBars[bar] = ((rms - 0.025f) / 0.62f).coerceIn(0f, 1f)
+            rawBars[bar] = ((rms - 0.012f) / 0.34f).coerceIn(0f, 1f)
         }
         for (bar in bars.indices) {
             val previous = rawBars.getOrElse(bar - 1) { rawBars[bar] }
@@ -3893,6 +3933,42 @@ private class JellyfinPlayer(private val context: Context) {
             bars[bar] = (rawBars[bar] * 0.62f + previous * 0.19f + next * 0.19f).coerceIn(0f, 1f)
         }
         return bars
+    }
+
+    private fun fftToBars(fft: ByteArray): FloatArray {
+        if (fft.size < 4) return FloatArray(VISUALIZER_BAR_COUNT)
+        val rawBars = FloatArray(VISUALIZER_BAR_COUNT)
+        val usableBins = ((fft.size / 2) - 1).coerceAtLeast(1)
+        for (bar in rawBars.indices) {
+            val startBin = 1 + (bar * usableBins / VISUALIZER_BAR_COUNT)
+            val endBin = 1 + ((bar + 1) * usableBins / VISUALIZER_BAR_COUNT).coerceAtLeast(startBin + 1)
+            var sum = 0f
+            var count = 0
+            for (bin in startBin until endBin.coerceAtMost(usableBins + 1)) {
+                val real = fft.getOrElse(bin * 2) { 0 }.toFloat()
+                val imag = fft.getOrElse(bin * 2 + 1) { 0 }.toFloat()
+                sum += sqrt(real * real + imag * imag) / 128f
+                count++
+            }
+            val average = sum / count.coerceAtLeast(1)
+            rawBars[bar] = ((average - 0.02f) / 0.72f).coerceIn(0f, 1f)
+        }
+        return rawBars
+    }
+
+    private fun fallbackVisualizerLevels(nowMs: Long, trackId: String?): FloatArray {
+        val time = nowMs / 1_000f
+        val seed = (trackId?.hashCode() ?: 0) * 0.00031f
+        val center = (VISUALIZER_BAR_COUNT - 1) / 2f
+        return FloatArray(VISUALIZER_BAR_COUNT) { index ->
+            val distanceFromCenter = abs(index - center) / center.coerceAtLeast(1f)
+            val centerWeight = 1f - distanceFromCenter
+            val slowWave = (sin(time * 3.7f + index * 0.58f + seed) + 1f) * 0.5f
+            val fastWave = (sin(time * 7.1f + index * 0.31f + seed * 1.7f) + 1f) * 0.5f
+            val pulse = (sin(time * 5.2f + seed) + 1f) * 0.5f
+            (0.05f + slowWave * 0.26f + fastWave * 0.14f + pulse * centerWeight * 0.24f)
+                .coerceIn(0.035f, 0.78f)
+        }
     }
 
     private fun smoothVisualizerLevels(target: FloatArray): FloatArray {
@@ -3906,6 +3982,20 @@ private class JellyfinPlayer(private val context: Context) {
             smoothedVisualizerLevels[index] = current + (next - current) * smoothing
         }
         return smoothedVisualizerLevels.copyOf()
+    }
+
+    private fun startVisualizerPump() {
+        if (visualizerPumpRunning || !visualizerEnabled) return
+        visualizerPumpRunning = true
+        mainHandler.post(visualizerPump)
+    }
+
+    private fun stopVisualizerPump() {
+        visualizerPumpRunning = false
+        mainHandler.removeCallbacks(visualizerPump)
+        smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+        visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+        lastVisualizerCaptureAt = 0L
     }
 
     private fun releaseVisualizer() {
