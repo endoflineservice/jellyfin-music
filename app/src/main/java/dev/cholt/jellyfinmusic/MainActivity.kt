@@ -3,6 +3,7 @@ package dev.cholt.jellyfinmusic
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color as AndroidColor
@@ -95,6 +96,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -157,10 +159,7 @@ import ir.mahozad.multiplatform.wavyslider.material3.WavySlider
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         setTheme(R.style.AppTheme)
-        enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.light(AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.light(AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT)
-        )
+        applySystemBarStyle(isSystemDarkMode())
         super.onCreate(savedInstanceState)
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 42)
@@ -171,6 +170,22 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    fun applySystemBarStyle(darkTheme: Boolean) {
+        val transparent = AndroidColor.TRANSPARENT
+        val style = if (darkTheme) {
+            SystemBarStyle.dark(transparent)
+        } else {
+            SystemBarStyle.light(transparent, transparent)
+        }
+        enableEdgeToEdge(
+            statusBarStyle = style,
+            navigationBarStyle = style
+        )
+    }
+
+    private fun isSystemDarkMode(): Boolean =
+        (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
 }
 
 private val SeedPrimary = Color(0xFF006B5B)
@@ -506,6 +521,10 @@ private fun JellyfinMusicApp() {
         AppThemeMode.System -> systemDarkTheme
         AppThemeMode.Light -> false
         AppThemeMode.Dark -> true
+    }
+
+    SideEffect {
+        (context as? MainActivity)?.applySystemBarStyle(darkTheme)
     }
 
     LaunchedEffect(visualizerEnabled) {
@@ -1344,7 +1363,7 @@ private fun BottomTabsBar(
             .navigationBarsPadding()
             .padding(horizontal = 14.dp, vertical = 8.dp),
         shape = RoundedCornerShape(30.dp),
-        color = MaterialTheme.colorScheme.inverseSurface,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
         tonalElevation = 6.dp
     ) {
         Row(
@@ -1388,8 +1407,8 @@ private fun BottomTabItem(
                     .fillMaxWidth()
                     .height(40.dp),
                 shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary
+                color = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 6.dp),
@@ -1414,7 +1433,7 @@ private fun BottomTabItem(
             Icon(
                 imageVector = destinationIcon(destination),
                 contentDescription = destination.label,
-                tint = MaterialTheme.colorScheme.inverseOnSurface.copy(alpha = 0.78f),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.86f),
                 modifier = Modifier.size(22.dp)
             )
         }
@@ -1850,10 +1869,19 @@ private fun FullPlayerScreen(
 ) {
     var showQueue by remember { mutableStateOf(false) }
     val displayQueue = queue.ifEmpty { listOf(track) }
+    val colorScheme = MaterialTheme.colorScheme
+    val playerBackground = Brush.verticalGradient(
+        colors = listOf(
+            colorScheme.background,
+            blendColors(colorScheme.primary, colorScheme.background, 0.9f),
+            colorScheme.background
+        )
+    )
 
     Box(
         modifier = modifier
             .fillMaxSize()
+            .background(playerBackground)
             .swipeDownToDismiss(
                 onDismiss = onDismiss,
                 startZone = 220.dp,
@@ -3222,7 +3250,7 @@ private fun WavySeekBar(
         modifier = modifier,
         colors = SliderDefaults.colors(
             activeTrackColor = MaterialTheme.colorScheme.primary,
-            inactiveTrackColor = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.18f)
+            inactiveTrackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.24f)
         ),
         waveLength = 18.dp,
         waveHeight = 8.dp,
@@ -3233,10 +3261,18 @@ private fun WavySeekBar(
         thumb = {
             Box(
                 modifier = Modifier
-                    .size(14.dp)
+                    .size(18.dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary)
-            )
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.96f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(12.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary)
+                )
+            }
         }
     )
 }
