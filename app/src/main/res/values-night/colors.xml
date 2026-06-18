@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="splash_background_start">#171A1B</color>
+    <color name="splash_background_center">#101413</color>
+    <color name="splash_background_end">#080A0B</color>
+    <color name="splash_visualizer_bar_1">#DDF8EF</color>
+    <color name="splash_visualizer_bar_2">#77D8C4</color>
+    <color name="splash_visualizer_bar_3">#A8ECE0</color>
+    <color name="splash_visualizer_bar_4">#EAB9C8</color>
+    <color name="splash_visualizer_bar_5">#E4C46A</color>
+</resources>

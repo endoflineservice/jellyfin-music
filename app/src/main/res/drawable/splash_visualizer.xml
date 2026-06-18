@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="156dp"
+    android:height="96dp"
+    android:viewportWidth="156"
+    android:viewportHeight="96">
+
+    <group
+        android:name="bar_1"
+        android:pivotX="48"
+        android:pivotY="48"
+        android:scaleY="0.52">
+        <path
+            android:fillColor="@android:color/transparent"
+            android:pathData="M48,28 L48,68"
+            android:strokeColor="@color/splash_visualizer_bar_1"
+            android:strokeLineCap="round"
+            android:strokeWidth="8" />
+    </group>
+
+    <group
+        android:name="bar_2"
+        android:pivotX="63"
+        android:pivotY="48"
+        android:scaleY="0.82">
+        <path
+            android:fillColor="@android:color/transparent"
+            android:pathData="M63,22 L63,74"
+            android:strokeColor="@color/splash_visualizer_bar_2"
+            android:strokeLineCap="round"
+            android:strokeWidth="8" />
+    </group>
+
+    <group
+        android:name="bar_3"
+        android:pivotX="78"
+        android:pivotY="48"
+        android:scaleY="0.42">
+        <path
+            android:fillColor="@android:color/transparent"
+            android:pathData="M78,18 L78,78"
+            android:strokeColor="@color/splash_visualizer_bar_3"
+            android:strokeLineCap="round"
+            android:strokeWidth="8" />
+    </group>
+
+    <group
+        android:name="bar_4"
+        android:pivotX="93"
+        android:pivotY="48"
+        android:scaleY="0.74">
+        <path
+            android:fillColor="@android:color/transparent"
+            android:pathData="M93,23 L93,73"
+            android:strokeColor="@color/splash_visualizer_bar_4"
+            android:strokeLineCap="round"
+            android:strokeWidth="8" />
+    </group>
+
+    <group
+        android:name="bar_5"
+        android:pivotX="108"
+        android:pivotY="48"
+        android:scaleY="0.48">
+        <path
+            android:fillColor="@android:color/transparent"
+            android:pathData="M108,30 L108,66"
+            android:strokeColor="@color/splash_visualizer_bar_5"
+            android:strokeLineCap="round"
+            android:strokeWidth="8" />
+    </group>
+</vector>

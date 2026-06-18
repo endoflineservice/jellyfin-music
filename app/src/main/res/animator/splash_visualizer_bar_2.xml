@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<objectAnimator xmlns:android="http://schemas.android.com/apk/res/android"
+    android:duration="540"
+    android:interpolator="@android:interpolator/fast_out_slow_in"
+    android:propertyName="scaleY"
+    android:repeatCount="infinite"
+    android:repeatMode="reverse"
+    android:startOffset="80"
+    android:valueFrom="0.88"
+    android:valueTo="0.38"
+    android:valueType="floatType" />

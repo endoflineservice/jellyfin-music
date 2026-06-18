@@ -2,14 +2,8 @@
 <resources>
     <style name="LaunchTheme" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@drawable/splash_screen</item>
-        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightStatusBar">false</item>
         <item name="android:navigationBarColor">@color/splash_background_end</item>
         <item name="android:statusBarColor">@color/splash_background_start</item>
-    </style>
-
-    <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
-        <item name="android:windowLightStatusBar">true</item>
-        <item name="android:navigationBarColor">#F7F2EA</item>
-        <item name="android:statusBarColor">#F7F2EA</item>
     </style>
 </resources>
