@@ -1382,7 +1382,7 @@ private fun JellyfinMusicApp() {
     var selectedTab by remember { mutableStateOf(LibraryTab.Songs) }
     var librarySearchQuery by remember { mutableStateOf("") }
     var librarySortMode by remember { mutableStateOf(LibrarySortMode.Title) }
-    var libraryGridView by remember { mutableStateOf(false) }
+    var libraryGridView by remember { mutableStateOf(true) }
     var activeLibraryFilters by remember { mutableStateOf(emptySet<LibraryFilter>()) }
     var libraryLetterFilter by remember { mutableStateOf<Char?>(null) }
     var downloadedOnlyMode by remember { mutableStateOf(false) }
@@ -2093,6 +2093,26 @@ private fun JellyfinMusicApp() {
             }
             val displayedAlbumGroups = remember(displayedTracks) { displayedTracks.groupByAlbum() }
             val displayedArtistGroups = remember(displayedTracks) { displayedTracks.groupByArtist() }
+            val searchAlbumGroups = remember(visibleTracks, displayedTracks, searchQuery, isSearchDestination) {
+                if (!isSearchDestination) {
+                    displayedAlbumGroups
+                } else {
+                    visibleTracks
+                        .groupByAlbum()
+                        .filterGroupsBy(searchQuery)
+                        .ifEmpty { displayedTracks.groupByAlbum() }
+                }
+            }
+            val searchArtistGroups = remember(visibleTracks, displayedTracks, searchQuery, isSearchDestination) {
+                if (!isSearchDestination) {
+                    displayedArtistGroups
+                } else {
+                    visibleTracks
+                        .groupByArtist()
+                        .filterGroupsBy(searchQuery)
+                        .ifEmpty { displayedTracks.groupByArtist() }
+                }
+            }
             val libraryStackedTracks = remember(
                 visibleTracks,
                 librarySearchQuery,
@@ -2134,11 +2154,11 @@ private fun JellyfinMusicApp() {
                     artists = libraryArtistGroups.size
                 )
             }
-            val searchResultCounts = remember(displayedTracks, displayedAlbumGroups, displayedArtistGroups) {
+            val searchResultCounts = remember(displayedTracks, searchAlbumGroups, searchArtistGroups) {
                 SearchResultCounts(
                     songs = displayedTracks.size,
-                    albums = displayedAlbumGroups.size,
-                    artists = displayedArtistGroups.size
+                    albums = searchAlbumGroups.size,
+                    artists = searchArtistGroups.size
                 )
             }
             if (showPlayer && activeTrack != null) {
@@ -2780,128 +2800,178 @@ private fun JellyfinMusicApp() {
                                 }
                                 }
                             } else {
+                                val queryIsBlank = searchQuery.isBlank()
+                                val hasSearchResults = displayedTracks.isNotEmpty() ||
+                                    searchAlbumGroups.isNotEmpty() ||
+                                    searchArtistGroups.isNotEmpty()
+
                                 item {
-                                    if (isSearchTab) {
-                                        SearchHeader(
-                                            searchQuery = searchQuery,
-                                            resultCounts = searchResultCounts,
-                                            isBusy = isBusy,
-                                            statusText = statusText,
-                                            focusRequester = searchFocusRequester,
-                                            onSearchQueryChange = { searchQuery = it },
-                                            onRefresh = { loadLibrary(connectedSession) }
-                                        )
-                                    } else {
-                                        LibraryHeader(
-                                            title = "Library",
-                                            showSearch = false,
-                                            searchQuery = "",
-                                            isBusy = isBusy,
-                                            statusText = statusText,
-                                            onSearchQueryChange = {},
-                                            onRefresh = { loadLibrary(connectedSession) }
-                                        )
-                                    }
-                                }
-                                item {
-                                    LibraryTabs(
-                                        selectedTab = selectedTab,
-                                        resultCounts = if (isSearchTab) searchResultCounts else null,
-                                        onTabSelected = { selectedTab = it }
+                                    SearchHeader(
+                                        searchQuery = searchQuery,
+                                        resultCounts = searchResultCounts,
+                                        isBusy = isBusy,
+                                        statusText = statusText,
+                                        focusRequester = searchFocusRequester,
+                                        onSearchQueryChange = { searchQuery = it },
+                                        onRefresh = { loadLibrary(connectedSession) }
                                     )
                                 }
 
-                                when (selectedTab) {
-                                    LibraryTab.Songs -> {
-                                        if (displayedTracks.isEmpty()) {
-                                            item {
-                                                EmptyLibraryMessage(
-                                                    isBusy = isBusy,
-                                                    statusText = statusText,
-                                                    emptyText = emptySearchText
-                                                )
-                                            }
-                                        } else {
-                                            if (selectedDestination == AppDestination.Library) {
-                                                item {
-                                                    RandomPlayButton(
-                                                        label = "Random play",
-                                                        trackCount = displayedTracks.size,
-                                                        onClick = { playRandom(displayedTracks) }
+                                if (queryIsBlank) {
+                                    if (recentTracks.isNotEmpty()) {
+                                        item {
+                                            HomeTrackShelf(
+                                                title = "Recently played",
+                                                tracks = recentTracks.take(10),
+                                                session = connectedSession,
+                                                onTrackClick = { track ->
+                                                    playTrack(track, openPlayer = true, source = recentTracks)
+                                                }
+                                            )
+                                        }
+                                    }
+                                    if (displayedAlbumGroups.isNotEmpty()) {
+                                        item {
+                                            SearchSectionHeader(
+                                                title = "Browse albums",
+                                                count = displayedAlbumGroups.size
+                                            )
+                                        }
+                                        items(
+                                            displayedAlbumGroups.take(12).chunked(2),
+                                            key = { row -> row.joinToString(separator = "|") { it.title } }
+                                        ) { rowGroups ->
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                            ) {
+                                                rowGroups.forEach { group ->
+                                                    LibraryGroupGridCard(
+                                                        group = group,
+                                                        session = connectedSession,
+                                                        artworkShape = RoundedCornerShape(8.dp),
+                                                        onClick = {
+                                                            openLibraryDetail(
+                                                                LibraryDetail(LibraryCollectionType.Album, group.title)
+                                                            )
+                                                        },
+                                                        modifier = Modifier.weight(1f)
                                                     )
                                                 }
+                                                if (rowGroups.size == 1) {
+                                                    Spacer(Modifier.weight(1f))
+                                                }
                                             }
-                                            items(displayedTracks, key = { it.id }) { track ->
-                                                TrackRow(
-                                                    track = track,
-                                                    session = connectedSession,
-                                                    isCurrent = player.currentTrack?.id == track.id,
-                                                    isLiked = track.id in likedTrackIds,
-                                                    onToggleLiked = { toggleLiked(track) },
-                                                    onClick = { playTrack(track, openPlayer = true, source = displayedTracks) },
-                                                    isDownloaded = track.id in offlineDownloads,
-                                                    downloadProgress = downloadProgressById[track.id],
-                                                    onToggleDownload = { toggleOfflineDownload(track) },
-                                                    onGoToAlbum = {
-                                                        openLibraryDetail(LibraryDetail(LibraryCollectionType.Album, track.album))
-                                                    },
-                                                    onGoToArtist = {
-                                                        openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, track.artist))
-                                                    },
-                                                    onPlayNext = { playTrackNext(track) },
-                                                    onStartRadio = { startRadioFrom(displayedTracks, track) }
-                                                )
+                                        }
+                                    }
+                                } else if (!hasSearchResults) {
+                                    item {
+                                        EmptyLibraryMessage(
+                                            isBusy = isBusy,
+                                            statusText = statusText,
+                                            emptyText = emptySearchText
+                                        )
+                                    }
+                                } else {
+                                    if (searchAlbumGroups.isNotEmpty()) {
+                                        item {
+                                            SearchSectionHeader(
+                                                title = "Albums",
+                                                count = searchAlbumGroups.size
+                                            )
+                                        }
+                                        items(
+                                            searchAlbumGroups.take(12).chunked(2),
+                                            key = { row -> row.joinToString(separator = "|") { it.title } }
+                                        ) { rowGroups ->
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                            ) {
+                                                rowGroups.forEach { group ->
+                                                    LibraryGroupGridCard(
+                                                        group = group,
+                                                        session = connectedSession,
+                                                        artworkShape = RoundedCornerShape(8.dp),
+                                                        onClick = {
+                                                            openLibraryDetail(
+                                                                LibraryDetail(LibraryCollectionType.Album, group.title)
+                                                            )
+                                                        },
+                                                        modifier = Modifier.weight(1f)
+                                                    )
+                                                }
+                                                if (rowGroups.size == 1) {
+                                                    Spacer(Modifier.weight(1f))
+                                                }
                                             }
                                         }
                                     }
 
-                                    LibraryTab.Albums -> {
-                                        val groups = displayedAlbumGroups
-                                        if (groups.isEmpty()) {
-                                            item {
-                                                EmptyLibraryMessage(
-                                                    isBusy = isBusy,
-                                                    statusText = statusText,
-                                                    emptyText = emptySearchText
-                                                )
-                                            }
-                                        } else {
-                                            items(groups, key = { it.title }) { group ->
-                                                GroupRow(
-                                                    group = group,
-                                                    session = connectedSession,
-                                                    onClick = {
-                                                        openLibraryDetail(
-                                                            LibraryDetail(LibraryCollectionType.Album, group.title)
-                                                        )
-                                                    }
-                                                )
+                                    if (searchArtistGroups.isNotEmpty()) {
+                                        item {
+                                            SearchSectionHeader(
+                                                title = "Artists",
+                                                count = searchArtistGroups.size
+                                            )
+                                        }
+                                        items(
+                                            searchArtistGroups.take(10).chunked(2),
+                                            key = { row -> row.joinToString(separator = "|") { it.title } }
+                                        ) { rowGroups ->
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                            ) {
+                                                rowGroups.forEach { group ->
+                                                    LibraryGroupGridCard(
+                                                        group = group,
+                                                        session = connectedSession,
+                                                        artworkShape = CircleShape,
+                                                        onClick = {
+                                                            openLibraryDetail(
+                                                                LibraryDetail(LibraryCollectionType.Artist, group.title)
+                                                            )
+                                                        },
+                                                        modifier = Modifier.weight(1f)
+                                                    )
+                                                }
+                                                if (rowGroups.size == 1) {
+                                                    Spacer(Modifier.weight(1f))
+                                                }
                                             }
                                         }
                                     }
 
-                                    LibraryTab.Artists -> {
-                                        val groups = displayedArtistGroups
-                                        if (groups.isEmpty()) {
-                                            item {
-                                                EmptyLibraryMessage(
-                                                    isBusy = isBusy,
-                                                    statusText = statusText,
-                                                    emptyText = emptySearchText
-                                                )
-                                            }
-                                        } else {
-                                            items(groups, key = { it.title }) { group ->
-                                                GroupRow(
-                                                    group = group,
-                                                    session = connectedSession,
-                                                    onClick = {
-                                                        openLibraryDetail(
-                                                            LibraryDetail(LibraryCollectionType.Artist, group.title)
-                                                        )
-                                                    }
-                                                )
-                                            }
+                                    if (displayedTracks.isNotEmpty()) {
+                                        item {
+                                            SearchSectionHeader(
+                                                title = "Songs",
+                                                count = displayedTracks.size
+                                            )
+                                        }
+                                        items(displayedTracks.take(30), key = { it.id }) { track ->
+                                            TrackRow(
+                                                track = track,
+                                                session = connectedSession,
+                                                isCurrent = player.currentTrack?.id == track.id,
+                                                isLiked = track.id in likedTrackIds,
+                                                onToggleLiked = { toggleLiked(track) },
+                                                onClick = {
+                                                    playTrack(track, openPlayer = true, source = displayedTracks)
+                                                },
+                                                isDownloaded = track.id in offlineDownloads,
+                                                downloadProgress = downloadProgressById[track.id],
+                                                onToggleDownload = { toggleOfflineDownload(track) },
+                                                onGoToAlbum = {
+                                                    openLibraryDetail(LibraryDetail(LibraryCollectionType.Album, track.album))
+                                                },
+                                                onGoToArtist = {
+                                                    openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, track.artist))
+                                                },
+                                                onPlayNext = { playTrackNext(track) },
+                                                onStartRadio = { startRadioFrom(displayedTracks, track) }
+                                            )
                                         }
                                     }
                                 }
@@ -3737,69 +3807,103 @@ private fun SearchHeader(
     onRefresh: () -> Unit
 ) {
     val focusManager = LocalFocusManager.current
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(26.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Column(Modifier.weight(1f)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text(
-                    text = "Search",
+                    text = "Search your music",
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.SemiBold
                 )
-                if (statusText != null) {
-                    Text(
-                        text = statusText,
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodyMedium
+                TextButton(onClick = onRefresh, enabled = !isBusy) {
+                    Text(if (isBusy) "Syncing" else "Sync")
+                }
+            }
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = onSearchQueryChange,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(focusRequester),
+                singleLine = true,
+                textStyle = MaterialTheme.typography.titleMedium,
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Filled.Search,
+                        contentDescription = null
                     )
-                }
-            }
-            TextButton(onClick = onRefresh, enabled = !isBusy) {
-                Text("Refresh")
-            }
-        }
-        OutlinedTextField(
-            value = searchQuery,
-            onValueChange = onSearchQueryChange,
-            modifier = Modifier
-                .fillMaxWidth()
-                .focusRequester(focusRequester),
-            singleLine = true,
-            textStyle = MaterialTheme.typography.titleMedium,
-            leadingIcon = {
-                Icon(
-                    imageVector = Icons.Filled.Search,
-                    contentDescription = null
-                )
-            },
-            trailingIcon = {
-                if (searchQuery.isNotBlank()) {
-                    IconButton(onClick = { onSearchQueryChange("") }) {
-                        Icon(
-                            imageVector = Icons.Filled.Close,
-                            contentDescription = "Clear search"
-                        )
+                },
+                trailingIcon = {
+                    if (searchQuery.isNotBlank()) {
+                        IconButton(onClick = { onSearchQueryChange("") }) {
+                            Icon(
+                                imageVector = Icons.Filled.Close,
+                                contentDescription = "Clear search"
+                            )
+                        }
                     }
-                }
-            },
-            placeholder = { Text("Songs, albums, artists") },
-            supportingText = {
+                },
+                placeholder = { Text("Song, album, artist") },
+                supportingText = {
+                    Text(
+                        text = resultCounts.summary(),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
+                shape = RoundedCornerShape(22.dp)
+            )
+            if (statusText != null) {
                 Text(
-                    text = resultCounts.summary(),
-                    maxLines = 1,
+                    text = statusText,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
-            },
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
-            shape = RoundedCornerShape(24.dp)
-        )
-        if (isBusy) {
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+            if (isBusy) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
         }
+    }
+}
+
+@Composable
+private fun SearchSectionHeader(title: String, count: Int) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 2.dp, end = 2.dp, top = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = count.toString(),
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1
+        )
     }
 }
 
@@ -9214,6 +9318,23 @@ private fun List<MusicTrack>.filterBy(query: String): List<MusicTrack> {
     }.map { it.first }
 }
 
+private fun List<LibraryGroup>.filterGroupsBy(query: String): List<LibraryGroup> {
+    val needle = query.searchKey()
+    if (needle.isBlank()) return this
+    val tokens = needle.split(' ').filter { it.isNotBlank() }
+    if (tokens.isEmpty()) return this
+    return mapNotNull { group ->
+        group.searchScore(needle, tokens)?.let { score -> group to score }
+    }.sortedWith { left, right ->
+        val scoreCompare = left.second.compareTo(right.second)
+        if (scoreCompare != 0) {
+            scoreCompare
+        } else {
+            left.first.title.compareTo(right.first.title, ignoreCase = true)
+        }
+    }.map { it.first }
+}
+
 private fun List<MusicTrack>.sortedForLibrary(sortMode: LibrarySortMode): List<MusicTrack> =
     when (sortMode) {
         LibrarySortMode.Title -> sortedWith(MusicTrackSort)
@@ -9277,6 +9398,32 @@ private fun MusicTrack.searchScore(query: String, tokens: List<String>): Int? {
         tokens.any { token -> artistKey.split(' ').any { it.fuzzyMatches(token) } } -> 10
         tokens.any { token -> albumKey.split(' ').any { it.fuzzyMatches(token) } } -> 11
         else -> 12
+    }
+}
+
+private fun LibraryGroup.searchScore(query: String, tokens: List<String>): Int? {
+    val titleKey = title.searchKey()
+    val subtitleKey = subtitle.searchKey()
+    val trackWords = tracks
+        .take(40)
+        .joinToString(separator = " ") { "${it.title} ${it.artist} ${it.album}" }
+        .searchKey()
+    val combinedKey = "$titleKey $subtitleKey $trackWords"
+    val searchableWords = combinedKey.split(' ').filter { it.isNotBlank() }
+    val fuzzyMatch = tokens.all { token ->
+        combinedKey.contains(token) || searchableWords.any { word -> word.fuzzyMatches(token) }
+    }
+    if (!fuzzyMatch) return null
+    return when {
+        titleKey == query -> 0
+        titleKey.startsWith(query) -> 1
+        titleKey.contains(query) -> 2
+        tokens.any { token -> titleKey.split(' ').any { it.fuzzyMatches(token) } } -> 3
+        subtitleKey == query -> 4
+        subtitleKey.startsWith(query) -> 5
+        subtitleKey.contains(query) -> 6
+        tokens.any { token -> subtitleKey.split(' ').any { it.fuzzyMatches(token) } } -> 7
+        else -> 8
     }
 }
 
