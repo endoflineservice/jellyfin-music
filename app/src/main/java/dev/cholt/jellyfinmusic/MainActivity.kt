@@ -208,6 +208,7 @@ import java.util.Collections
 import java.util.LinkedHashMap
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 import kotlin.math.PI
 import kotlin.math.abs
@@ -457,6 +458,9 @@ private fun JellyfinSession.streamHeaders(): Map<String, String> =
         "User-Agent" to "JellyfinMusic/0.1.0",
         "Accept" to "audio/*,*/*"
     )
+
+private fun JellyfinSession.playbackKey(): String =
+    stableCacheKey("$serverUrl|$userId|$token")
 
 private const val PLAYBACK_NOTIFICATION_CHANNEL_ID = "playback"
 private const val PLAYBACK_NOTIFICATION_ID = 1001
@@ -1769,6 +1773,34 @@ private fun JellyfinMusicApp() {
             player.syncProgress()
             delay(500)
         }
+    }
+
+    LaunchedEffect(
+        player.currentTrack?.id,
+        player.isPlaying,
+        playQueue,
+        shuffleEnabled,
+        session?.serverUrl,
+        session?.userId,
+        session?.token
+    ) {
+        val activeTrack = player.currentTrack
+        val activeSession = session
+        if (!player.isPlaying || activeTrack == null || activeSession == null || shuffleEnabled) {
+            if (player.status != "Ended") {
+                player.prepareNext(null, null)
+            }
+            return@LaunchedEffect
+        }
+
+        delay(650)
+        val stillActiveTrack = player.currentTrack
+        if (!player.isPlaying || stillActiveTrack?.id != activeTrack.id) return@LaunchedEffect
+
+        val nextTrack = playQueue
+            .ifEmpty { tracks.queueStartingAt(activeTrack) }
+            .nextTrackAfter(activeTrack)
+        player.prepareNext(nextTrack, activeSession)
     }
 
     LaunchedEffect(player.status) {
@@ -7668,6 +7700,7 @@ private class JellyfinPlayer(private val context: Context) {
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val notificationController = PlaybackNotificationController(context)
     private var mediaPlayer: MediaPlayer? = null
+    private var warmedPlayer: WarmedMediaPlayer? = null
     private var visualizer: Visualizer? = null
     private var currentSession: JellyfinSession? = null
     private var audioFocusRequest: AudioFocusRequest? = null
@@ -7677,6 +7710,7 @@ private class JellyfinPlayer(private val context: Context) {
     private var lastVisualizerCaptureAt = 0L
     private var visualizerPumpRunning = false
     private var playbackGeneration = 0
+    private val warmupGeneration = AtomicInteger(0)
     private val visualizerPump = object : Runnable {
         override fun run() {
             if (!isPlaying || !visualizerEnabled) {
@@ -7694,8 +7728,17 @@ private class JellyfinPlayer(private val context: Context) {
         mainHandler.post { handleAudioFocusChange(focusChange) }
     }
 
+    private data class WarmedMediaPlayer(
+        val trackId: String,
+        val sessionKey: String,
+        val generation: Int,
+        val player: MediaPlayer,
+        var isPrepared: Boolean = false
+    )
+
     fun play(track: MusicTrack, session: JellyfinSession) {
         val generation = ++playbackGeneration
+        val preparedPlayer = takePreparedWarmPlayer(track, session)
         releasePlayerForReplacement()
         currentSession = session
         currentTrack = track
@@ -7704,73 +7747,32 @@ private class JellyfinPlayer(private val context: Context) {
         smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         lastVisualizerCaptureAt = 0L
-        publishPlaybackState(track)
+
+        if (!requestAudioFocus()) {
+            isPlaying = false
+            status = "Audio focus unavailable"
+            publishPlaybackState(track)
+            preparedPlayer?.let(::releaseMediaPlayerAsync)
+            return
+        }
+
+        if (preparedPlayer != null) {
+            mediaPlayer = preparedPlayer
+            configureActivePlayer(preparedPlayer, generation, track)
+            startPreparedPlayer(preparedPlayer, generation, track)
+            return
+        }
 
         val nextPlayer = MediaPlayer()
         mediaPlayer = nextPlayer
         runCatching {
-            nextPlayer.setAudioAttributes(
-                playbackAudioAttributes()
-            )
-            val offlineFile = offlinePlayableFileFor(context, session, track)
-            if (offlineFile != null) {
-                nextPlayer.setDataSource(offlineFile.absolutePath)
-            } else {
-                nextPlayer.setDataSource(
-                    context,
-                    Uri.parse(track.streamUrl(session)),
-                    session.streamHeaders()
-                )
-            }
-            nextPlayer.setOnPreparedListener {
-                if (!it.isActivePlayback(generation)) {
-                    releaseMediaPlayerAsync(it)
-                    return@setOnPreparedListener
-                }
-                if (!requestAudioFocus()) {
-                    isPlaying = false
-                    status = "Audio focus unavailable"
-                    publishPlaybackState(track)
-                    return@setOnPreparedListener
-                }
-                it.setVolume(1f, 1f)
-                it.start()
-                isPlaying = true
-                status = "Playing"
-                if (visualizerEnabled) {
-                    attachVisualizer(it.audioSessionId)
-                    startVisualizerPump()
-                }
-                syncProgress()
-                publishPlaybackState(track)
-            }
-            nextPlayer.setOnCompletionListener {
-                if (!it.isActivePlayback(generation)) return@setOnCompletionListener
-                abandonAudioFocus()
-                visualizer?.runCatching { enabled = false }
-                stopVisualizerPump()
-                isPlaying = false
-                status = "Ended"
-                progress = 1f
-                smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
-                visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
-                publishPlaybackState(track)
-            }
-            nextPlayer.setOnErrorListener { errorPlayer, _, _ ->
-                if (!errorPlayer.isActivePlayback(generation)) return@setOnErrorListener true
-                abandonAudioFocus()
-                visualizer?.runCatching { enabled = false }
-                stopVisualizerPump()
-                isPlaying = false
-                status = "Playback error"
-                smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
-                visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
-                publishPlaybackState(track)
-                true
-            }
+            nextPlayer.configureDataSource(session, track)
+            configureActivePlayer(nextPlayer, generation, track)
             nextPlayer.prepareAsync()
+            publishPlaybackState(track)
         }.onFailure {
             if (nextPlayer.isActivePlayback(generation)) {
+                abandonAudioFocus()
                 isPlaying = false
                 mediaPlayer = null
                 status = it.readableMessage()
@@ -7780,13 +7782,68 @@ private class JellyfinPlayer(private val context: Context) {
         }
     }
 
+    fun prepareNext(track: MusicTrack?, session: JellyfinSession?) {
+        if (track == null || session == null || currentTrack?.id == track.id) {
+            releaseWarmedPlayer()
+            return
+        }
+
+        val sessionKey = session.playbackKey()
+        warmedPlayer
+            ?.takeIf { it.trackId == track.id && it.sessionKey == sessionKey }
+            ?.let { return }
+
+        releaseWarmedPlayer()
+        val generation = warmupGeneration.incrementAndGet()
+        val nextPlayer = MediaPlayer()
+        val warmup = WarmedMediaPlayer(
+            trackId = track.id,
+            sessionKey = sessionKey,
+            generation = generation,
+            player = nextPlayer
+        )
+        warmedPlayer = warmup
+
+        runCatching {
+            nextPlayer.configureDataSource(session, track)
+            nextPlayer.setOnPreparedListener {
+                val activeWarmup = warmedPlayer
+                if (
+                    activeWarmup?.player === it &&
+                    activeWarmup.generation == generation &&
+                    activeWarmup.trackId == track.id &&
+                    activeWarmup.sessionKey == sessionKey
+                ) {
+                    activeWarmup.isPrepared = true
+                } else {
+                    releaseMediaPlayerAsync(it)
+                }
+            }
+            nextPlayer.setOnErrorListener { errorPlayer, _, _ ->
+                if (warmedPlayer?.player === errorPlayer) {
+                    warmedPlayer = null
+                }
+                releaseMediaPlayerAsync(errorPlayer)
+                true
+            }
+            nextPlayer.prepareAsync()
+        }.onFailure {
+            if (warmedPlayer?.player === nextPlayer) {
+                warmedPlayer = null
+            }
+            releaseMediaPlayerAsync(nextPlayer)
+        }
+    }
+
     fun toggle() {
         val activePlayer = mediaPlayer ?: return
+        if (status == "Buffering") return
         if (isPlaying) {
             activePlayer.pause()
             abandonAudioFocus()
             visualizer?.runCatching { enabled = false }
             stopVisualizerPump()
+            releaseWarmedPlayer()
             isPlaying = false
             status = "Paused"
             publishPlaybackState()
@@ -7865,6 +7922,111 @@ private class JellyfinPlayer(private val context: Context) {
     fun dispose() {
         release()
         notificationController.release()
+    }
+
+    private fun MediaPlayer.configureDataSource(session: JellyfinSession, track: MusicTrack) {
+        setAudioAttributes(playbackAudioAttributes())
+        val offlineFile = offlinePlayableFileFor(context, session, track)
+        if (offlineFile != null) {
+            setDataSource(offlineFile.absolutePath)
+        } else {
+            setDataSource(
+                context,
+                Uri.parse(track.streamUrl(session)),
+                session.streamHeaders()
+            )
+        }
+    }
+
+    private fun configureActivePlayer(player: MediaPlayer, generation: Int, track: MusicTrack) {
+        player.setOnPreparedListener {
+            startPreparedPlayer(it, generation, track)
+        }
+        player.setOnCompletionListener {
+            if (!it.isActivePlayback(generation)) return@setOnCompletionListener
+            abandonAudioFocus()
+            visualizer?.runCatching { enabled = false }
+            stopVisualizerPump()
+            isPlaying = false
+            status = "Ended"
+            progress = 1f
+            smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+            visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+            publishPlaybackState(track)
+        }
+        player.setOnErrorListener { errorPlayer, _, _ ->
+            if (!errorPlayer.isActivePlayback(generation)) return@setOnErrorListener true
+            abandonAudioFocus()
+            visualizer?.runCatching { enabled = false }
+            stopVisualizerPump()
+            isPlaying = false
+            status = "Playback error"
+            smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+            visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+            releaseWarmedPlayer()
+            publishPlaybackState(track)
+            true
+        }
+    }
+
+    private fun startPreparedPlayer(player: MediaPlayer, generation: Int, track: MusicTrack) {
+        if (!player.isActivePlayback(generation)) {
+            releaseMediaPlayerAsync(player)
+            return
+        }
+        if (!requestAudioFocus()) {
+            isPlaying = false
+            status = "Audio focus unavailable"
+            publishPlaybackState(track)
+            return
+        }
+
+        player.runCatching {
+            setVolume(1f, 1f)
+            start()
+        }.onSuccess {
+            isPlaying = true
+            status = "Playing"
+            if (visualizerEnabled) {
+                attachVisualizer(player.audioSessionId)
+                startVisualizerPump()
+            }
+            syncProgress()
+            publishPlaybackState(track)
+        }.onFailure {
+            if (player.isActivePlayback(generation)) {
+                abandonAudioFocus()
+                isPlaying = false
+                mediaPlayer = null
+                status = it.readableMessage()
+                publishPlaybackState(track)
+            }
+            releaseMediaPlayerAsync(player)
+        }
+    }
+
+    private fun takePreparedWarmPlayer(track: MusicTrack, session: JellyfinSession): MediaPlayer? {
+        val warmup = warmedPlayer ?: return null
+        warmedPlayer = null
+        warmupGeneration.incrementAndGet()
+
+        val matches = warmup.trackId == track.id && warmup.sessionKey == session.playbackKey() && warmup.isPrepared
+        if (!matches) {
+            releaseMediaPlayerAsync(warmup.player)
+            return null
+        }
+
+        warmup.player.runCatching { setOnPreparedListener(null) }
+        warmup.player.runCatching { setOnCompletionListener(null) }
+        warmup.player.runCatching { setOnErrorListener(null) }
+        return warmup.player
+    }
+
+    private fun releaseWarmedPlayer() {
+        warmupGeneration.incrementAndGet()
+        val warmup = warmedPlayer ?: return
+        warmedPlayer = null
+        releaseMediaPlayerAsync(warmup.player)
     }
 
     private fun MediaPlayer.isActivePlayback(generation: Int): Boolean =
@@ -7990,6 +8152,7 @@ private class JellyfinPlayer(private val context: Context) {
     private fun releasePlayer() {
         stopVisualizerPump()
         releaseVisualizer()
+        releaseWarmedPlayer()
         abandonAudioFocus()
         releaseMediaPlayerAsync(mediaPlayer)
         mediaPlayer = null
@@ -8991,6 +9154,12 @@ private fun List<MusicTrack>.queueStartingAt(track: MusicTrack): List<MusicTrack
     val startIndex = indexOfFirst { it.id == track.id }
     if (startIndex < 0) return listOf(track) + filterNot { it.id == track.id }
     return drop(startIndex) + take(startIndex)
+}
+
+private fun List<MusicTrack>.nextTrackAfter(track: MusicTrack): MusicTrack? {
+    val normalizedQueue = queueStartingAt(track)
+    if (normalizedQueue.size <= 1 || normalizedQueue.firstOrNull()?.id != track.id) return null
+    return normalizedQueue.drop(1).firstOrNull { it.id != track.id }
 }
 
 private fun List<MusicTrack>.moveQueueItem(fromIndex: Int, toIndex: Int): List<MusicTrack> {
