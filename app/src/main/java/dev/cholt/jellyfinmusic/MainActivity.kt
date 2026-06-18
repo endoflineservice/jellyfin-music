@@ -3443,13 +3443,34 @@ private fun BottomTabsBar(
                 .fillMaxWidth()
                 .height(56.dp)
         ) {
-            val showAllLabels = maxWidth >= 560.dp
+            val horizontalPadding = 4.dp
+            val itemWidth = (maxWidth - horizontalPadding * 2f) / BottomTabDestinations.size.toFloat()
+            val selectedIndex = BottomTabDestinations
+                .indexOf(selectedDestination)
+                .coerceAtLeast(0)
+            val pillOffset by animateDpAsState(
+                targetValue = horizontalPadding + itemWidth * selectedIndex.toFloat(),
+                animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
+                label = "bottomTabPillOffset"
+            )
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .offset(x = pillOffset)
+                    .width(itemWidth)
+                    .height(48.dp)
+                    .padding(horizontal = 5.dp, vertical = 3.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.92f))
+            )
+
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp)
-                    .padding(horizontal = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    .padding(horizontal = horizontalPadding),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 BottomTabDestinations.forEach { destination ->
@@ -3457,7 +3478,6 @@ private fun BottomTabsBar(
                     BottomTabItem(
                         destination = destination,
                         selected = selected,
-                        showLabel = showAllLabels || selected,
                         badgeText = bottomTabBadge(
                             destination = destination,
                             syncInProgress = syncInProgress,
@@ -3480,7 +3500,6 @@ private fun BottomTabsBar(
 private fun BottomTabItem(
     destination: AppDestination,
     selected: Boolean,
-    showLabel: Boolean,
     badgeText: String?,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
@@ -3488,16 +3507,16 @@ private fun BottomTabItem(
 ) {
     val contentColor by animateColorAsState(
         targetValue = if (selected) {
-            MaterialTheme.colorScheme.primary
+            MaterialTheme.colorScheme.onPrimaryContainer
         } else {
             MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.82f)
         },
-        animationSpec = tween(durationMillis = 140, easing = FastOutSlowInEasing),
+        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
         label = "bottomTabContentColor"
     )
     val selectedScale by animateFloatAsState(
-        targetValue = if (selected) 1.06f else 1f,
-        animationSpec = tween(durationMillis = 140, easing = FastOutSlowInEasing),
+        targetValue = if (selected) 1.1f else 1f,
+        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
         label = "bottomTabScale"
     )
 
@@ -3511,43 +3530,23 @@ private fun BottomTabItem(
             ),
         contentAlignment = Alignment.Center
     ) {
-        Row(
+        Box(
             modifier = Modifier
                 .scale(selectedScale)
-                .padding(horizontal = 2.dp),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically
+                .size(34.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Box {
-                Icon(
-                    imageVector = destinationIcon(destination),
-                    contentDescription = destination.label,
-                    tint = contentColor,
-                    modifier = Modifier.size(if (selected) 23.dp else 22.dp)
+            Icon(
+                imageVector = destinationIcon(destination),
+                contentDescription = destination.label,
+                tint = contentColor,
+                modifier = Modifier.size(if (selected) 24.dp else 22.dp)
+            )
+            if (badgeText != null) {
+                BottomTabBadge(
+                    text = badgeText,
+                    modifier = Modifier.align(Alignment.TopEnd)
                 )
-                if (badgeText != null) {
-                    BottomTabBadge(
-                        text = badgeText,
-                        modifier = Modifier.align(Alignment.TopEnd)
-                    )
-                }
-            }
-            AnimatedVisibility(
-                visible = showLabel,
-                enter = fadeIn(animationSpec = tween(120)),
-                exit = fadeOut(animationSpec = tween(90))
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Spacer(Modifier.width(5.dp))
-                    Text(
-                        text = destination.label,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                        color = contentColor,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
             }
         }
     }
