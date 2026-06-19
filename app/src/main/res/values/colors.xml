@@ -4,8 +4,8 @@
     <color name="splash_background_center">#F3FBF7</color>
     <color name="splash_background_end">#E5ECE8</color>
     <color name="splash_visualizer_bar_1">#006B5B</color>
-    <color name="splash_visualizer_bar_2">#008B76</color>
-    <color name="splash_visualizer_bar_3">#4F998B</color>
-    <color name="splash_visualizer_bar_4">#7D5260</color>
-    <color name="splash_visualizer_bar_5">#745B00</color>
+    <color name="splash_visualizer_bar_2">#006B5B</color>
+    <color name="splash_visualizer_bar_3">#006B5B</color>
+    <color name="splash_visualizer_bar_4">#006B5B</color>
+    <color name="splash_visualizer_bar_5">#006B5B</color>
 </resources>

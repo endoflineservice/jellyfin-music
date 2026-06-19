@@ -20,11 +20,11 @@ import android.graphics.Paint as AndroidPaint
 import android.graphics.RectF
 import android.media.AudioFocusRequest
 import android.media.AudioAttributes
-import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.MediaDescription
 import android.media.MediaMetadata
-import android.media.AudioTrack
 import android.media.MediaPlayer
+import android.media.browse.MediaBrowser
 import android.media.audiofx.Visualizer
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
@@ -38,6 +38,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
+import android.service.media.MediaBrowserService
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -69,8 +70,8 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
@@ -90,6 +91,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -100,6 +102,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Home
@@ -114,6 +117,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.HorizontalDivider
@@ -149,8 +153,8 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -158,11 +162,14 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -179,6 +186,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
@@ -215,6 +223,7 @@ import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.ln
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -311,21 +320,12 @@ private fun LaunchVisualizerSplash(modifier: Modifier = Modifier) {
                 .width(172.dp)
                 .height(108.dp)
         ) {
-            val barColors = listOf(
-                colorScheme.primary,
-                colorScheme.primary.copy(alpha = 0.84f),
-                colorScheme.secondary,
-                colorScheme.tertiary,
-                colorScheme.primary.copy(alpha = 0.88f),
-                colorScheme.secondary.copy(alpha = 0.82f),
-                colorScheme.primary
-            )
-            val barCount = barColors.size
+            val barColor = colorScheme.primary
+            val barCount = 7
             val step = size.width / (barCount + 1)
             val centerY = size.height / 2f
             val maxBarHeight = size.height * 0.72f
             val activeStroke = 9.dp.toPx()
-            val restStroke = 12.dp.toPx()
 
             for (index in 0 until barCount) {
                 val wave = (sin(phase + index * 0.82f) + 1f) / 2f
@@ -333,17 +333,9 @@ private fun LaunchVisualizerSplash(modifier: Modifier = Modifier) {
                 val level = (0.24f + wave * 0.56f + accentWave * 0.14f).coerceIn(0.22f, 0.94f)
                 val barHeight = maxBarHeight * level
                 val x = step * (index + 1)
-                val color = barColors[index]
 
                 drawLine(
-                    color = color.copy(alpha = 0.14f),
-                    start = Offset(x, centerY + maxBarHeight / 2f),
-                    end = Offset(x, centerY - maxBarHeight / 2f),
-                    strokeWidth = restStroke,
-                    cap = StrokeCap.Round
-                )
-                drawLine(
-                    color = color.copy(alpha = 0.94f),
+                    color = barColor.copy(alpha = 0.92f),
                     start = Offset(x, centerY + barHeight / 2f),
                     end = Offset(x, centerY - barHeight / 2f),
                     strokeWidth = activeStroke,
@@ -371,12 +363,20 @@ private const val PREF_USE_ALBUM_ART_COLORS = "use_album_art_colors"
 private const val PREF_VISUALIZER_ENABLED = "visualizer_enabled"
 private const val PREF_THEME_MODE = "theme_mode"
 private const val PREF_LIKED_TRACK_IDS_PREFIX = "liked_track_ids_"
+private const val PREF_FAVORITE_ALBUM_KEYS_PREFIX = "favorite_album_keys_"
 private const val PREF_PINNED_LIBRARY_ITEMS_PREFIX = "pinned_library_items_"
 private const val PREF_RECENT_TRACK_IDS_PREFIX = "recent_track_ids_"
+private const val PREF_LOCAL_PLAYLISTS_PREFIX = "local_playlists_"
 private const val PREF_OFFLINE_WIFI_ONLY = "offline_wifi_only"
 private const val PREF_OFFLINE_STORAGE_LIMIT_MB = "offline_storage_limit_mb"
+private const val PREF_DOWNLOADED_ONLY_MODE = "downloaded_only_mode"
+private const val PREF_AUTO_SYNC_ON_LAUNCH = "auto_sync_on_launch"
+private const val PREF_GAPLESS_PREBUFFER_ENABLED = "gapless_prebuffer_enabled"
+private const val PREF_TRANSCODED_STREAMING_ENABLED = "transcoded_streaming_enabled"
+private const val PREF_PLAYBACK_REPORTING_ENABLED = "playback_reporting_enabled"
 private const val LIBRARY_CACHE_VERSION = 2
 private const val OFFLINE_DOWNLOADS_VERSION = 1
+private const val LOCAL_PLAYLISTS_VERSION = 1
 private const val ALBUM_ART_CACHE_DIR = "album_art_cache"
 private const val OFFLINE_DOWNLOAD_DIR = "offline_audio"
 private const val MAX_ALBUM_ART_CACHE_FILES = 128
@@ -384,8 +384,8 @@ private const val DEFAULT_OFFLINE_STORAGE_LIMIT_MB = 1024
 private const val DISC_SCRATCH_SEEK_SCALE = 0.55f
 private const val DISC_SCRATCH_DEAD_ZONE = 0.22f
 private const val VISUALIZER_BAR_COUNT = 28
-private const val VISUALIZER_CAPTURE_STALE_MS = 1_200L
-private const val VISUALIZER_FALLBACK_FRAME_MS = 110L
+private const val VISUALIZER_CAPTURE_STALE_MS = 320L
+private const val VISUALIZER_FALLBACK_FRAME_MS = 64L
 
 private val AlbumArtCache = Collections.synchronizedMap(
     object : LinkedHashMap<String, Bitmap>(96, 0.75f, true) {
@@ -412,9 +412,20 @@ data class MusicTrack(
     val imageTag: String?,
     val tint: Color
 ) {
-    fun streamUrl(session: JellyfinSession): String {
+    fun streamUrl(session: JellyfinSession, transcoded: Boolean = false): String {
         val encodedId = encode(id)
         val encodedToken = encode(session.token)
+        if (transcoded) {
+            return "${session.serverUrl}/Audio/$encodedId/universal" +
+                "?UserId=${encode(session.userId)}" +
+                "&DeviceId=${encode("jellyfin-music-${stableCacheKey("${session.serverUrl}|${session.userId}").take(16)}")}" +
+                "&MaxStreamingBitrate=192000" +
+                "&Container=mp3,aac,m4a,opus,webma,webm" +
+                "&TranscodingContainer=mp3" +
+                "&TranscodingProtocol=http" +
+                "&AudioCodec=mp3" +
+                "&api_key=$encodedToken"
+        }
         return "${session.serverUrl}/Audio/$encodedId/stream?Static=true&api_key=$encodedToken"
     }
 
@@ -472,6 +483,14 @@ private const val PLAYBACK_ACTION_NEXT = "dev.cholt.jellyfinmusic.action.NEXT"
 private const val PLAYBACK_ACTION_STOP = "dev.cholt.jellyfinmusic.action.STOP"
 private const val PLAYBACK_SERVICE_ACTION_START = "dev.cholt.jellyfinmusic.service.START"
 private const val PLAYBACK_SERVICE_ACTION_STOP = "dev.cholt.jellyfinmusic.service.STOP"
+private const val AUTO_ROOT_ID = "auto:root"
+private const val AUTO_SONGS_ID = "auto:songs"
+private const val AUTO_ALBUMS_ID = "auto:albums"
+private const val AUTO_ARTISTS_ID = "auto:artists"
+private const val AUTO_TRACK_PREFIX = "auto:track:"
+private const val AUTO_ALBUM_PREFIX = "auto:album:"
+private const val AUTO_ARTIST_PREFIX = "auto:artist:"
+private const val AUTO_MAX_TOP_LEVEL_ITEMS = 500
 
 private data class PlaybackActionHandlers(
     val onPlay: () -> Unit,
@@ -644,6 +663,285 @@ class PlaybackForegroundService : Service() {
                     .setAction(PLAYBACK_SERVICE_ACTION_STOP)
             )
         }
+    }
+}
+
+class AutoMediaBrowserService : MediaBrowserService() {
+    private val serviceHandler = Handler(Looper.getMainLooper())
+    private lateinit var autoSession: MediaSession
+    private var autoQueue: List<MusicTrack> = emptyList()
+    private var statePumpRunning = false
+    private val statePump = object : Runnable {
+        override fun run() {
+            publishAutoSessionState()
+            serviceHandler.postDelayed(this, 1_000L)
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        autoSession = MediaSession(applicationContext, "Jellyfin Music Auto").apply {
+            setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS or MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS)
+            setCallback(object : MediaSession.Callback() {
+                override fun onPlay() {
+                    playFirstOrResume()
+                }
+
+                override fun onPause() {
+                    val player = autoPlayer()
+                    if (player.isPlaying) {
+                        player.toggle()
+                    }
+                    publishAutoSessionState()
+                }
+
+                override fun onStop() {
+                    autoPlayer().release()
+                    autoQueue = emptyList()
+                    publishAutoSessionState()
+                }
+
+                override fun onSkipToNext() {
+                    playAdjacentAuto(1)
+                }
+
+                override fun onSkipToPrevious() {
+                    playAdjacentAuto(-1)
+                }
+
+                override fun onPlayFromMediaId(mediaId: String?, extras: Bundle?) {
+                    playFromAutoMediaId(mediaId)
+                }
+
+                override fun onPlayFromSearch(query: String?, extras: Bundle?) {
+                    val searchTracks = loadAutoTracks().second.filterBy(query.orEmpty())
+                    searchTracks.firstOrNull()?.let { track ->
+                        playTrackFromQueue(searchTracks, track)
+                    }
+                }
+
+                override fun onSeekTo(pos: Long) {
+                    val track = autoPlayer().currentTrack ?: return
+                    val duration = track.durationMs.takeIf { it > 0L } ?: return
+                    autoPlayer().seekToFraction(pos.toFloat() / duration.toFloat())
+                    publishAutoSessionState()
+                }
+            })
+            isActive = true
+        }
+        sessionToken = autoSession.sessionToken
+        startStatePump()
+    }
+
+    override fun onDestroy() {
+        stopStatePump()
+        autoSession.release()
+        super.onDestroy()
+    }
+
+    override fun onGetRoot(clientPackageName: String, clientUid: Int, rootHints: Bundle?): BrowserRoot =
+        BrowserRoot(AUTO_ROOT_ID, null)
+
+    override fun onLoadChildren(parentId: String, result: Result<List<MediaBrowser.MediaItem>>) {
+        result.detach()
+        thread(name = "jellyfin-auto-browse", isDaemon = true) {
+            val items = buildAutoChildren(parentId)
+            serviceHandler.post { result.sendResult(items) }
+        }
+    }
+
+    private fun buildAutoChildren(parentId: String): List<MediaBrowser.MediaItem> {
+        val (_, tracks) = loadAutoTracks()
+        return when {
+            parentId == AUTO_ROOT_ID -> buildAutoRootItems(tracks)
+            parentId == AUTO_SONGS_ID -> tracks
+                .take(AUTO_MAX_TOP_LEVEL_ITEMS)
+                .map { it.toAutoTrackItem() }
+            parentId == AUTO_ALBUMS_ID -> tracks
+                .groupByAlbum()
+                .take(AUTO_MAX_TOP_LEVEL_ITEMS)
+                .map { it.toAutoGroupItem(AUTO_ALBUM_PREFIX, MediaBrowser.MediaItem.FLAG_BROWSABLE) }
+            parentId == AUTO_ARTISTS_ID -> tracks
+                .groupByArtist()
+                .take(AUTO_MAX_TOP_LEVEL_ITEMS)
+                .map { it.toAutoGroupItem(AUTO_ARTIST_PREFIX, MediaBrowser.MediaItem.FLAG_BROWSABLE) }
+            parentId.startsWith(AUTO_ALBUM_PREFIX) -> {
+                val album = Uri.decode(parentId.removePrefix(AUTO_ALBUM_PREFIX))
+                tracks
+                    .filter { it.album.equals(album, ignoreCase = true) }
+                    .sortedWith(MusicTrackSort)
+                    .map { it.toAutoTrackItem() }
+            }
+            parentId.startsWith(AUTO_ARTIST_PREFIX) -> {
+                val artist = Uri.decode(parentId.removePrefix(AUTO_ARTIST_PREFIX))
+                tracks
+                    .filter { it.artist.equals(artist, ignoreCase = true) }
+                    .sortedWith(
+                        compareBy<MusicTrack>(
+                            { it.album.lowercase(Locale.getDefault()) },
+                            { it.title.lowercase(Locale.getDefault()) }
+                        )
+                    )
+                    .map { it.toAutoTrackItem() }
+            }
+            else -> emptyList()
+        }
+    }
+
+    private fun buildAutoRootItems(tracks: List<MusicTrack>): List<MediaBrowser.MediaItem> =
+        listOf(
+            MediaBrowser.MediaItem(
+                MediaDescription.Builder()
+                    .setMediaId(AUTO_SONGS_ID)
+                    .setTitle("Songs")
+                    .setSubtitle(tracks.size.countLabel("song"))
+                    .build(),
+                MediaBrowser.MediaItem.FLAG_BROWSABLE
+            ),
+            MediaBrowser.MediaItem(
+                MediaDescription.Builder()
+                    .setMediaId(AUTO_ALBUMS_ID)
+                    .setTitle("Albums")
+                    .setSubtitle(tracks.groupByAlbum().size.countLabel("album"))
+                    .build(),
+                MediaBrowser.MediaItem.FLAG_BROWSABLE
+            ),
+            MediaBrowser.MediaItem(
+                MediaDescription.Builder()
+                    .setMediaId(AUTO_ARTISTS_ID)
+                    .setTitle("Artists")
+                    .setSubtitle(tracks.groupByArtist().size.countLabel("artist"))
+                    .build(),
+                MediaBrowser.MediaItem.FLAG_BROWSABLE
+            )
+        )
+
+    private fun playFirstOrResume() {
+        val player = autoPlayer()
+        val current = player.currentTrack
+        if (current != null && !player.isPlaying && player.status != "Ended") {
+            player.toggle()
+            publishAutoSessionState()
+            return
+        }
+        val tracks = loadAutoTracks().second
+        tracks.firstOrNull()?.let { playTrackFromQueue(tracks, it) }
+    }
+
+    private fun playFromAutoMediaId(mediaId: String?) {
+        val (session, tracks) = loadAutoTracks()
+        if (session == null || tracks.isEmpty() || mediaId.isNullOrBlank()) return
+        val queue = when {
+            mediaId.startsWith(AUTO_TRACK_PREFIX) -> {
+                val trackId = mediaId.removePrefix(AUTO_TRACK_PREFIX)
+                tracks.firstOrNull { it.id == trackId }?.let { tracks.queueStartingAt(it) }.orEmpty()
+            }
+            mediaId.startsWith(AUTO_ALBUM_PREFIX) -> {
+                val album = Uri.decode(mediaId.removePrefix(AUTO_ALBUM_PREFIX))
+                tracks.filter { it.album.equals(album, ignoreCase = true) }.sortedWith(MusicTrackSort)
+            }
+            mediaId.startsWith(AUTO_ARTIST_PREFIX) -> {
+                val artist = Uri.decode(mediaId.removePrefix(AUTO_ARTIST_PREFIX))
+                tracks
+                    .filter { it.artist.equals(artist, ignoreCase = true) }
+                    .sortedWith(
+                        compareBy<MusicTrack>(
+                            { it.album.lowercase(Locale.getDefault()) },
+                            { it.title.lowercase(Locale.getDefault()) }
+                        )
+                    )
+            }
+            mediaId == AUTO_SONGS_ID -> tracks
+            else -> emptyList()
+        }
+        queue.firstOrNull()?.let { playTrackFromQueue(queue, it, session) }
+    }
+
+    private fun playAdjacentAuto(offset: Int) {
+        val player = autoPlayer()
+        val activeTrack = player.currentTrack ?: return
+        val (session, tracks) = loadAutoTracks()
+        if (session == null) return
+        val queue = autoQueue
+            .ifEmpty { tracks.queueStartingAt(activeTrack) }
+            .ifEmpty { listOf(activeTrack) }
+            .queueStartingAt(activeTrack)
+        if (queue.isEmpty()) return
+        val nextIndex = (offset + queue.size) % queue.size
+        playTrackFromQueue(queue, queue[nextIndex], session)
+    }
+
+    private fun playTrackFromQueue(
+        queue: List<MusicTrack>,
+        track: MusicTrack,
+        session: JellyfinSession? = loadAutoTracks().first
+    ) {
+        val activeSession = session ?: return
+        autoQueue = queue.queueStartingAt(track).ifEmpty { listOf(track) }
+        autoPlayer().play(track, activeSession)
+        publishAutoSessionState()
+    }
+
+    private fun loadAutoTracks(): Pair<JellyfinSession?, List<MusicTrack>> {
+        val session = loadSavedSession(applicationContext) ?: return null to emptyList()
+        return session to loadCachedLibrary(applicationContext, session)
+    }
+
+    private fun autoPlayer(): JellyfinPlayer =
+        PlaybackControllerHolder.get(applicationContext)
+
+    private fun publishAutoSessionState() {
+        val player = autoPlayer()
+        player.syncProgress()
+        val track = player.currentTrack
+        if (track != null) {
+            autoSession.setMetadata(
+                MediaMetadata.Builder()
+                    .putString(MediaMetadata.METADATA_KEY_MEDIA_ID, "$AUTO_TRACK_PREFIX${track.id}")
+                    .putString(MediaMetadata.METADATA_KEY_TITLE, track.title)
+                    .putString(MediaMetadata.METADATA_KEY_ARTIST, track.artist)
+                    .putString(MediaMetadata.METADATA_KEY_ALBUM, track.album)
+                    .putLong(MediaMetadata.METADATA_KEY_DURATION, track.durationMs.coerceAtLeast(0L))
+                    .build()
+            )
+        }
+        val state = when {
+            player.status == "Buffering" -> PlaybackState.STATE_BUFFERING
+            player.isPlaying -> PlaybackState.STATE_PLAYING
+            player.status == "Ended" -> PlaybackState.STATE_STOPPED
+            else -> PlaybackState.STATE_PAUSED
+        }
+        val position = track
+            ?.let { (it.durationMs * player.progress).toLong().coerceAtLeast(0L) }
+            ?: PlaybackState.PLAYBACK_POSITION_UNKNOWN
+        autoSession.setPlaybackState(
+            PlaybackState.Builder()
+                .setActions(
+                    PlaybackState.ACTION_PLAY or
+                        PlaybackState.ACTION_PAUSE or
+                        PlaybackState.ACTION_PLAY_PAUSE or
+                        PlaybackState.ACTION_SKIP_TO_PREVIOUS or
+                        PlaybackState.ACTION_SKIP_TO_NEXT or
+                        PlaybackState.ACTION_STOP or
+                        PlaybackState.ACTION_SEEK_TO or
+                        PlaybackState.ACTION_PLAY_FROM_MEDIA_ID or
+                        PlaybackState.ACTION_PLAY_FROM_SEARCH
+                )
+                .setState(state, position, if (player.isPlaying) 1f else 0f, SystemClock.elapsedRealtime())
+                .build()
+        )
+        autoSession.isActive = true
+    }
+
+    private fun startStatePump() {
+        if (statePumpRunning) return
+        statePumpRunning = true
+        serviceHandler.post(statePump)
+    }
+
+    private fun stopStatePump() {
+        statePumpRunning = false
+        serviceHandler.removeCallbacks(statePump)
     }
 }
 
@@ -979,6 +1277,13 @@ private object PlaybackControllerHolder {
 private enum class LibraryTab(val label: String) {
     Songs("Songs"),
     Albums("Albums"),
+    Artists("Artists"),
+    Playlists("Playlists")
+}
+
+private enum class FavoritesTab(val label: String) {
+    Tracks("Tracks"),
+    Albums("Albums"),
     Artists("Artists")
 }
 
@@ -1000,6 +1305,7 @@ private enum class LibraryFilter(val label: String) {
 private enum class LibraryCollectionType(val label: String) {
     Album("Album"),
     Artist("Artist"),
+    Playlist("Playlist"),
     Downloaded("Downloaded")
 }
 
@@ -1020,7 +1326,6 @@ private enum class AppThemeMode(val label: String) {
 
 private val BottomTabDestinations = listOf(
     AppDestination.Home,
-    AppDestination.Search,
     AppDestination.Library,
     AppDestination.Liked,
     AppDestination.Profile
@@ -1030,7 +1335,8 @@ private data class LibraryGroup(
     val title: String,
     val subtitle: String,
     val tint: Color,
-    val tracks: List<MusicTrack>
+    val tracks: List<MusicTrack>,
+    val key: String = title
 )
 
 private data class PinnedLibraryItem(
@@ -1041,6 +1347,15 @@ private data class PinnedLibraryItem(
 private data class LibraryDetail(
     val type: LibraryCollectionType,
     val key: String
+)
+
+private data class LocalPlaylist(
+    val id: String,
+    val name: String,
+    val folder: String,
+    val trackIds: List<String>,
+    val isFavorite: Boolean,
+    val updatedAt: Long
 )
 
 private data class ResolvedPinnedItem(
@@ -1055,21 +1370,41 @@ private data class ResolvedPinnedItem(
 private data class SearchResultCounts(
     val songs: Int,
     val albums: Int,
-    val artists: Int
+    val artists: Int,
+    val playlists: Int = 0
 ) {
     fun countFor(tab: LibraryTab): Int =
         when (tab) {
             LibraryTab.Songs -> songs
             LibraryTab.Albums -> albums
             LibraryTab.Artists -> artists
-        }
+            LibraryTab.Playlists -> playlists
+    }
 }
+
+private enum class SearchTopResultType(val label: String) {
+    Song("Song"),
+    Album("Album"),
+    Artist("Artist"),
+    Playlist("Playlist")
+}
+
+private data class SearchTopResult(
+    val type: SearchTopResultType,
+    val title: String,
+    val subtitle: String,
+    val artworkTrack: MusicTrack?,
+    val artworkShape: Shape,
+    val track: MusicTrack? = null,
+    val detail: LibraryDetail? = null
+)
 
 private fun SearchResultCounts.summary(): String =
     listOf(
         songs.countLabel("song"),
         albums.countLabel("album"),
-        artists.countLabel("artist")
+        artists.countLabel("artist"),
+        playlists.countLabel("playlist")
     ).joinToString(" - ")
 
 private fun Int.countLabel(label: String): String =
@@ -1127,11 +1462,18 @@ private fun OfflineDownloadProgress.percentLabel(): String =
     }
 
 private val MusicTrackSort = compareBy<MusicTrack>(
+    { it.title.libraryIndexSortWeight() },
     { it.title.lowercase(Locale.getDefault()) },
     { it.artist.lowercase(Locale.getDefault()) },
     { it.album.lowercase(Locale.getDefault()) }
 )
+private val LocalPlaylistSort = compareByDescending<LocalPlaylist> { it.isFavorite }
+    .thenBy { it.folder.lowercase(Locale.getDefault()) }
+    .thenBy { it.name.lowercase(Locale.getDefault()) }
 private val SearchSeparatorRegex = Regex("[^\\p{L}\\p{N}]+")
+private const val LibraryNumberIndex = '#'
+private const val LibraryOtherIndex = '*'
+private val LibraryAlphabetRail = listOf(LibraryNumberIndex) + ('A'..'Z').toList() + listOf(LibraryOtherIndex)
 
 @Composable
 private fun JellyfinMusicTheme(
@@ -1345,17 +1687,17 @@ private fun stableCacheKey(value: String): String =
         .digest(value.toByteArray(Charsets.UTF_8))
         .joinToString(separator = "") { "%02x".format(it.toInt() and 0xFF) }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalComposeUiApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalComposeUiApi::class, ExperimentalFoundationApi::class)
 @Composable
 private fun JellyfinMusicApp() {
     val context = LocalContext.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val hapticFeedback = LocalHapticFeedback.current
     val coroutineScope = rememberCoroutineScope()
+    val libraryRailScrollJob = remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     val repository = remember { JellyfinRepository(context.applicationContext) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val player = remember { PlaybackControllerHolder.get(context.applicationContext) }
-    val scratchEngine = remember { ScratchSoundEngine() }
     val mainListState = rememberLazyListState()
 
     var session by remember { mutableStateOf(loadSavedSession(context)) }
@@ -1369,23 +1711,30 @@ private fun JellyfinMusicApp() {
     var likedTrackIds by remember(session?.serverUrl, session?.userId) {
         mutableStateOf(session?.let { loadLikedTrackIds(context, it) } ?: emptySet())
     }
+    var favoriteAlbumKeys by remember(session?.serverUrl, session?.userId) {
+        mutableStateOf(session?.let { loadFavoriteAlbumKeys(context, it) } ?: emptySet())
+    }
     var recentTrackIds by remember(session?.serverUrl, session?.userId) {
         mutableStateOf(session?.let { loadRecentTrackIds(context, it) } ?: emptyList())
     }
     var pinnedLibraryItems by remember(session?.serverUrl, session?.userId) {
         mutableStateOf(session?.let { loadPinnedLibraryItems(context, it) } ?: emptyList())
     }
+    var localPlaylists by remember(session?.serverUrl, session?.userId) {
+        mutableStateOf(session?.let { loadLocalPlaylists(context, it) } ?: emptyList())
+    }
     var offlineDownloads by remember(session?.serverUrl, session?.userId) {
         mutableStateOf(session?.let { loadOfflineDownloads(context, it) } ?: emptyMap())
     }
     var downloadProgressById by remember { mutableStateOf(emptyMap<String, OfflineDownloadProgress>()) }
     var selectedTab by remember { mutableStateOf(LibraryTab.Songs) }
+    var favoritesTab by remember { mutableStateOf(FavoritesTab.Tracks) }
     var librarySearchQuery by remember { mutableStateOf("") }
     var librarySortMode by remember { mutableStateOf(LibrarySortMode.Title) }
     var libraryGridView by remember { mutableStateOf(true) }
     var activeLibraryFilters by remember { mutableStateOf(emptySet<LibraryFilter>()) }
     var libraryLetterFilter by remember { mutableStateOf<Char?>(null) }
-    var downloadedOnlyMode by remember { mutableStateOf(false) }
+    var downloadedOnlyMode by remember { mutableStateOf(loadDownloadedOnlyMode(context)) }
     var activeLibraryDetail by remember { mutableStateOf<LibraryDetail?>(null) }
     var searchQuery by remember { mutableStateOf("") }
     val searchFocusRequester = remember { FocusRequester() }
@@ -1405,6 +1754,10 @@ private fun JellyfinMusicApp() {
     var themeMode by remember { mutableStateOf(loadThemeMode(context)) }
     var offlineWifiOnly by remember { mutableStateOf(loadOfflineWifiOnly(context)) }
     var offlineStorageLimitMb by remember { mutableStateOf(loadOfflineStorageLimitMb(context)) }
+    var autoSyncOnLaunch by remember { mutableStateOf(loadAutoSyncOnLaunch(context)) }
+    var gaplessPrebufferEnabled by remember { mutableStateOf(loadGaplessPrebufferEnabled(context)) }
+    var transcodedStreamingEnabled by remember { mutableStateOf(loadTranscodedStreamingEnabled(context)) }
+    var playbackReportingEnabled by remember { mutableStateOf(loadPlaybackReportingEnabled(context)) }
     var selectedDestination by remember { mutableStateOf(AppDestination.Home) }
     val systemDarkTheme = isSystemInDarkTheme()
     val darkTheme = when (themeMode) {
@@ -1456,8 +1809,8 @@ private fun JellyfinMusicApp() {
                             "Library refresh incomplete: ${it.readableMessage()}"
                         } else {
                             it.readableMessage()
-                        }
-                    }
+	                    }
+	                }
             }
         }
     }
@@ -1519,19 +1872,44 @@ private fun JellyfinMusicApp() {
         session = null
         tracks = emptyList()
         likedTrackIds = emptySet()
+        favoriteAlbumKeys = emptySet()
         recentTrackIds = emptyList()
         pinnedLibraryItems = emptyList()
+        localPlaylists = emptyList()
         offlineDownloads = emptyMap()
         downloadProgressById = emptyMap()
         activeLibraryFilters = emptySet()
         libraryLetterFilter = null
         downloadedOnlyMode = false
+        saveDownloadedOnlyMode(context, false)
         activeLibraryDetail = null
         lastLibrarySyncAt = null
         playQueue = emptyList()
         statusText = null
         showPlayer = false
         selectedDestination = AppDestination.Home
+    }
+
+    fun setDownloadedOnlyMode(enabled: Boolean) {
+        downloadedOnlyMode = enabled
+        saveDownloadedOnlyMode(context, enabled)
+    }
+
+    fun clearLibraryCache() {
+        val activeSession = session ?: return
+        runCatching { libraryCacheFile(context, activeSession).delete() }
+        lastLibrarySyncAt = null
+        statusText = "Library cache cleared"
+    }
+
+    fun clearArtworkCache() {
+        AlbumArtCache.clear()
+        runCatching {
+            File(context.cacheDir, ALBUM_ART_CACHE_DIR)
+                .takeIf { it.exists() }
+                ?.deleteRecursively()
+        }
+        statusText = "Artwork cache cleared"
     }
 
     fun showNowPlayingPlayer() {
@@ -1545,14 +1923,14 @@ private fun JellyfinMusicApp() {
 
     fun playTrack(track: MusicTrack, openPlayer: Boolean = false, source: List<MusicTrack> = tracks) {
         session?.let { activeSession ->
-            val nextRecentTrackIds = (listOf(track.id) + recentTrackIds.filterNot { it == track.id }).take(80)
-            recentTrackIds = nextRecentTrackIds
-            saveRecentTrackIds(context, activeSession, nextRecentTrackIds)
             playQueue = source.queueStartingAt(track).ifEmpty { listOf(track) }
-            player.play(track, activeSession)
             if (openPlayer) {
                 showNowPlayingPlayer()
             }
+            player.play(track, activeSession)
+            val nextRecentTrackIds = (listOf(track.id) + recentTrackIds.filterNot { it == track.id }).take(80)
+            recentTrackIds = nextRecentTrackIds
+            saveRecentTrackIds(context, activeSession, nextRecentTrackIds)
         }
     }
 
@@ -1594,6 +1972,26 @@ private fun JellyfinMusicApp() {
         )
     }
 
+    fun removeQueueTrack(index: Int) {
+        if (index <= 0 || index !in playQueue.indices) return
+        playQueue = playQueue.toMutableList().apply { removeAt(index) }
+    }
+
+    fun clearQueueAfterCurrent() {
+        val activeTrack = player.currentTrack
+        playQueue = activeTrack?.let { listOf(it) } ?: emptyList()
+        statusText = "Queue cleared"
+    }
+
+    fun reshuffleQueueAfterCurrent() {
+        val activeTrack = player.currentTrack ?: return
+        val baseQueue = playQueue.ifEmpty { tracks.queueStartingAt(activeTrack) }.queueStartingAt(activeTrack)
+        if (baseQueue.size <= 2) return
+        val shuffledRest = baseQueue.drop(1).randomizedPlaybackQueue()
+        playQueue = listOf(activeTrack) + shuffledRest
+        statusText = "Queue reshuffled"
+    }
+
     fun playTrackNext(track: MusicTrack) {
         val activeTrack = player.currentTrack
         val baseQueue = if (activeTrack != null) {
@@ -1616,6 +2014,19 @@ private fun JellyfinMusicApp() {
         }
     }
 
+    fun toggleFavoriteAlbum(albumKey: String) {
+        if (albumKey.isBlank()) return
+        val nextFavoriteAlbumKeys = if (albumKey in favoriteAlbumKeys) {
+            favoriteAlbumKeys - albumKey
+        } else {
+            favoriteAlbumKeys + albumKey
+        }
+        favoriteAlbumKeys = nextFavoriteAlbumKeys
+        session?.let { activeSession ->
+            saveFavoriteAlbumKeys(context, activeSession, nextFavoriteAlbumKeys)
+        }
+    }
+
     fun togglePinnedLibraryItem(item: PinnedLibraryItem) {
         val nextPinnedItems = if (pinnedLibraryItems.any { it == item }) {
             pinnedLibraryItems.filterNot { it == item }
@@ -1625,6 +2036,106 @@ private fun JellyfinMusicApp() {
         pinnedLibraryItems = nextPinnedItems
         session?.let { activeSession ->
             savePinnedLibraryItems(context, activeSession, nextPinnedItems)
+        }
+    }
+
+    fun saveLocalPlaylistsState(nextPlaylists: List<LocalPlaylist>, message: String? = null) {
+        val sortedPlaylists = nextPlaylists.sortedWith(LocalPlaylistSort)
+        localPlaylists = sortedPlaylists
+        session?.let { activeSession ->
+            saveLocalPlaylists(context, activeSession, sortedPlaylists)
+        }
+        if (message != null) {
+            statusText = message
+        }
+    }
+
+    fun createPlaylist(name: String, folder: String = "", source: List<MusicTrack> = emptyList()) {
+        val trimmedName = name.trim()
+        if (trimmedName.isBlank()) {
+            statusText = "Playlist name is required"
+            return
+        }
+        val trackIds = source.map { it.id }.distinct()
+        val playlist = LocalPlaylist(
+            id = newLocalPlaylistId(trimmedName),
+            name = trimmedName,
+            folder = folder.trim(),
+            trackIds = trackIds,
+            isFavorite = false,
+            updatedAt = System.currentTimeMillis()
+        )
+        saveLocalPlaylistsState(
+            nextPlaylists = localPlaylists + playlist,
+            message = "Created ${playlist.name}"
+        )
+    }
+
+    fun saveQueueAsPlaylist(queue: List<MusicTrack>) {
+        val tracksToSave = queue.distinctBy { it.id }
+        if (tracksToSave.isEmpty()) {
+            statusText = "Queue is empty"
+            return
+        }
+        createPlaylist(
+            name = "Queue ${SimpleDateFormat("MMM d h:mm a", Locale.getDefault()).format(java.util.Date())}",
+            folder = "Saved queues",
+            source = tracksToSave
+        )
+    }
+
+    fun addTrackToPlaylist(playlist: LocalPlaylist, track: MusicTrack) {
+        val nextPlaylists = localPlaylists.map { item ->
+            if (item.id != playlist.id || track.id in item.trackIds) {
+                item
+            } else {
+                item.copy(
+                    trackIds = item.trackIds + track.id,
+                    updatedAt = System.currentTimeMillis()
+                )
+            }
+        }
+        saveLocalPlaylistsState(nextPlaylists, "Added to ${playlist.name}")
+    }
+
+    fun removeTrackFromPlaylist(playlistId: String, track: MusicTrack) {
+        val playlist = localPlaylists.firstOrNull { it.id == playlistId } ?: return
+        val nextPlaylists = localPlaylists.map { item ->
+            if (item.id == playlistId) {
+                item.copy(
+                    trackIds = item.trackIds.filterNot { it == track.id },
+                    updatedAt = System.currentTimeMillis()
+                )
+            } else {
+                item
+            }
+        }
+        saveLocalPlaylistsState(nextPlaylists, "Removed from ${playlist.name}")
+    }
+
+    fun togglePlaylistFavorite(playlistId: String) {
+        val nextPlaylists = localPlaylists.map { item ->
+            if (item.id == playlistId) {
+                item.copy(isFavorite = !item.isFavorite, updatedAt = System.currentTimeMillis())
+            } else {
+                item
+            }
+        }
+        saveLocalPlaylistsState(nextPlaylists)
+    }
+
+    fun deletePlaylist(playlistId: String) {
+        val playlist = localPlaylists.firstOrNull { it.id == playlistId } ?: return
+        val nextPlaylists = localPlaylists.filterNot { it.id == playlistId }
+        saveLocalPlaylistsState(nextPlaylists, "Deleted ${playlist.name}")
+        pinnedLibraryItems = pinnedLibraryItems.filterNot {
+            it.type == LibraryCollectionType.Playlist && it.key == playlistId
+        }
+        session?.let { activeSession ->
+            savePinnedLibraryItems(context, activeSession, pinnedLibraryItems)
+        }
+        if (activeLibraryDetail?.type == LibraryCollectionType.Playlist && activeLibraryDetail?.key == playlistId) {
+            activeLibraryDetail = null
         }
     }
 
@@ -1744,7 +2255,6 @@ private fun JellyfinMusicApp() {
 
     DisposableEffect(Unit) {
         onDispose {
-            scratchEngine.release()
             if (!player.isPlaying) {
                 PlaybackNotificationActions.clear()
                 player.dispose()
@@ -1753,9 +2263,9 @@ private fun JellyfinMusicApp() {
         }
     }
 
-    LaunchedEffect(session?.token) {
+    LaunchedEffect(session?.token, autoSyncOnLaunch) {
         val activeSession = session
-        if (activeSession != null && tracks.isEmpty()) {
+        if (activeSession != null && (tracks.isEmpty() || autoSyncOnLaunch)) {
             loadLibrary(activeSession)
         }
     }
@@ -1780,13 +2290,14 @@ private fun JellyfinMusicApp() {
         player.isPlaying,
         playQueue,
         shuffleEnabled,
+        gaplessPrebufferEnabled,
         session?.serverUrl,
         session?.userId,
         session?.token
     ) {
         val activeTrack = player.currentTrack
         val activeSession = session
-        if (!player.isPlaying || activeTrack == null || activeSession == null || shuffleEnabled) {
+        if (!gaplessPrebufferEnabled || !player.isPlaying || activeTrack == null || activeSession == null || shuffleEnabled) {
             if (player.status != "Ended") {
                 player.prepareNext(null, null)
             }
@@ -1823,7 +2334,10 @@ private fun JellyfinMusicApp() {
         isPlayerOpenDragging = false
         playerOpenDragOffsetPx = 0f
     }
-    val showTopBar = showPlayer || session == null || selectedDestination != AppDestination.Home
+    val showTopBar = showPlayer ||
+        session == null ||
+        activeLibraryDetail != null ||
+        selectedDestination == AppDestination.Profile
     val playerDismissOffsetPx by animateFloatAsState(
         targetValue = playerDismissDragOffsetPx,
         animationSpec = if (isPlayerDismissDragging) {
@@ -1966,7 +2480,6 @@ private fun JellyfinMusicApp() {
                             syncInProgress = isBusy,
                             downloadQueueCount = downloadProgressById.size,
                             offlineMode = downloadedOnlyMode,
-                            favoriteCount = likedTrackIds.size,
                             onDestinationSelected = { destination ->
                                 val reselected = destination == selectedDestination
                                 val reselectedSearch =
@@ -2113,16 +2626,30 @@ private fun JellyfinMusicApp() {
                         .ifEmpty { displayedTracks.groupByArtist() }
                 }
             }
-            val libraryStackedTracks = remember(
+            val playlistGroups = remember(localPlaylists, visibleTracks, librarySearchQuery, librarySortMode) {
+                localPlaylists
+                    .toLibraryGroups(visibleTracks)
+                    .let { groups ->
+                        if (librarySearchQuery.isBlank()) groups else groups.filterGroupsBy(librarySearchQuery)
+                    }
+                    .sortedGroupsForLibrary(librarySortMode)
+            }
+            val searchPlaylistGroups = remember(localPlaylists, visibleTracks, searchQuery, isSearchDestination) {
+                val groups = localPlaylists.toLibraryGroups(visibleTracks)
+                if (!isSearchDestination || searchQuery.isBlank()) {
+                    groups
+                } else {
+                    groups.filterGroupsBy(searchQuery)
+                }
+            }
+            val libraryFilterBaseTracks = remember(
                 visibleTracks,
-                librarySearchQuery,
                 activeLibraryFilters,
                 likedTrackIds,
                 offlineDownloads,
                 recentTrackIds
             ) {
                 visibleTracks
-                    .filterBy(librarySearchQuery)
                     .filterForLibrary(
                         filters = activeLibraryFilters,
                         likedTrackIds = likedTrackIds,
@@ -2130,45 +2657,109 @@ private fun JellyfinMusicApp() {
                         recentTrackIds = recentTrackIds
                     )
             }
-            val libraryTracks = remember(libraryStackedTracks, librarySortMode, libraryLetterFilter, selectedTab) {
+            val librarySearchBaseTracks = remember(visibleTracks, libraryFilterBaseTracks, librarySearchQuery) {
+                if (librarySearchQuery.isBlank()) libraryFilterBaseTracks else visibleTracks
+            }
+            val libraryStackedTracks = remember(librarySearchBaseTracks, librarySearchQuery) {
+                librarySearchBaseTracks.filterBy(librarySearchQuery)
+            }
+            val librarySearchAlbumGroups = remember(librarySearchBaseTracks, libraryStackedTracks, librarySearchQuery) {
+                if (librarySearchQuery.isBlank()) {
+                    libraryStackedTracks.groupByAlbum()
+                } else {
+                    librarySearchBaseTracks
+                        .groupByAlbum()
+                        .filterGroupsBy(librarySearchQuery)
+                        .ifEmpty { libraryStackedTracks.groupByAlbum() }
+                }
+            }
+            val librarySearchArtistGroups = remember(librarySearchBaseTracks, libraryStackedTracks, librarySearchQuery) {
+                if (librarySearchQuery.isBlank()) {
+                    libraryStackedTracks.groupByArtist()
+                } else {
+                    librarySearchBaseTracks
+                        .groupByArtist()
+                        .filterGroupsBy(librarySearchQuery)
+                        .ifEmpty { libraryStackedTracks.groupByArtist() }
+                }
+            }
+            val libraryTracks = remember(libraryStackedTracks, librarySortMode) {
                 libraryStackedTracks
                     .sortedForLibrary(librarySortMode)
-                    .filterByInitial(if (selectedTab == LibraryTab.Songs) libraryLetterFilter else null) { it.title }
             }
-            val libraryAlbumGroups = remember(libraryStackedTracks, librarySortMode, libraryLetterFilter, selectedTab) {
-                libraryStackedTracks
-                    .groupByAlbum()
+            val libraryAlbumGroups = remember(librarySearchAlbumGroups, librarySortMode) {
+                librarySearchAlbumGroups
                     .sortedGroupsForLibrary(librarySortMode)
-                    .filterByInitial(if (selectedTab == LibraryTab.Albums) libraryLetterFilter else null) { it.title }
             }
-            val libraryArtistGroups = remember(libraryStackedTracks, librarySortMode, libraryLetterFilter, selectedTab) {
-                libraryStackedTracks
-                    .groupByArtist()
+            val libraryArtistGroups = remember(librarySearchArtistGroups, librarySortMode) {
+                librarySearchArtistGroups
                     .sortedGroupsForLibrary(librarySortMode)
-                    .filterByInitial(if (selectedTab == LibraryTab.Artists) libraryLetterFilter else null) { it.title }
             }
-            val libraryCounts = remember(libraryTracks, libraryAlbumGroups, libraryArtistGroups) {
-                SearchResultCounts(
-                    songs = libraryTracks.size,
-                    albums = libraryAlbumGroups.size,
-                    artists = libraryArtistGroups.size
-                )
-            }
-            val searchResultCounts = remember(displayedTracks, searchAlbumGroups, searchArtistGroups) {
+            val searchResultCounts = remember(displayedTracks, searchAlbumGroups, searchArtistGroups, searchPlaylistGroups) {
                 SearchResultCounts(
                     songs = displayedTracks.size,
                     albums = searchAlbumGroups.size,
-                    artists = searchArtistGroups.size
+                    artists = searchArtistGroups.size,
+                    playlists = searchPlaylistGroups.size
                 )
             }
+            val showLibraryLetterRail = connectedSession != null &&
+                selectedDestination == AppDestination.Library &&
+                activeLibraryDetail == null &&
+                librarySearchQuery.isBlank()
+            val libraryLetterRailLetters = remember(
+                showLibraryLetterRail,
+                selectedTab,
+                libraryTracks,
+                libraryAlbumGroups,
+                libraryArtistGroups,
+                playlistGroups
+            ) {
+                if (showLibraryLetterRail) {
+                    availableLettersForTab(
+                        selectedTab = selectedTab,
+                        songs = libraryTracks,
+                        albums = libraryAlbumGroups,
+                        artists = libraryArtistGroups,
+                        playlists = playlistGroups
+                    )
+                } else {
+                    emptyList()
+                }
+            }
+            val libraryLetterScrollTargets = remember(
+                showLibraryLetterRail,
+                selectedTab,
+                libraryTracks,
+                libraryAlbumGroups,
+                libraryArtistGroups,
+                playlistGroups,
+                libraryGridView,
+                pinnedLibraryItems
+            ) {
+                if (showLibraryLetterRail) {
+                    libraryLetterScrollTargets(
+                        selectedTab = selectedTab,
+                        songs = libraryTracks,
+                        albums = libraryAlbumGroups,
+                        artists = libraryArtistGroups,
+                        playlists = playlistGroups,
+                        gridView = libraryGridView,
+                        hasPinnedShelf = pinnedLibraryItems.isNotEmpty()
+                    )
+                } else {
+                    emptyMap()
+                }
+            }
             if (showPlayer && activeTrack != null) {
+                val fullPlayerQueue = playQueue.ifEmpty { visibleTracks.queueStartingAt(activeTrack) }
                 FullPlayerScreen(
                     track = activeTrack,
                     isPlaying = player.isPlaying,
                     progress = player.progress,
                     visualizerLevels = player.visualizerLevels,
                     status = player.status,
-                    queue = playQueue.ifEmpty { visibleTracks.queueStartingAt(activeTrack) },
+                    queue = fullPlayerQueue,
                     session = connectedSession,
                     modifier = Modifier.padding(innerPadding),
                     onToggle = { player.toggle() },
@@ -2176,27 +2767,49 @@ private fun JellyfinMusicApp() {
                     onPrevious = { playAdjacent(-1) },
                     onNext = { playAdjacent(1) },
                     onReplay = { session?.let { player.play(activeTrack, it) } },
-                    onScratch = { scratchEngine.playScratch(it) },
-                    onScratchEnd = { scratchEngine.stop() },
                     shuffleEnabled = shuffleEnabled,
                     repeatEnabled = repeatEnabled,
                     visualizerEnabled = visualizerEnabled,
                     isFavorite = activeTrack.id in likedTrackIds,
+                    isDownloaded = activeTrack.id in offlineDownloads,
+                    downloadProgress = downloadProgressById[activeTrack.id],
+                    playlists = localPlaylists,
                     onToggleShuffle = { shuffleEnabled = !shuffleEnabled },
                     onToggleRepeat = { repeatEnabled = !repeatEnabled },
                     onToggleFavorite = { toggleLiked(activeTrack) },
+                    onToggleDownload = { toggleOfflineDownload(activeTrack) },
+                    onGoToAlbum = {
+                        openLibraryDetail(LibraryDetail(LibraryCollectionType.Album, activeTrack.album))
+                    },
+                    onGoToArtist = {
+                        openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, activeTrack.artist))
+                    },
+                    onStartRadio = { startRadioFrom(fullPlayerQueue, activeTrack) },
+                    onAddToPlaylist = { playlist -> addTrackToPlaylist(playlist, activeTrack) },
                     onQueueTrackClick = ::playQueuedTrack,
                     onQueueMove = ::moveQueueTrack,
-                    onQueuePlayNext = ::playTrackNext
+                    onQueuePlayNext = ::playTrackNext,
+                    onQueueRemove = ::removeQueueTrack,
+                    onQueueClear = ::clearQueueAfterCurrent,
+                    onQueueShuffle = ::reshuffleQueueAfterCurrent,
+                    onQueueSaveAsPlaylist = { saveQueueAsPlaylist(fullPlayerQueue) }
                 )
             } else {
-                LazyColumn(
-                    state = mainListState,
+                Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(innerPadding)
-                        .imePadding(),
-                    contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 20.dp),
+                        .imePadding()
+                ) {
+                LazyColumn(
+                    state = mainListState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(
+                        start = 16.dp,
+                        top = 0.dp,
+                        end = if (libraryLetterRailLetters.isNotEmpty()) 38.dp else 16.dp,
+                        bottom = 20.dp
+                    ),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                 if (connectedSession == null) {
@@ -2229,8 +2842,13 @@ private fun JellyfinMusicApp() {
                                 SettingsSummaryCard(
                                     session = connectedSession,
                                     syncedTrackCount = tracks.size,
-                                    lastLibrarySyncAt = lastLibrarySyncAt
+                                    lastLibrarySyncAt = lastLibrarySyncAt,
+                                    downloadedTrackCount = offlineDownloads.size,
+                                    activeDownloadCount = downloadProgressById.size
                                 )
+                            }
+                            item {
+                                SettingsSectionHeader("Account")
                             }
                             item {
                                 AccountCard(
@@ -2239,12 +2857,25 @@ private fun JellyfinMusicApp() {
                                 )
                             }
                             item {
+                                SettingsSectionHeader("Library & cache")
+                            }
+                            item {
                                 LibrarySyncCard(
                                     isBusy = isBusy,
                                     syncedTrackCount = tracks.size,
                                     lastLibrarySyncAt = lastLibrarySyncAt,
-                                    onRefresh = { loadLibrary(connectedSession) }
+                                    autoSyncOnLaunch = autoSyncOnLaunch,
+                                    onAutoSyncOnLaunchChange = { enabled ->
+                                        autoSyncOnLaunch = enabled
+                                        saveAutoSyncOnLaunch(context, enabled)
+                                    },
+                                    onRefresh = { loadLibrary(connectedSession) },
+                                    onClearLibraryCache = ::clearLibraryCache,
+                                    onClearArtworkCache = ::clearArtworkCache
                                 )
+                            }
+                            item {
+                                SettingsSectionHeader("Offline")
                             }
                             item {
                                 OfflineDownloadsCard(
@@ -2253,6 +2884,7 @@ private fun JellyfinMusicApp() {
                                     activeDownloadCount = downloadProgressById.size,
                                     wifiOnly = offlineWifiOnly,
                                     storageLimitMb = offlineStorageLimitMb,
+                                    downloadedOnlyMode = downloadedOnlyMode,
                                     onWifiOnlyChange = { enabled ->
                                         offlineWifiOnly = enabled
                                         saveOfflineWifiOnly(context, enabled)
@@ -2261,8 +2893,37 @@ private fun JellyfinMusicApp() {
                                         offlineStorageLimitMb = limitMb
                                         saveOfflineStorageLimitMb(context, limitMb)
                                     },
+                                    onDownloadedOnlyChange = ::setDownloadedOnlyMode,
                                     onClearDownloads = ::clearOfflineDownloads
                                 )
+                            }
+                            item {
+                                SettingsSectionHeader("Playback")
+                            }
+                            item {
+                                PlaybackSettingsCard(
+                                    gaplessPrebufferEnabled = gaplessPrebufferEnabled,
+                                    transcodedStreamingEnabled = transcodedStreamingEnabled,
+                                    playbackReportingEnabled = playbackReportingEnabled,
+                                    onGaplessPrebufferChange = { enabled ->
+                                        gaplessPrebufferEnabled = enabled
+                                        saveGaplessPrebufferEnabled(context, enabled)
+                                        if (!enabled) {
+                                            player.prepareNext(null, null)
+                                        }
+                                    },
+                                    onTranscodedStreamingChange = { enabled ->
+                                        transcodedStreamingEnabled = enabled
+                                        saveTranscodedStreamingEnabled(context, enabled)
+                                    },
+                                    onPlaybackReportingChange = { enabled ->
+                                        playbackReportingEnabled = enabled
+                                        savePlaybackReportingEnabled(context, enabled)
+                                    }
+                                )
+                            }
+                            item {
+                                SettingsSectionHeader("Look and feel")
                             }
                             item {
                                 AppearanceCard(
@@ -2285,6 +2946,12 @@ private fun JellyfinMusicApp() {
                                     }
                                 )
                             }
+                            item {
+                                SettingsSectionHeader("About")
+                            }
+                            item {
+                                AboutCard()
+                            }
                         }
 
                         AppDestination.Player -> {
@@ -2293,51 +2960,142 @@ private fun JellyfinMusicApp() {
                             }
                         }
 
-                        AppDestination.Liked -> {
-                            val likedTracks = visibleTracks.filter { it.id in likedTrackIds }
-                            item {
-                                LibraryHeader(
-                                    title = "Favorites",
-                                    showSearch = false,
-                                    searchQuery = "",
-                                    isBusy = isBusy,
-                                    statusText = statusText,
-                                    onSearchQueryChange = {},
-                                    onRefresh = { loadLibrary(connectedSession) }
-                                )
-                            }
-                            if (likedTracks.isEmpty()) {
-                                item {
-                                    EmptyLibraryMessage(
-                                        isBusy = isBusy,
-                                        statusText = statusText.takeIf { tracks.isEmpty() },
-                                        emptyText = "No liked tracks yet"
-                                    )
-                                }
-                            } else {
-                                items(likedTracks, key = { it.id }) { track ->
-                                    TrackRow(
-                                        track = track,
-                                        session = connectedSession,
-                                        isCurrent = player.currentTrack?.id == track.id,
-                                        isLiked = track.id in likedTrackIds,
-                                        onToggleLiked = { toggleLiked(track) },
-                                        onClick = { playTrack(track, openPlayer = true, source = likedTracks) },
-                                        isDownloaded = track.id in offlineDownloads,
-                                        downloadProgress = downloadProgressById[track.id],
-                                        onToggleDownload = { toggleOfflineDownload(track) },
-                                        onGoToAlbum = {
-                                            openLibraryDetail(LibraryDetail(LibraryCollectionType.Album, track.album))
-                                        },
-                                        onGoToArtist = {
-                                            openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, track.artist))
-                                        },
-                                        onPlayNext = { playTrackNext(track) },
-                                        onStartRadio = { startRadioFrom(likedTracks, track) }
-                                    )
-                                }
-                            }
-                        }
+	                        AppDestination.Liked -> {
+	                            val likedTracks = visibleTracks.filter { it.id in likedTrackIds }
+	                            val favoriteAlbumGroups = visibleTracks
+	                                .groupByAlbum()
+	                                .filter { it.key in favoriteAlbumKeys }
+	                            val favoriteArtistGroups = (likedTracks + favoriteAlbumGroups.flatMap { it.tracks })
+	                                .distinctBy { it.id }
+	                                .groupByArtist()
+	                                .sortedGroupsForLibrary(LibrarySortMode.Artist)
+	                            item {
+	                                FavoritesHeader(
+	                                    selectedTab = favoritesTab,
+	                                    trackCount = likedTracks.size,
+	                                    albumCount = favoriteAlbumGroups.size,
+	                                    artistCount = favoriteArtistGroups.size,
+	                                    onTabSelected = { favoritesTab = it }
+	                                )
+	                            }
+	                            when (favoritesTab) {
+	                                FavoritesTab.Tracks -> {
+	                                    if (likedTracks.isEmpty()) {
+	                                        item {
+	                                            EmptyLibraryMessage(
+	                                                isBusy = isBusy,
+	                                                statusText = statusText.takeIf { tracks.isEmpty() },
+	                                                emptyText = "No favorite tracks yet"
+	                                            )
+	                                        }
+	                                    } else {
+	                                        items(
+	                                            likedTracks.chunked(2),
+	                                            key = { row -> row.joinToString(separator = "|") { it.id } }
+	                                        ) { rowTracks ->
+	                                            Row(
+	                                                modifier = Modifier.fillMaxWidth(),
+	                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+	                                            ) {
+	                                                rowTracks.forEach { track ->
+	                                                    LibraryTrackGridCard(
+	                                                        track = track,
+	                                                        session = connectedSession,
+	                                                        isCurrent = player.currentTrack?.id == track.id,
+	                                                        isDownloaded = track.id in offlineDownloads,
+	                                                        onClick = {
+	                                                            playTrack(track, openPlayer = true, source = likedTracks)
+	                                                        },
+	                                                        modifier = Modifier.weight(1f)
+	                                                    )
+	                                                }
+	                                                if (rowTracks.size == 1) {
+	                                                    Spacer(Modifier.weight(1f))
+	                                                }
+	                                            }
+	                                        }
+	                                    }
+	                                }
+	                                FavoritesTab.Albums -> {
+	                                    if (favoriteAlbumGroups.isEmpty()) {
+	                                        item {
+	                                            EmptyLibraryMessage(
+	                                                isBusy = isBusy,
+	                                                statusText = statusText.takeIf { tracks.isEmpty() },
+	                                                emptyText = "No favorite albums yet"
+	                                            )
+	                                        }
+	                                    } else {
+	                                        items(
+	                                            favoriteAlbumGroups.chunked(2),
+	                                            key = { row -> row.joinToString(separator = "|") { it.key } }
+	                                        ) { rowGroups ->
+	                                            Row(
+	                                                modifier = Modifier.fillMaxWidth(),
+	                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+	                                            ) {
+	                                                rowGroups.forEach { group ->
+	                                                    LibraryGroupGridCard(
+	                                                        group = group,
+	                                                        session = connectedSession,
+	                                                        artworkShape = RoundedCornerShape(8.dp),
+	                                                        isFavorite = true,
+	                                                        onToggleFavorite = { toggleFavoriteAlbum(group.key) },
+	                                                        onClick = {
+	                                                            openLibraryDetail(
+	                                                                LibraryDetail(LibraryCollectionType.Album, group.key)
+	                                                            )
+	                                                        },
+	                                                        modifier = Modifier.weight(1f)
+	                                                    )
+	                                                }
+	                                                if (rowGroups.size == 1) {
+	                                                    Spacer(Modifier.weight(1f))
+	                                                }
+	                                            }
+	                                        }
+	                                    }
+	                                }
+	                                FavoritesTab.Artists -> {
+	                                    if (favoriteArtistGroups.isEmpty()) {
+	                                        item {
+	                                            EmptyLibraryMessage(
+	                                                isBusy = isBusy,
+	                                                statusText = statusText.takeIf { tracks.isEmpty() },
+	                                                emptyText = "No favorite artists yet"
+	                                            )
+	                                        }
+	                                    } else {
+	                                        items(
+	                                            favoriteArtistGroups.chunked(2),
+	                                            key = { row -> row.joinToString(separator = "|") { it.title } }
+	                                        ) { rowGroups ->
+	                                            Row(
+	                                                modifier = Modifier.fillMaxWidth(),
+	                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+	                                            ) {
+	                                                rowGroups.forEach { group ->
+	                                                    LibraryGroupGridCard(
+	                                                        group = group,
+	                                                        session = connectedSession,
+	                                                        artworkShape = CircleShape,
+	                                                        onClick = {
+	                                                            openLibraryDetail(
+	                                                                LibraryDetail(LibraryCollectionType.Artist, group.title)
+	                                                            )
+	                                                        },
+	                                                        modifier = Modifier.weight(1f)
+	                                                    )
+	                                                }
+	                                                if (rowGroups.size == 1) {
+	                                                    Spacer(Modifier.weight(1f))
+	                                                }
+	                                            }
+	                                        }
+	                                    }
+	                                }
+	                            }
+	                        }
 
                         else -> {
                             val isHomeTab = selectedDestination == AppDestination.Home
@@ -2443,9 +3201,9 @@ private fun JellyfinMusicApp() {
                             } else if (selectedDestination == AppDestination.Library) {
                                 val detail = activeLibraryDetail
                                 if (detail != null) {
-                                    val detailTracks = visibleTracks.tracksForDetail(detail, offlineDownloads.keys)
-                                    val detailTitle = detail.titleLabel()
-                                    val detailSubtitle = detail.subtitleLabel(detailTracks)
+                                    val detailTracks = visibleTracks.tracksForDetail(detail, offlineDownloads.keys, localPlaylists)
+                                    val detailTitle = detail.titleLabel(localPlaylists)
+                                    val detailSubtitle = detail.subtitleLabel(detailTracks, localPlaylists)
                                     val detailPin = PinnedLibraryItem(detail.type, detail.key)
                                     item {
                                         LibraryDetailHeader(
@@ -2455,14 +3213,32 @@ private fun JellyfinMusicApp() {
                                             session = connectedSession,
                                             artworkShape = if (detail.type == LibraryCollectionType.Artist) CircleShape else RoundedCornerShape(8.dp),
                                             isPinned = pinnedLibraryItems.any { it == detailPin },
+                                            isFavorite = detail.type == LibraryCollectionType.Album && detail.key in favoriteAlbumKeys,
                                             onPlay = {
                                                 detailTracks.firstOrNull()?.let {
                                                     playTrack(it, openPlayer = true, source = detailTracks)
                                                 }
                                             },
                                             onShuffle = { playRandom(detailTracks) },
-                                            onTogglePin = { togglePinnedLibraryItem(detailPin) }
+                                            onTogglePin = { togglePinnedLibraryItem(detailPin) },
+                                            onToggleFavorite = if (detail.type == LibraryCollectionType.Album) {
+                                                { toggleFavoriteAlbum(detail.key) }
+                                            } else {
+                                                null
+                                            }
                                         )
+                                    }
+                                    if (detail.type == LibraryCollectionType.Playlist) {
+                                        val playlist = localPlaylists.firstOrNull { it.id == detail.key }
+                                        if (playlist != null) {
+                                            item {
+                                                PlaylistDetailControls(
+                                                    playlist = playlist,
+                                                    onToggleFavorite = { togglePlaylistFavorite(playlist.id) },
+                                                    onDelete = { deletePlaylist(playlist.id) }
+                                                )
+                                            }
+                                        }
                                     }
                                     if (detailTracks.isEmpty()) {
                                         item {
@@ -2499,7 +3275,14 @@ private fun JellyfinMusicApp() {
                                                     )
                                                 },
                                                 onPlayNext = { playTrackNext(track) },
-                                                onStartRadio = { startRadioFrom(detailTracks, track) }
+                                                onStartRadio = { startRadioFrom(detailTracks, track) },
+                                                playlists = localPlaylists,
+                                                onAddToPlaylist = { playlist -> addTrackToPlaylist(playlist, track) },
+                                                onRemoveFromPlaylist = if (detail.type == LibraryCollectionType.Playlist) {
+                                                    { removeTrackFromPlaylist(detail.key, track) }
+                                                } else {
+                                                    null
+                                                }
                                             )
                                         }
                                     }
@@ -2509,82 +3292,204 @@ private fun JellyfinMusicApp() {
                                 } else {
                                     "Your music will appear here"
                                 }
-                                item {
-                                    SpotifyLibraryHeader(
-                                        totalTracks = visibleTracks.size,
-                                        totalAlbums = visibleTracks.groupByAlbum().size,
-                                        totalArtists = visibleTracks.groupByArtist().size,
-                                        isBusy = isBusy,
-                                        statusText = statusText,
-                                        lastLibrarySyncAt = lastLibrarySyncAt,
-                                        downloadedOnlyMode = downloadedOnlyMode,
-                                        onRefresh = { loadLibrary(connectedSession) },
-                                        onDownloadedOnlyChange = {
-                                            downloadedOnlyMode = !downloadedOnlyMode
-                                            libraryLetterFilter = null
-                                        }
-                                    )
-                                }
-                                if (pinnedLibraryItems.isNotEmpty()) {
-                                    item {
-                                        PinnedLibraryShelf(
+                                val isLibrarySearching = librarySearchQuery.isNotBlank()
+	                                val hasLibrarySearchResults = libraryStackedTracks.isNotEmpty() ||
+	                                    libraryAlbumGroups.isNotEmpty() ||
+	                                    libraryArtistGroups.isNotEmpty() ||
+	                                    playlistGroups.isNotEmpty()
+	                                stickyHeader {
+	                                    Box(
+	                                        modifier = Modifier
+	                                            .fillMaxWidth()
+	                                            .background(MaterialTheme.colorScheme.background)
+	                                    ) {
+	                                        LibraryToolbar(
+	                                            selectedTab = selectedTab,
+	                                            activeFilters = activeLibraryFilters,
+	                                            sortMode = librarySortMode,
+	                                            isBusy = isBusy,
+	                                            onSearchClick = {
+	                                                searchQuery = librarySearchQuery
+	                                                librarySearchQuery = ""
+	                                                selectedDestination = AppDestination.Search
+	                                                searchFocusRequests++
+	                                            },
+	                                            onCreateClick = {
+	                                                selectedTab = LibraryTab.Playlists
+	                                                libraryLetterFilter = null
+	                                            },
+	                                            onTabSelected = {
+	                                                selectedTab = it
+	                                                libraryLetterFilter = null
+	                                            },
+	                                            onToggleFilter = { filter ->
+	                                                activeLibraryFilters = if (filter in activeLibraryFilters) {
+	                                                    activeLibraryFilters - filter
+	                                                } else {
+	                                                    activeLibraryFilters + filter
+	                                                }
+	                                                libraryLetterFilter = null
+	                                            },
+	                                            onSortModeChange = { librarySortMode = it }
+	                                        )
+	                                    }
+	                                }
+	                                if (!isLibrarySearching && pinnedLibraryItems.isNotEmpty()) {
+	                                    item {
+	                                        PinnedLibraryShelf(
                                             pinnedItems = pinnedLibraryItems,
                                             tracks = visibleTracks,
                                             downloadedTrackIds = offlineDownloads.keys,
+                                            playlists = localPlaylists,
                                             session = connectedSession,
                                             onOpenDetail = ::openLibraryDetail,
                                             onUnpin = ::togglePinnedLibraryItem
                                         )
+	                                    }
+	                                }
+	                                if (isLibrarySearching && !hasLibrarySearchResults) {
+                                    item {
+                                        EmptyLibraryMessage(
+                                            isBusy = isBusy,
+                                            statusText = statusText.takeIf { tracks.isEmpty() },
+                                            emptyText = emptyLibraryText
+                                        )
                                     }
                                 }
-                                item {
-                                    LibraryTabs(
-                                        selectedTab = selectedTab,
-                                        resultCounts = libraryCounts,
-                                        onTabSelected = {
-                                            selectedTab = it
-                                            libraryLetterFilter = null
-                                        }
-                                    )
-                                }
-                                item {
-                                    LibraryStackedFilters(
-                                        activeFilters = activeLibraryFilters,
-                                        onToggleFilter = { filter ->
-                                            activeLibraryFilters = if (filter in activeLibraryFilters) {
-                                                activeLibraryFilters - filter
-                                            } else {
-                                                activeLibraryFilters + filter
+                                if (isLibrarySearching && libraryAlbumGroups.isNotEmpty()) {
+                                    item {
+                                        SearchSectionHeader(
+                                            title = "Albums",
+                                            count = libraryAlbumGroups.size
+                                        )
+                                    }
+                                    items(
+                                        libraryAlbumGroups.take(8).chunked(2),
+                                        key = { row -> row.joinToString(separator = "|") { it.title } }
+                                    ) { rowGroups ->
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                        ) {
+                                            rowGroups.forEach { group ->
+                                                LibraryGroupGridCard(
+                                                    group = group,
+                                                    session = connectedSession,
+                                                    artworkShape = RoundedCornerShape(8.dp),
+                                                    onClick = {
+                                                        openLibraryDetail(
+                                                            LibraryDetail(LibraryCollectionType.Album, group.key)
+                                                        )
+                                                    },
+                                                    modifier = Modifier.weight(1f)
+                                                )
                                             }
-                                            libraryLetterFilter = null
+                                            if (rowGroups.size == 1) {
+                                                Spacer(Modifier.weight(1f))
+                                            }
                                         }
-                                    )
+                                    }
                                 }
-                                item {
-                                    LibraryToolbar(
-                                        searchQuery = librarySearchQuery,
-                                        sortMode = librarySortMode,
-                                        gridView = libraryGridView,
-                                        onSearchQueryChange = { librarySearchQuery = it },
-                                        onSortModeChange = { librarySortMode = it },
-                                        onGridViewChange = { libraryGridView = it }
-                                    )
-                                }
-                                item {
-                                    LibraryAlphabetJumpRow(
-                                        letters = availableLettersForTab(
-                                            selectedTab = selectedTab,
-                                            songs = libraryStackedTracks,
-                                            albums = libraryStackedTracks.groupByAlbum(),
-                                            artists = libraryStackedTracks.groupByArtist()
-                                        ),
-                                        selectedLetter = libraryLetterFilter,
-                                        onLetterSelected = { letter ->
-                                            libraryLetterFilter = if (libraryLetterFilter == letter) null else letter
+                                if (isLibrarySearching && libraryArtistGroups.isNotEmpty()) {
+                                    item {
+                                        SearchSectionHeader(
+                                            title = "Artists",
+                                            count = libraryArtistGroups.size
+                                        )
+                                    }
+                                    items(
+                                        libraryArtistGroups.take(8).chunked(2),
+                                        key = { row -> row.joinToString(separator = "|") { it.title } }
+                                    ) { rowGroups ->
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                        ) {
+                                            rowGroups.forEach { group ->
+                                                LibraryGroupGridCard(
+                                                    group = group,
+                                                    session = connectedSession,
+                                                    artworkShape = CircleShape,
+                                                    onClick = {
+                                                        openLibraryDetail(
+                                                            LibraryDetail(LibraryCollectionType.Artist, group.title)
+                                                        )
+                                                    },
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                            }
+                                            if (rowGroups.size == 1) {
+                                                Spacer(Modifier.weight(1f))
+                                            }
                                         }
-                                    )
+                                    }
                                 }
-
+                                if (isLibrarySearching && playlistGroups.isNotEmpty()) {
+                                    item {
+                                        SearchSectionHeader(
+                                            title = "Playlists",
+                                            count = playlistGroups.size
+                                        )
+                                    }
+                                    items(
+                                        playlistGroups.take(8).chunked(2),
+                                        key = { row -> row.joinToString(separator = "|") { it.key } }
+                                    ) { rowGroups ->
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                        ) {
+                                            rowGroups.forEach { group ->
+                                                LibraryGroupGridCard(
+                                                    group = group,
+                                                    session = connectedSession,
+                                                    artworkShape = RoundedCornerShape(8.dp),
+                                                    onClick = {
+                                                        openLibraryDetail(
+                                                            LibraryDetail(LibraryCollectionType.Playlist, group.key)
+                                                        )
+                                                    },
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                            }
+                                            if (rowGroups.size == 1) {
+                                                Spacer(Modifier.weight(1f))
+                                            }
+                                        }
+                                    }
+                                }
+                                if (isLibrarySearching && libraryStackedTracks.isNotEmpty()) {
+                                    item {
+                                        SearchSectionHeader(
+                                            title = "Songs",
+                                            count = libraryStackedTracks.size
+                                        )
+                                    }
+                                    items(libraryStackedTracks.take(40), key = { it.id }) { track ->
+                                        TrackRow(
+                                            track = track,
+                                            session = connectedSession,
+                                            isCurrent = player.currentTrack?.id == track.id,
+                                            isLiked = track.id in likedTrackIds,
+                                            onToggleLiked = { toggleLiked(track) },
+                                            onClick = { playTrack(track, openPlayer = true, source = libraryStackedTracks) },
+                                            isDownloaded = track.id in offlineDownloads,
+                                            downloadProgress = downloadProgressById[track.id],
+                                            onToggleDownload = { toggleOfflineDownload(track) },
+                                            onGoToAlbum = {
+                                                openLibraryDetail(LibraryDetail(LibraryCollectionType.Album, track.album))
+                                            },
+                                            onGoToArtist = {
+                                                openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, track.artist))
+                                            },
+                                            onPlayNext = { playTrackNext(track) },
+                                            onStartRadio = { startRadioFrom(libraryStackedTracks, track) },
+                                            playlists = localPlaylists,
+                                            onAddToPlaylist = { playlist -> addTrackToPlaylist(playlist, track) }
+                                        )
+                                    }
+                                }
+                                if (!isLibrarySearching) {
                                 when (selectedTab) {
                                     LibraryTab.Songs -> {
                                         if (libraryTracks.isEmpty()) {
@@ -2653,6 +3558,8 @@ private fun JellyfinMusicApp() {
                                                         },
                                                         onPlayNext = { playTrackNext(track) },
                                                         onStartRadio = { startRadioFrom(libraryTracks, track) },
+                                                        playlists = localPlaylists,
+                                                        onAddToPlaylist = { playlist -> addTrackToPlaylist(playlist, track) },
                                                         onClick = {
                                                             playTrack(track, openPlayer = true, source = libraryTracks)
                                                         }
@@ -2686,16 +3593,18 @@ private fun JellyfinMusicApp() {
                                                             session = connectedSession,
                                                             artworkShape = RoundedCornerShape(8.dp),
                                                             isPinned = pinnedLibraryItems.any {
-                                                                it == PinnedLibraryItem(LibraryCollectionType.Album, group.title)
+                                                                it == PinnedLibraryItem(LibraryCollectionType.Album, group.key)
                                                             },
+                                                            isFavorite = group.key in favoriteAlbumKeys,
                                                             onTogglePin = {
                                                                 togglePinnedLibraryItem(
-                                                                    PinnedLibraryItem(LibraryCollectionType.Album, group.title)
+                                                                    PinnedLibraryItem(LibraryCollectionType.Album, group.key)
                                                                 )
                                                             },
+                                                            onToggleFavorite = { toggleFavoriteAlbum(group.key) },
                                                             onClick = {
                                                                 openLibraryDetail(
-                                                                    LibraryDetail(LibraryCollectionType.Album, group.title)
+                                                                    LibraryDetail(LibraryCollectionType.Album, group.key)
                                                                 )
                                                             },
                                                             modifier = Modifier.weight(1f)
@@ -2713,16 +3622,18 @@ private fun JellyfinMusicApp() {
                                                     session = connectedSession,
                                                     artworkShape = RoundedCornerShape(8.dp),
                                                     isPinned = pinnedLibraryItems.any {
-                                                        it == PinnedLibraryItem(LibraryCollectionType.Album, group.title)
+                                                        it == PinnedLibraryItem(LibraryCollectionType.Album, group.key)
                                                     },
+                                                    isFavorite = group.key in favoriteAlbumKeys,
                                                     onTogglePin = {
                                                         togglePinnedLibraryItem(
-                                                            PinnedLibraryItem(LibraryCollectionType.Album, group.title)
+                                                            PinnedLibraryItem(LibraryCollectionType.Album, group.key)
                                                         )
                                                     },
+                                                    onToggleFavorite = { toggleFavoriteAlbum(group.key) },
                                                     onClick = {
                                                         openLibraryDetail(
-                                                            LibraryDetail(LibraryCollectionType.Album, group.title)
+                                                            LibraryDetail(LibraryCollectionType.Album, group.key)
                                                         )
                                                     }
                                                 )
@@ -2797,16 +3708,90 @@ private fun JellyfinMusicApp() {
                                             }
                                         }
                                     }
+
+                                    LibraryTab.Playlists -> {
+                                        item {
+                                            PlaylistCreateCard(onCreate = ::createPlaylist)
+                                        }
+                                        if (playlistGroups.isEmpty()) {
+                                            item {
+                                                EmptyLibraryMessage(
+                                                    isBusy = false,
+                                                    statusText = null,
+                                                    emptyText = if (localPlaylists.isEmpty()) {
+                                                        "Create a playlist or save your queue"
+                                                    } else {
+                                                        emptyLibraryText
+                                                    }
+                                                )
+                                            }
+                                        } else if (libraryGridView) {
+                                            items(
+                                                playlistGroups.chunked(2),
+                                                key = { row -> row.joinToString(separator = "|") { it.key } }
+                                            ) { rowGroups ->
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                                ) {
+                                                    rowGroups.forEach { group ->
+                                                        val pin = PinnedLibraryItem(LibraryCollectionType.Playlist, group.key)
+                                                        LibraryGroupGridCard(
+                                                            group = group,
+                                                            session = connectedSession,
+                                                            artworkShape = RoundedCornerShape(8.dp),
+                                                            isPinned = pinnedLibraryItems.any { it == pin },
+                                                            onTogglePin = { togglePinnedLibraryItem(pin) },
+                                                            onClick = {
+                                                                openLibraryDetail(
+                                                                    LibraryDetail(LibraryCollectionType.Playlist, group.key)
+                                                                )
+                                                            },
+                                                            modifier = Modifier.weight(1f)
+                                                        )
+                                                    }
+                                                    if (rowGroups.size == 1) {
+                                                        Spacer(Modifier.weight(1f))
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            items(playlistGroups, key = { it.key }) { group ->
+                                                val pin = PinnedLibraryItem(LibraryCollectionType.Playlist, group.key)
+                                                LibraryGroupListRow(
+                                                    group = group,
+                                                    session = connectedSession,
+                                                    artworkShape = RoundedCornerShape(8.dp),
+                                                    isPinned = pinnedLibraryItems.any { it == pin },
+                                                    onTogglePin = { togglePinnedLibraryItem(pin) },
+                                                    onClick = {
+                                                        openLibraryDetail(
+                                                            LibraryDetail(LibraryCollectionType.Playlist, group.key)
+                                                        )
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
                                 }
                                 }
                             } else {
                                 val queryIsBlank = searchQuery.isBlank()
-                                val hasSearchResults = displayedTracks.isNotEmpty() ||
-                                    searchAlbumGroups.isNotEmpty() ||
-                                    searchArtistGroups.isNotEmpty()
+	                                val hasSearchResults = displayedTracks.isNotEmpty() ||
+	                                    searchAlbumGroups.isNotEmpty() ||
+	                                    searchArtistGroups.isNotEmpty() ||
+	                                    searchPlaylistGroups.isNotEmpty()
+                                    val topSearchResult = topSearchResult(
+                                        query = searchQuery,
+                                        tracks = displayedTracks,
+                                        albums = searchAlbumGroups,
+                                        artists = searchArtistGroups,
+                                        playlists = searchPlaylistGroups
+                                    )
 
-                                item {
-                                    SearchHeader(
+	                                item {
+	                                    SearchHeader(
                                         searchQuery = searchQuery,
                                         resultCounts = searchResultCounts,
                                         isBusy = isBusy,
@@ -2864,6 +3849,40 @@ private fun JellyfinMusicApp() {
                                             }
                                         }
                                     }
+                                    if (searchPlaylistGroups.isNotEmpty()) {
+                                        item {
+                                            SearchSectionHeader(
+                                                title = "Playlists",
+                                                count = searchPlaylistGroups.size
+                                            )
+                                        }
+                                        items(
+                                            searchPlaylistGroups.take(10).chunked(2),
+                                            key = { row -> row.joinToString(separator = "|") { it.key } }
+                                        ) { rowGroups ->
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                            ) {
+                                                rowGroups.forEach { group ->
+                                                    LibraryGroupGridCard(
+                                                        group = group,
+                                                        session = connectedSession,
+                                                        artworkShape = RoundedCornerShape(8.dp),
+                                                        onClick = {
+                                                            openLibraryDetail(
+                                                                LibraryDetail(LibraryCollectionType.Playlist, group.key)
+                                                            )
+                                                        },
+                                                        modifier = Modifier.weight(1f)
+                                                    )
+                                                }
+                                                if (rowGroups.size == 1) {
+                                                    Spacer(Modifier.weight(1f))
+                                                }
+                                            }
+                                        }
+                                    }
                                 } else if (!hasSearchResults) {
                                     item {
                                         EmptyLibraryMessage(
@@ -2871,11 +3890,24 @@ private fun JellyfinMusicApp() {
                                             statusText = statusText,
                                             emptyText = emptySearchText
                                         )
-                                    }
-                                } else {
-                                    if (searchAlbumGroups.isNotEmpty()) {
-                                        item {
-                                            SearchSectionHeader(
+	                                    }
+	                                } else {
+                                        topSearchResult?.let { result ->
+                                            item {
+                                                SearchTopResultCard(
+                                                    result = result,
+                                                    session = connectedSession,
+                                                    onClick = {
+                                                        result.track?.let { topTrack ->
+                                                            playTrack(topTrack, openPlayer = true, source = displayedTracks)
+                                                        } ?: result.detail?.let(::openLibraryDetail)
+                                                    }
+                                                )
+                                            }
+                                        }
+	                                    if (searchAlbumGroups.isNotEmpty()) {
+	                                        item {
+	                                            SearchSectionHeader(
                                                 title = "Albums",
                                                 count = searchAlbumGroups.size
                                             )
@@ -2943,6 +3975,41 @@ private fun JellyfinMusicApp() {
                                         }
                                     }
 
+                                    if (searchPlaylistGroups.isNotEmpty()) {
+                                        item {
+                                            SearchSectionHeader(
+                                                title = "Playlists",
+                                                count = searchPlaylistGroups.size
+                                            )
+                                        }
+                                        items(
+                                            searchPlaylistGroups.take(10).chunked(2),
+                                            key = { row -> row.joinToString(separator = "|") { it.key } }
+                                        ) { rowGroups ->
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                            ) {
+                                                rowGroups.forEach { group ->
+                                                    LibraryGroupGridCard(
+                                                        group = group,
+                                                        session = connectedSession,
+                                                        artworkShape = RoundedCornerShape(8.dp),
+                                                        onClick = {
+                                                            openLibraryDetail(
+                                                                LibraryDetail(LibraryCollectionType.Playlist, group.key)
+                                                            )
+                                                        },
+                                                        modifier = Modifier.weight(1f)
+                                                    )
+                                                }
+                                                if (rowGroups.size == 1) {
+                                                    Spacer(Modifier.weight(1f))
+                                                }
+                                            }
+                                        }
+                                    }
+
                                     if (displayedTracks.isNotEmpty()) {
                                         item {
                                             SearchSectionHeader(
@@ -2970,7 +4037,9 @@ private fun JellyfinMusicApp() {
                                                     openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, track.artist))
                                                 },
                                                 onPlayNext = { playTrackNext(track) },
-                                                onStartRadio = { startRadioFrom(displayedTracks, track) }
+                                                onStartRadio = { startRadioFrom(displayedTracks, track) },
+                                                playlists = localPlaylists,
+                                                onAddToPlaylist = { playlist -> addTrackToPlaylist(playlist, track) }
                                             )
                                         }
                                     }
@@ -2979,10 +4048,33 @@ private fun JellyfinMusicApp() {
                         }
                     }
                 }
+                }
+                if (libraryLetterRailLetters.isNotEmpty()) {
+                    LibraryAlphabetSideRail(
+                        letters = libraryLetterRailLetters,
+                        selectedLetter = libraryLetterFilter,
+                        onLetterSelected = { letter ->
+                            if (libraryLetterFilter != letter) {
+                                hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            }
+                            libraryLetterFilter = letter
+                            libraryLetterScrollTargets[letter]?.let { targetIndex ->
+                                libraryRailScrollJob.value?.cancel()
+                                libraryRailScrollJob.value = coroutineScope.launch {
+                                    mainListState.scrollToItem(targetIndex)
+                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .fillMaxHeight()
+                            .padding(top = 88.dp, end = 3.dp, bottom = 112.dp)
+                    )
+                }
             }
         }
     }
-    }
+}
 }
 
 @Composable
@@ -3024,7 +4116,9 @@ private fun AboutCard() {
 private fun SettingsSummaryCard(
     session: JellyfinSession,
     lastLibrarySyncAt: Long?,
-    syncedTrackCount: Int
+    syncedTrackCount: Int,
+    downloadedTrackCount: Int,
+    activeDownloadCount: Int
 ) {
     Card(
         shape = RoundedCornerShape(26.dp),
@@ -3053,6 +4147,59 @@ private fun SettingsSummaryCard(
             Text(
                 text = "${syncedTrackCount.countLabel("song")} synced - ${formatLastLibrarySync(lastLibrarySyncAt)}",
                 style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.72f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                SettingsStatusPill(
+                    label = "Library",
+                    value = syncedTrackCount.toString(),
+                    modifier = Modifier.weight(1f)
+                )
+                SettingsStatusPill(
+                    label = "Offline",
+                    value = downloadedTrackCount.toString(),
+                    modifier = Modifier.weight(1f)
+                )
+                SettingsStatusPill(
+                    label = "Active",
+                    value = activeDownloadCount.toString(),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsStatusPill(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.08f)
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = value,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                maxLines = 1
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.72f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -3104,7 +4251,11 @@ private fun LibrarySyncCard(
     isBusy: Boolean,
     syncedTrackCount: Int,
     lastLibrarySyncAt: Long?,
-    onRefresh: () -> Unit
+    autoSyncOnLaunch: Boolean,
+    onAutoSyncOnLaunchChange: (Boolean) -> Unit,
+    onRefresh: () -> Unit,
+    onClearLibraryCache: () -> Unit,
+    onClearArtworkCache: () -> Unit
 ) {
     Card(
         shape = RoundedCornerShape(22.dp),
@@ -3128,16 +4279,51 @@ private fun LibrarySyncCard(
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
             SettingsInfoRow(title = "Synced songs", value = syncedTrackCount.toString())
             SettingsInfoRow(title = "Last sync", value = formatLastLibrarySync(lastLibrarySyncAt))
-            Row(
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+            SettingsSwitchRow(
+                title = "Auto sync on launch",
+                description = if (autoSyncOnLaunch) {
+                    "Refreshes metadata when the app opens"
+                } else {
+                    "Uses cached metadata until you sync"
+                },
+                checked = autoSyncOnLaunch,
+                onCheckedChange = onAutoSyncOnLaunchChange
+            )
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                FilledTonalButton(
-                    onClick = onRefresh,
-                    enabled = !isBusy,
-                    shape = RoundedCornerShape(16.dp)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(if (isBusy) "Syncing" else "Sync library")
+                    TextButton(
+                        onClick = onClearLibraryCache,
+                        enabled = syncedTrackCount > 0 || lastLibrarySyncAt != null,
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Text("Clear library")
+                    }
+                    TextButton(
+                        onClick = onClearArtworkCache,
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Text("Clear artwork")
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    FilledTonalButton(
+                        onClick = onRefresh,
+                        enabled = !isBusy,
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Text(if (isBusy) "Syncing" else "Sync now")
+                    }
                 }
             }
             if (isBusy) {
@@ -3154,8 +4340,10 @@ private fun OfflineDownloadsCard(
     activeDownloadCount: Int,
     wifiOnly: Boolean,
     storageLimitMb: Int,
+    downloadedOnlyMode: Boolean,
     onWifiOnlyChange: (Boolean) -> Unit,
     onStorageLimitChange: (Int) -> Unit,
+    onDownloadedOnlyChange: (Boolean) -> Unit,
     onClearDownloads: () -> Unit
 ) {
     Card(
@@ -3181,6 +4369,18 @@ private fun OfflineDownloadsCard(
             SettingsInfoRow(title = "Saved songs", value = downloadedTrackCount.toString())
             SettingsInfoRow(title = "Storage used", value = formatDataSize(downloadedBytes))
             SettingsInfoRow(title = "Storage limit", value = formatStorageLimit(storageLimitMb))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+            SettingsSwitchRow(
+                title = "Downloaded-only mode",
+                description = if (downloadedOnlyMode) {
+                    "Only shows songs saved on this device"
+                } else {
+                    "Shows your full Jellyfin library"
+                },
+                checked = downloadedOnlyMode,
+                onCheckedChange = onDownloadedOnlyChange
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -3240,6 +4440,86 @@ private fun OfflineDownloadsCard(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun PlaybackSettingsCard(
+    gaplessPrebufferEnabled: Boolean,
+    transcodedStreamingEnabled: Boolean,
+    playbackReportingEnabled: Boolean,
+    onGaplessPrebufferChange: (Boolean) -> Unit,
+    onTranscodedStreamingChange: (Boolean) -> Unit,
+    onPlaybackReportingChange: (Boolean) -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Text(
+                text = "Playback",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold
+            )
+            SettingsSwitchRow(
+                title = "Pre-buffer next song",
+                description = if (gaplessPrebufferEnabled) "Next song is warmed in the background" else "Next song starts only after you request it",
+                checked = gaplessPrebufferEnabled,
+                onCheckedChange = onGaplessPrebufferChange
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+            SettingsSwitchRow(
+                title = "Transcoded streaming",
+                description = if (transcodedStreamingEnabled) "Uses a smaller mobile-friendly stream" else "Streams original files when possible",
+                checked = transcodedStreamingEnabled,
+                onCheckedChange = onTranscodedStreamingChange
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+            SettingsSwitchRow(
+                title = "Playback reporting",
+                description = if (playbackReportingEnabled) "Updates Jellyfin play activity" else "Listening activity is kept local",
+                checked = playbackReportingEnabled,
+                onCheckedChange = onPlaybackReportingChange
+            )
+        }
+    }
+}
+
+@Composable
+private fun SettingsSwitchRow(
+    title: String,
+    description: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange
+        )
     }
 }
 
@@ -3495,7 +4775,6 @@ private fun BottomTabsBar(
     syncInProgress: Boolean,
     downloadQueueCount: Int,
     offlineMode: Boolean,
-    favoriteCount: Int,
     onDestinationSelected: (AppDestination) -> Unit,
     onDestinationLongPress: (AppDestination) -> Unit
 ) {
@@ -3552,8 +4831,7 @@ private fun BottomTabsBar(
                             destination = destination,
                             syncInProgress = syncInProgress,
                             downloadQueueCount = downloadQueueCount,
-                            offlineMode = offlineMode,
-                            favoriteCount = favoriteCount
+                            offlineMode = offlineMode
                         ),
                         onClick = { onDestinationSelected(destination) },
                         onLongClick = { onDestinationLongPress(destination) },
@@ -3595,6 +4873,8 @@ private fun BottomTabItem(
             .height(48.dp)
             .clip(RoundedCornerShape(18.dp))
             .combinedClickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
                 onClick = onClick,
                 onLongClick = onLongClick
             ),
@@ -3607,7 +4887,7 @@ private fun BottomTabItem(
             contentAlignment = Alignment.Center
         ) {
             Icon(
-                imageVector = destinationIcon(destination),
+                imageVector = destinationIcon(destination, selected),
                 contentDescription = destination.label,
                 tint = contentColor,
                 modifier = Modifier.size(if (selected) 24.dp else 22.dp)
@@ -3647,8 +4927,7 @@ private fun bottomTabBadge(
     destination: AppDestination,
     syncInProgress: Boolean,
     downloadQueueCount: Int,
-    offlineMode: Boolean,
-    favoriteCount: Int
+    offlineMode: Boolean
 ): String? =
     when (destination) {
         AppDestination.Library -> when {
@@ -3656,19 +4935,18 @@ private fun bottomTabBadge(
             offlineMode -> "!"
             else -> null
         }
-        AppDestination.Liked -> favoriteCount.takeIf { it > 0 }?.coerceAtMost(99)?.toString()
         AppDestination.Profile -> if (syncInProgress) "!" else null
         else -> null
     }
 
-private fun destinationIcon(destination: AppDestination): ImageVector =
+private fun destinationIcon(destination: AppDestination, selected: Boolean): ImageVector =
     when (destination) {
-        AppDestination.Home -> Icons.Filled.Home
-        AppDestination.Search -> Icons.Filled.Search
+        AppDestination.Home -> if (selected) PlayerIconVectors.HomeFilled else PlayerIconVectors.Home
+        AppDestination.Search -> PlayerIconVectors.Search
         AppDestination.Player -> Icons.Filled.PlayArrow
-        AppDestination.Library -> PlayerIconVectors.Library
-        AppDestination.Liked -> Icons.Filled.Favorite
-        AppDestination.Profile -> Icons.Filled.Settings
+        AppDestination.Library -> if (selected) PlayerIconVectors.LibraryFilled else PlayerIconVectors.Library
+        AppDestination.Liked -> if (selected) PlayerIconVectors.FavoriteFilled else PlayerIconVectors.FavoriteOutline
+        AppDestination.Profile -> PlayerIconVectors.Settings
     }
 
 @Composable
@@ -3908,6 +5186,111 @@ private fun SearchSectionHeader(title: String, count: Int) {
 }
 
 @Composable
+private fun SearchTopResultCard(
+    result: SearchTopResult,
+    session: JellyfinSession?,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AlbumArtworkImage(
+                track = result.artworkTrack,
+                session = session,
+                modifier = Modifier
+                    .size(76.dp)
+                    .clip(result.artworkShape),
+                imageSize = 180,
+                imageQuality = 76
+            )
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = "Top result",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1
+                )
+                Text(
+                    text = result.title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "${result.type.label} - ${result.subtitle}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Icon(
+                imageVector = if (result.type == SearchTopResultType.Song) {
+                    PlayerGlyph.Play.imageVector()
+                } else {
+                    PlayerGlyph.Next.imageVector()
+                },
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(24.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun FavoritesHeader(
+    selectedTab: FavoritesTab,
+    trackCount: Int,
+    albumCount: Int,
+    artistCount: Int,
+    onTabSelected: (FavoritesTab) -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            text = "Favorites",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(FavoritesTab.entries) { tab ->
+                LibraryToolbarPill(
+                    label = tab.label,
+                    selected = selectedTab == tab,
+                    onClick = { onTabSelected(tab) }
+                )
+            }
+        }
+        Text(
+            text = when (selectedTab) {
+                FavoritesTab.Tracks -> trackCount.countLabel("track")
+                FavoritesTab.Albums -> albumCount.countLabel("album")
+                FavoritesTab.Artists -> artistCount.countLabel("artist")
+            },
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
 private fun LibraryTabs(
     selectedTab: LibraryTab,
     resultCounts: SearchResultCounts? = null,
@@ -3932,6 +5315,108 @@ private fun LibraryTabs(
                     )
                 }
             )
+        }
+    }
+}
+
+@Composable
+private fun PlaylistCreateCard(
+    onCreate: (String, String, List<MusicTrack>) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var folder by remember { mutableStateOf("") }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "New playlist",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Name") }
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = folder,
+                    onValueChange = { folder = it },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    label = { Text("Folder") }
+                )
+                FilledTonalButton(
+                    onClick = {
+                        onCreate(name, folder, emptyList())
+                        name = ""
+                        folder = ""
+                    },
+                    enabled = name.isNotBlank(),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Text("Create")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaylistDetailControls(
+    playlist: LocalPlaylist,
+    onToggleFavorite: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = if (playlist.isFavorite) "Favorite playlist" else "Playlist",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = playlist.folder.takeIf { it.isNotBlank() } ?: playlist.trackIds.size.countLabel("song"),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            IconButton(onClick = onToggleFavorite) {
+                Icon(
+                    imageVector = if (playlist.isFavorite) Icons.Filled.Favorite else PlayerIconVectors.FavoriteOutline,
+                    contentDescription = if (playlist.isFavorite) "Unfavorite playlist" else "Favorite playlist",
+                    tint = if (playlist.isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            TextButton(
+                onClick = onDelete,
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text("Delete")
+            }
         }
     }
 }
@@ -4022,12 +5507,13 @@ private fun PinnedLibraryShelf(
     pinnedItems: List<PinnedLibraryItem>,
     tracks: List<MusicTrack>,
     downloadedTrackIds: Set<String>,
+    playlists: List<LocalPlaylist>,
     session: JellyfinSession?,
     onOpenDetail: (LibraryDetail) -> Unit,
     onUnpin: (PinnedLibraryItem) -> Unit
 ) {
-    val resolvedItems = remember(pinnedItems, tracks, downloadedTrackIds) {
-        pinnedItems.mapNotNull { it.resolvePinnedItem(tracks, downloadedTrackIds) }
+    val resolvedItems = remember(pinnedItems, tracks, downloadedTrackIds, playlists) {
+        pinnedItems.mapNotNull { it.resolvePinnedItem(tracks, downloadedTrackIds, playlists) }
     }
     if (resolvedItems.isEmpty()) return
 
@@ -4112,26 +5598,95 @@ private fun LibraryStackedFilters(
 }
 
 @Composable
-private fun LibraryAlphabetJumpRow(
+private fun LibraryAlphabetSideRail(
     letters: List<Char>,
     selectedLetter: Char?,
-    onLetterSelected: (Char) -> Unit
+    onLetterSelected: (Char) -> Unit,
+    modifier: Modifier = Modifier
 ) {
     if (letters.isEmpty()) return
-    LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        items(letters, key = { it }) { letter ->
-            FilterChip(
-                selected = selectedLetter == letter,
-                onClick = { onLetterSelected(letter) },
-                label = {
-                    Text(
-                        text = letter.toString(),
-                        style = MaterialTheme.typography.labelLarge,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.width(18.dp)
-                    )
+    Box(
+        modifier = modifier
+            .width(30.dp)
+            .pointerInput(letters) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    var lastLetter: Char? = null
+
+                    fun letterAt(y: Float): Char? {
+                        if (letters.isEmpty() || size.height <= 0) return null
+                        val index = ((y / size.height.toFloat()) * letters.size)
+                            .toInt()
+                            .coerceIn(0, letters.lastIndex)
+                        return letters[index]
+                    }
+
+                    fun dispatch(y: Float) {
+                        val letter = letterAt(y) ?: return
+                        if (letter != lastLetter) {
+                            lastLetter = letter
+                            onLetterSelected(letter)
+                        }
+                    }
+
+                    dispatch(down.position.y)
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) break
+                        dispatch(change.position.y)
+                        change.consume()
+                    }
                 }
-            )
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier.fillMaxHeight(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            letters.forEach { letter ->
+                val selected = selectedLetter == letter
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = { onLetterSelected(letter) }
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .width(22.dp)
+                            .height(18.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (selected) {
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.88f)
+                                } else {
+                                    Color.Transparent
+                                }
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = letter.toString(),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (selected) {
+                                MaterialTheme.colorScheme.onPrimary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.88f)
+                            },
+                            textAlign = TextAlign.Center,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -4144,9 +5699,11 @@ private fun LibraryDetailHeader(
     session: JellyfinSession?,
     artworkShape: Shape,
     isPinned: Boolean,
+    isFavorite: Boolean = false,
     onPlay: () -> Unit,
     onShuffle: () -> Unit,
-    onTogglePin: () -> Unit
+    onTogglePin: () -> Unit,
+    onToggleFavorite: (() -> Unit)? = null
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Row(
@@ -4221,46 +5778,100 @@ private fun LibraryDetailHeader(
                     modifier = Modifier.size(22.dp)
                 )
             }
+            if (onToggleFavorite != null) {
+                IconButton(onClick = onToggleFavorite) {
+                    Icon(
+                        imageVector = if (isFavorite) Icons.Filled.Favorite else PlayerIconVectors.FavoriteOutline,
+                        contentDescription = if (isFavorite) "Unfavorite album" else "Favorite album",
+                        tint = if (isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
 private fun LibraryToolbar(
-    searchQuery: String,
+    selectedTab: LibraryTab,
+    activeFilters: Set<LibraryFilter>,
     sortMode: LibrarySortMode,
-    gridView: Boolean,
-    onSearchQueryChange: (String) -> Unit,
-    onSortModeChange: (LibrarySortMode) -> Unit,
-    onGridViewChange: (Boolean) -> Unit
+    isBusy: Boolean,
+    onSearchClick: () -> Unit,
+    onCreateClick: () -> Unit,
+    onTabSelected: (LibraryTab) -> Unit,
+    onToggleFilter: (LibraryFilter) -> Unit,
+    onSortModeChange: (LibrarySortMode) -> Unit
 ) {
     var sortExpanded by remember { mutableStateOf(false) }
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(
-            value = searchQuery,
-            onValueChange = onSearchQueryChange,
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .padding(top = 10.dp, bottom = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(
             modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            leadingIcon = {
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Surface(
+                modifier = Modifier.size(42.dp),
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primaryContainer
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = PlayerIconVectors.MusicNote,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+            }
+            Text(
+                text = "Your Library",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            IconButton(onClick = onSearchClick) {
                 Icon(
                     imageVector = Icons.Filled.Search,
-                    contentDescription = null
+                    contentDescription = "Search library",
+                    modifier = Modifier.size(30.dp)
                 )
-            },
-            trailingIcon = {
-                if (searchQuery.isNotBlank()) {
-                    IconButton(onClick = { onSearchQueryChange("") }) {
-                        Icon(
-                            imageVector = Icons.Filled.Close,
-                            contentDescription = "Clear library search"
-                        )
-                    }
-                }
-            },
-            placeholder = { Text("Find in Your Library") },
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            shape = RoundedCornerShape(24.dp)
-        )
+            }
+            IconButton(onClick = onCreateClick) {
+                Icon(
+                    imageVector = Icons.Filled.Add,
+                    contentDescription = "Create playlist",
+                    modifier = Modifier.size(32.dp)
+                )
+            }
+        }
+
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(LibraryTab.entries) { tab ->
+                LibraryToolbarPill(
+                    label = tab.label,
+                    selected = selectedTab == tab,
+                    onClick = { onTabSelected(tab) }
+                )
+            }
+            items(LibraryFilter.entries) { filter ->
+                LibraryToolbarPill(
+                    label = filter.label,
+                    selected = filter in activeFilters,
+                    onClick = { onToggleFilter(filter) }
+                )
+            }
+        }
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -4268,8 +5879,14 @@ private fun LibraryToolbar(
         ) {
             Box {
                 TextButton(onClick = { sortExpanded = true }) {
+                    Icon(
+                        imageVector = PlayerIconVectors.MoveUp,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
                     Text(
-                        text = "Sort: ${sortMode.label}",
+                        text = sortMode.label,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -4289,10 +5906,58 @@ private fun LibraryToolbar(
                     }
                 }
             }
-            TextButton(onClick = { onGridViewChange(!gridView) }) {
-                Text(if (gridView) "List view" else "Grid view")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "Grid",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.width(8.dp))
+                Icon(
+                    imageVector = PlayerIconVectors.Library,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(22.dp)
+                )
             }
         }
+
+        if (isBusy) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+    }
+}
+
+@Composable
+private fun LibraryToolbarPill(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    val containerColor = if (selected) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.surfaceContainerHigh
+    }
+    val contentColor = if (selected) {
+        MaterialTheme.colorScheme.onPrimary
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(24.dp),
+        color = containerColor,
+        contentColor = contentColor
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -4354,7 +6019,10 @@ private fun LibraryTrackListRow(
     onGoToAlbum: (() -> Unit)? = null,
     onGoToArtist: (() -> Unit)? = null,
     onPlayNext: (() -> Unit)? = null,
-    onStartRadio: (() -> Unit)? = null
+    onStartRadio: (() -> Unit)? = null,
+    playlists: List<LocalPlaylist> = emptyList(),
+    onAddToPlaylist: ((LocalPlaylist) -> Unit)? = null,
+    onRemoveFromPlaylist: (() -> Unit)? = null
 ) {
     var actionsExpanded by remember { mutableStateOf(false) }
     Box(Modifier.fillMaxWidth()) {
@@ -4436,7 +6104,10 @@ private fun LibraryTrackListRow(
             onGoToAlbum = onGoToAlbum,
             onGoToArtist = onGoToArtist,
             onPlayNext = onPlayNext,
-            onStartRadio = onStartRadio
+            onStartRadio = onStartRadio,
+            playlists = playlists,
+            onAddToPlaylist = onAddToPlaylist,
+            onRemoveFromPlaylist = onRemoveFromPlaylist
         )
     }
 }
@@ -4448,7 +6119,9 @@ private fun LibraryGroupListRow(
     artworkShape: Shape,
     onClick: () -> Unit,
     isPinned: Boolean = false,
-    onTogglePin: (() -> Unit)? = null
+    onTogglePin: (() -> Unit)? = null,
+    isFavorite: Boolean = false,
+    onToggleFavorite: (() -> Unit)? = null
 ) {
     Row(
         modifier = Modifier
@@ -4483,6 +6156,23 @@ private fun LibraryGroupListRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+        }
+        if (onToggleFavorite != null) {
+            IconButton(
+                onClick = onToggleFavorite,
+                modifier = Modifier.size(40.dp)
+            ) {
+                Icon(
+                    imageVector = if (isFavorite) Icons.Filled.Favorite else PlayerIconVectors.FavoriteOutline,
+                    contentDescription = if (isFavorite) "Unfavorite album" else "Favorite album",
+                    tint = if (isFavorite) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.58f)
+                    },
+                    modifier = Modifier.size(21.dp)
+                )
+            }
         }
         if (onTogglePin != null) {
             IconButton(
@@ -4565,7 +6255,9 @@ private fun LibraryGroupGridCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     isPinned: Boolean = false,
-    onTogglePin: (() -> Unit)? = null
+    onTogglePin: (() -> Unit)? = null,
+    isFavorite: Boolean = false,
+    onToggleFavorite: (() -> Unit)? = null
 ) {
     Column(
         modifier = modifier
@@ -4583,21 +6275,36 @@ private fun LibraryGroupGridCard(
             imageSize = 280,
             imageQuality = 80
         )
-        if (onTogglePin != null) {
+        if (onTogglePin != null || onToggleFavorite != null) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End
             ) {
-                IconButton(
-                    onClick = onTogglePin,
-                    modifier = Modifier.size(34.dp)
-                ) {
-                    Icon(
-                        imageVector = if (isPinned) PlayerIconVectors.PinFilled else PlayerIconVectors.Pin,
-                        contentDescription = if (isPinned) "Unpin" else "Pin",
-                        tint = if (isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(19.dp)
-                    )
+                if (onToggleFavorite != null) {
+                    IconButton(
+                        onClick = onToggleFavorite,
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isFavorite) Icons.Filled.Favorite else PlayerIconVectors.FavoriteOutline,
+                            contentDescription = if (isFavorite) "Unfavorite album" else "Favorite album",
+                            tint = if (isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(19.dp)
+                        )
+                    }
+                }
+                if (onTogglePin != null) {
+                    IconButton(
+                        onClick = onTogglePin,
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isPinned) PlayerIconVectors.PinFilled else PlayerIconVectors.Pin,
+                            contentDescription = if (isPinned) "Unpin" else "Pin",
+                            tint = if (isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(19.dp)
+                        )
+                    }
                 }
             }
         } else {
@@ -4914,7 +6621,11 @@ private fun TrackActionsMenu(
     onGoToAlbum: (() -> Unit)?,
     onGoToArtist: (() -> Unit)?,
     onPlayNext: (() -> Unit)?,
-    onStartRadio: (() -> Unit)?
+    onStartRadio: (() -> Unit)?,
+    playlists: List<LocalPlaylist> = emptyList(),
+    onAddToPlaylist: ((LocalPlaylist) -> Unit)? = null,
+    onRemoveFromPlaylist: (() -> Unit)? = null,
+    onShowFileDetails: (() -> Unit)? = null
 ) {
     DropdownMenu(
         expanded = expanded,
@@ -4938,12 +6649,41 @@ private fun TrackActionsMenu(
                 }
             )
         }
+        if (onShowFileDetails != null) {
+            DropdownMenuItem(
+                text = { Text("File details") },
+                onClick = {
+                    onDismiss()
+                    onShowFileDetails()
+                }
+            )
+        }
         if (onPlayNext != null) {
             DropdownMenuItem(
                 text = { Text("Play next") },
                 onClick = {
                     onDismiss()
                     onPlayNext()
+                }
+            )
+        }
+        if (onAddToPlaylist != null && playlists.isNotEmpty()) {
+            playlists.sortedWith(LocalPlaylistSort).take(8).forEach { playlist ->
+                DropdownMenuItem(
+                    text = { Text("Add to ${playlist.name}") },
+                    onClick = {
+                        onDismiss()
+                        onAddToPlaylist(playlist)
+                    }
+                )
+            }
+        }
+        if (onRemoveFromPlaylist != null) {
+            DropdownMenuItem(
+                text = { Text("Remove from playlist") },
+                onClick = {
+                    onDismiss()
+                    onRemoveFromPlaylist()
                 }
             )
         }
@@ -4990,7 +6730,10 @@ private fun TrackRow(
     onGoToAlbum: (() -> Unit)? = null,
     onGoToArtist: (() -> Unit)? = null,
     onPlayNext: (() -> Unit)? = null,
-    onStartRadio: (() -> Unit)? = null
+    onStartRadio: (() -> Unit)? = null,
+    playlists: List<LocalPlaylist> = emptyList(),
+    onAddToPlaylist: ((LocalPlaylist) -> Unit)? = null,
+    onRemoveFromPlaylist: (() -> Unit)? = null
 ) {
     var actionsExpanded by remember { mutableStateOf(false) }
     Box(Modifier.fillMaxWidth()) {
@@ -5070,7 +6813,10 @@ private fun TrackRow(
             onGoToAlbum = onGoToAlbum,
             onGoToArtist = onGoToArtist,
             onPlayNext = onPlayNext,
-            onStartRadio = onStartRadio
+            onStartRadio = onStartRadio,
+            playlists = playlists,
+            onAddToPlaylist = onAddToPlaylist,
+            onRemoveFromPlaylist = onRemoveFromPlaylist
         )
     }
 }
@@ -5151,35 +6897,32 @@ private fun AlbumArtworkImage(
                 modifier = Modifier.fillMaxSize()
             )
         } else {
-            GeneratedAlbumTile(
-                tint = track?.tint ?: SeedPrimary,
-                modifier = Modifier.fillMaxSize()
-            )
+            AlbumArtPlaceholder(modifier = Modifier.fillMaxSize())
         }
     }
 }
 
 @Composable
-private fun GeneratedAlbumTile(tint: Color, modifier: Modifier = Modifier) {
-    val centerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)
-    Canvas(
+private fun AlbumArtPlaceholder(modifier: Modifier = Modifier) {
+    Box(
         modifier = modifier
-            .background(tint.copy(alpha = 0.18f))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+        contentAlignment = Alignment.Center
     ) {
-        drawCircle(
-            brush = Brush.radialGradient(
-                listOf(tint.copy(alpha = 0.92f), tint.copy(alpha = 0.2f)),
-                center = Offset(size.width * 0.33f, size.height * 0.28f),
-                radius = size.minDimension
-            ),
-            radius = size.minDimension * 0.58f,
-            center = Offset(size.width * 0.48f, size.height * 0.48f)
-        )
-        drawCircle(
-            color = centerColor,
-            radius = size.minDimension * 0.12f,
-            center = center
-        )
+        Surface(
+            modifier = Modifier.fillMaxSize(0.56f),
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.78f)
+        ) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                Icon(
+                    imageVector = PlayerIconVectors.MusicNote,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                    modifier = Modifier.fillMaxSize(0.54f)
+                )
+            }
+        }
     }
 }
 
@@ -5380,20 +7123,32 @@ private fun FullPlayerScreen(
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onReplay: () -> Unit,
-    onScratch: (Float) -> Unit,
-    onScratchEnd: () -> Unit,
     shuffleEnabled: Boolean,
     repeatEnabled: Boolean,
     visualizerEnabled: Boolean,
     isFavorite: Boolean,
+    isDownloaded: Boolean,
+    downloadProgress: OfflineDownloadProgress?,
+    playlists: List<LocalPlaylist>,
     onToggleShuffle: () -> Unit,
     onToggleRepeat: () -> Unit,
     onToggleFavorite: () -> Unit,
+    onToggleDownload: () -> Unit,
+    onGoToAlbum: () -> Unit,
+    onGoToArtist: () -> Unit,
+    onStartRadio: () -> Unit,
+    onAddToPlaylist: (LocalPlaylist) -> Unit,
     onQueueTrackClick: (MusicTrack) -> Unit,
     onQueueMove: (Int, Int) -> Unit,
-    onQueuePlayNext: (MusicTrack) -> Unit
+    onQueuePlayNext: (MusicTrack) -> Unit,
+    onQueueRemove: (Int) -> Unit,
+    onQueueClear: () -> Unit,
+    onQueueShuffle: () -> Unit,
+    onQueueSaveAsPlaylist: () -> Unit
 ) {
     var showQueue by remember { mutableStateOf(false) }
+    var actionsExpanded by remember { mutableStateOf(false) }
+    var showFileDetails by remember { mutableStateOf(false) }
     val displayQueue = queue.ifEmpty { listOf(track) }
     val colorScheme = MaterialTheme.colorScheme
     val playerBackground = Brush.verticalGradient(
@@ -5409,143 +7164,130 @@ private fun FullPlayerScreen(
             .fillMaxSize()
             .background(playerBackground)
     ) {
-        Column(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .navigationBarsPadding()
-                .padding(horizontal = 22.dp, vertical = 12.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .padding(horizontal = 22.dp, vertical = 12.dp)
         ) {
-            DiscAlbumStage(
-                track = track,
-                isPlaying = isPlaying,
-                progress = progress,
-                session = session,
-                onSeek = onSeek,
-                onScratch = onScratch,
-                onScratchEnd = onScratchEnd
-            )
-            Spacer(Modifier.height(16.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Spacer(Modifier.width(42.dp))
-                Column(
-                    modifier = Modifier.weight(1f),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = track.title,
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        textAlign = TextAlign.Center,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Text(
-                        text = "${track.artist} - ${track.album}",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-                FavoriteHeartButton(
-                    isFavorite = isFavorite,
-                    onClick = onToggleFavorite,
-                    modifier = Modifier.size(42.dp)
-                )
-            }
-            if (visualizerEnabled) {
-                Spacer(Modifier.height(16.dp))
-                AudioBarsVisualizer(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(28.dp),
-                    color = MaterialTheme.colorScheme.primary,
-                    active = isPlaying,
-                    levels = visualizerLevels
-                )
-                Spacer(Modifier.height(2.dp))
-            } else {
-                Spacer(Modifier.height(20.dp))
-            }
-            WavySeekBar(
-                progress = progress,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(30.dp),
-                onSeek = onSeek
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = formatDuration((track.durationMs * progress.coerceIn(0f, 1f)).toLong()),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = formatDuration(track.durationMs),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
+            val tabletLayout = maxWidth >= 840.dp
+            if (tabletLayout) {
                 Row(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .height(108.dp),
-                    horizontalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterHorizontally),
+                        .fillMaxSize()
+                        .padding(horizontal = 10.dp, vertical = 18.dp),
+                    horizontalArrangement = Arrangement.spacedBy(30.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    RoundedPlaybackButton(
-                        icon = PlayerGlyph.Shuffle,
-                        contentDescription = if (shuffleEnabled) "Shuffle on" else "Shuffle",
-                        active = shuffleEnabled,
-                        onClick = onToggleShuffle,
-                        modifier = Modifier.size(58.dp)
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        DiscAlbumStage(
+                            track = track,
+                            isPlaying = isPlaying,
+                            progress = progress,
+                            session = session,
+                            onSeek = onSeek,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    Column(
+                        modifier = Modifier
+                            .weight(0.92f)
+                            .fillMaxHeight()
+                            .padding(bottom = 96.dp),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        PlayerTitleActionsRow(
+                            track = track,
+                            isFavorite = isFavorite,
+                            onToggleFavorite = onToggleFavorite,
+                            onOptionsClick = {
+                                showQueue = false
+                                actionsExpanded = true
+                            }
+                        )
+                        Spacer(Modifier.height(22.dp))
+                        PlayerProgressSection(
+                            track = track,
+                            progress = progress,
+                            visualizerEnabled = visualizerEnabled,
+                            visualizerLevels = visualizerLevels,
+                            isPlaying = isPlaying,
+                            onSeek = onSeek
+                        )
+                        Spacer(Modifier.height(26.dp))
+                        PlayerTransportControls(
+                            status = status,
+                            isPlaying = isPlaying,
+                            shuffleEnabled = shuffleEnabled,
+                            repeatEnabled = repeatEnabled,
+                            onToggleShuffle = onToggleShuffle,
+                            onPrevious = onPrevious,
+                            onToggle = onToggle,
+                            onReplay = onReplay,
+                            onNext = onNext,
+                            onToggleRepeat = onToggleRepeat
+                        )
+                    }
+                }
+            } else {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    DiscAlbumStage(
+                        track = track,
+                        isPlaying = isPlaying,
+                        progress = progress,
+                        session = session,
+                        onSeek = onSeek
                     )
-                    RoundedPlaybackButton(
-                        icon = PlayerGlyph.Previous,
-                        contentDescription = "Previous track",
-                        onClick = onPrevious,
-                        modifier = Modifier.size(58.dp)
+                    Spacer(Modifier.height(16.dp))
+                    PlayerTitleActionsRow(
+                        track = track,
+                        isFavorite = isFavorite,
+                        onToggleFavorite = onToggleFavorite,
+                        onOptionsClick = {
+                            showQueue = false
+                            actionsExpanded = true
+                        }
                     )
-                    RoundedPlaybackButton(
-                        icon = if (isPlaying) PlayerGlyph.Pause else PlayerGlyph.Play,
-                        contentDescription = if (isPlaying) "Pause" else "Play",
-                        onClick = if (!isPlaying && status == "Ended") onReplay else onToggle,
-                        prominent = true,
-                        modifier = Modifier.size(88.dp)
+                    PlayerProgressSection(
+                        track = track,
+                        progress = progress,
+                        visualizerEnabled = visualizerEnabled,
+                        visualizerLevels = visualizerLevels,
+                        isPlaying = isPlaying,
+                        onSeek = onSeek
                     )
-                    RoundedPlaybackButton(
-                        icon = PlayerGlyph.Next,
-                        contentDescription = "Next track",
-                        onClick = onNext,
-                        modifier = Modifier.size(58.dp)
-                    )
-                    RoundedPlaybackButton(
-                        icon = PlayerGlyph.Repeat,
-                        contentDescription = if (repeatEnabled) "Repeat on" else "Repeat",
-                        active = repeatEnabled,
-                        onClick = onToggleRepeat,
-                        modifier = Modifier.size(58.dp)
-                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        PlayerTransportControls(
+                            status = status,
+                            isPlaying = isPlaying,
+                            shuffleEnabled = shuffleEnabled,
+                            repeatEnabled = repeatEnabled,
+                            onToggleShuffle = onToggleShuffle,
+                            onPrevious = onPrevious,
+                            onToggle = onToggle,
+                            onReplay = onReplay,
+                            onNext = onNext,
+                            onToggleRepeat = onToggleRepeat
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(72.dp))
                 }
             }
-            Spacer(Modifier.height(8.dp))
-            Spacer(Modifier.height(92.dp))
         }
 
         if (!showQueue) {
@@ -5556,7 +7298,7 @@ private fun FullPlayerScreen(
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .navigationBarsPadding()
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                    .padding(start = 12.dp, top = 4.dp, end = 12.dp, bottom = 0.dp)
             )
         }
 
@@ -5594,9 +7336,546 @@ private fun FullPlayerScreen(
                 onTrackClick = onQueueTrackClick,
                 onMove = onQueueMove,
                 onPlayNext = onQueuePlayNext,
+                onRemove = onQueueRemove,
+                onClear = onQueueClear,
+                onShuffle = onQueueShuffle,
+                onSaveAsPlaylist = onQueueSaveAsPlaylist,
                 modifier = Modifier.fillMaxWidth()
             )
         }
+
+        AnimatedVisibility(
+            visible = actionsExpanded,
+            enter = fadeIn(animationSpec = tween(durationMillis = 140)),
+            exit = fadeOut(animationSpec = tween(durationMillis = 180)),
+            modifier = Modifier.matchParentSize()
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.28f))
+                    .clickable(onClick = { actionsExpanded = false })
+            )
+        }
+
+        AnimatedVisibility(
+            visible = actionsExpanded,
+            enter = slideInVertically(
+                initialOffsetY = { it },
+                animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing)
+            ),
+            exit = slideOutVertically(
+                targetOffsetY = { it },
+                animationSpec = tween(durationMillis = 230, easing = FastOutSlowInEasing)
+            ),
+            modifier = Modifier.align(Alignment.BottomCenter)
+        ) {
+            PlayerOptionsBottomSheet(
+                track = track,
+                session = session,
+                isFavorite = isFavorite,
+                isDownloaded = isDownloaded,
+                downloadProgress = downloadProgress,
+                playlists = playlists,
+                onDismiss = { actionsExpanded = false },
+                onToggleFavorite = onToggleFavorite,
+                onToggleDownload = onToggleDownload,
+                onGoToAlbum = onGoToAlbum,
+                onGoToArtist = onGoToArtist,
+                onStartRadio = onStartRadio,
+                onAddToPlaylist = onAddToPlaylist,
+                onShowFileDetails = { showFileDetails = true },
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        if (showFileDetails) {
+            TrackFileDetailsDialog(
+                track = track,
+                isDownloaded = isDownloaded,
+                downloadProgress = downloadProgress,
+                onDismiss = { showFileDetails = false }
+            )
+        }
+    }
+}
+
+@Composable
+private fun PlayerTitleActionsRow(
+    track: MusicTrack,
+    isFavorite: Boolean,
+    onToggleFavorite: () -> Unit,
+    onOptionsClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            horizontalAlignment = Alignment.Start
+        ) {
+            Text(
+                text = track.title,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                text = "${track.artist} - ${track.album}",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        FavoriteHeartButton(
+            isFavorite = isFavorite,
+            onClick = onToggleFavorite,
+            modifier = Modifier.size(42.dp)
+        )
+        IconButton(
+            onClick = onOptionsClick,
+            modifier = Modifier.size(42.dp)
+        ) {
+            Icon(
+                imageVector = PlayerGlyph.More.imageVector(),
+                contentDescription = "Now playing options",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(24.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun PlayerProgressSection(
+    track: MusicTrack,
+    progress: Float,
+    visualizerEnabled: Boolean,
+    visualizerLevels: FloatArray,
+    isPlaying: Boolean,
+    onSeek: (Float) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        if (visualizerEnabled) {
+            Spacer(Modifier.height(16.dp))
+            AudioBarsVisualizer(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(28.dp),
+                color = MaterialTheme.colorScheme.primary,
+                active = isPlaying,
+                levels = visualizerLevels
+            )
+            Spacer(Modifier.height(2.dp))
+        } else {
+            Spacer(Modifier.height(20.dp))
+        }
+        WavySeekBar(
+            progress = progress,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(30.dp),
+            onSeek = onSeek
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = formatDuration((track.durationMs * progress.coerceIn(0f, 1f)).toLong()),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = formatDuration(track.durationMs),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun PlayerTransportControls(
+    status: String,
+    isPlaying: Boolean,
+    shuffleEnabled: Boolean,
+    repeatEnabled: Boolean,
+    onToggleShuffle: () -> Unit,
+    onPrevious: () -> Unit,
+    onToggle: () -> Unit,
+    onReplay: () -> Unit,
+    onNext: () -> Unit,
+    onToggleRepeat: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(108.dp),
+        horizontalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        RoundedPlaybackButton(
+            icon = PlayerGlyph.Shuffle,
+            contentDescription = if (shuffleEnabled) "Shuffle on" else "Shuffle",
+            active = shuffleEnabled,
+            onClick = onToggleShuffle,
+            modifier = Modifier.size(58.dp)
+        )
+        RoundedPlaybackButton(
+            icon = PlayerGlyph.Previous,
+            contentDescription = "Previous track",
+            onClick = onPrevious,
+            modifier = Modifier.size(58.dp)
+        )
+        RoundedPlaybackButton(
+            icon = if (isPlaying) PlayerGlyph.Pause else PlayerGlyph.Play,
+            contentDescription = if (isPlaying) "Pause" else "Play",
+            onClick = if (!isPlaying && status == "Ended") onReplay else onToggle,
+            prominent = true,
+            modifier = Modifier.size(88.dp)
+        )
+        RoundedPlaybackButton(
+            icon = PlayerGlyph.Next,
+            contentDescription = "Next track",
+            onClick = onNext,
+            modifier = Modifier.size(58.dp)
+        )
+        RoundedPlaybackButton(
+            icon = PlayerGlyph.Repeat,
+            contentDescription = if (repeatEnabled) "Repeat on" else "Repeat",
+            active = repeatEnabled,
+            onClick = onToggleRepeat,
+            modifier = Modifier.size(58.dp)
+        )
+    }
+}
+
+@Composable
+private fun PlayerOptionsBottomSheet(
+    track: MusicTrack,
+    session: JellyfinSession?,
+    isFavorite: Boolean,
+    isDownloaded: Boolean,
+    downloadProgress: OfflineDownloadProgress?,
+    playlists: List<LocalPlaylist>,
+    onDismiss: () -> Unit,
+    onToggleFavorite: () -> Unit,
+    onToggleDownload: () -> Unit,
+    onGoToAlbum: () -> Unit,
+    onGoToArtist: () -> Unit,
+    onStartRadio: () -> Unit,
+    onAddToPlaylist: (LocalPlaylist) -> Unit,
+    onShowFileDetails: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val sortedPlaylists = remember(playlists) { playlists.sortedWith(LocalPlaylistSort).take(8) }
+    val downloadLabel = when {
+        downloadProgress != null -> "Downloading ${downloadProgress.percentLabel()}"
+        isDownloaded -> "Saved on this device"
+        else -> "Save for offline listening"
+    }
+
+    Surface(
+        modifier = modifier
+            .fillMaxHeight(0.74f)
+            .navigationBarsPadding()
+            .swipeDownToDismiss(
+                onDismiss = onDismiss,
+                startZone = 128.dp,
+                dismissDistance = 72.dp
+            ),
+        shape = RoundedCornerShape(topStart = 34.dp, topEnd = 34.dp),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 8.dp
+    ) {
+        Column(
+            modifier = Modifier.padding(start = 16.dp, top = 10.dp, end = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .width(46.dp)
+                    .height(5.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.32f))
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    AlbumTile(
+                        track = track,
+                        session = session,
+                        modifier = Modifier.size(56.dp)
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = track.title,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = track.artist,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("Done")
+                }
+            }
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                item {
+                    PlayerOptionSheetRow(
+                        icon = PlayerIconVectors.Library,
+                        title = "Go to album",
+                        subtitle = track.album,
+                        onClick = {
+                            onDismiss()
+                            onGoToAlbum()
+                        }
+                    )
+                }
+                item {
+                    PlayerOptionSheetRow(
+                        icon = PlayerIconVectors.MusicNote,
+                        title = "Go to artist",
+                        subtitle = track.artist,
+                        onClick = {
+                            onDismiss()
+                            onGoToArtist()
+                        }
+                    )
+                }
+                item {
+                    PlayerOptionSheetRow(
+                        icon = PlayerGlyph.Shuffle.imageVector(),
+                        title = "Start radio",
+                        subtitle = "Make a queue from this song",
+                        onClick = {
+                            onDismiss()
+                            onStartRadio()
+                        }
+                    )
+                }
+                item {
+                    PlayerOptionSheetRow(
+                        icon = if (isDownloaded) PlayerIconVectors.DownloadDone else PlayerIconVectors.Download,
+                        title = if (isDownloaded) "Remove download" else "Download",
+                        subtitle = downloadLabel,
+                        selected = isDownloaded,
+                        onClick = {
+                            onDismiss()
+                            onToggleDownload()
+                        }
+                    )
+                }
+                item {
+                    PlayerOptionSheetRow(
+                        icon = if (isFavorite) Icons.Filled.Favorite else PlayerIconVectors.FavoriteOutline,
+                        title = if (isFavorite) "Remove from favorites" else "Add to favorites",
+                        subtitle = if (isFavorite) "Currently in Favorites" else "Save this track",
+                        selected = isFavorite,
+                        onClick = {
+                            onDismiss()
+                            onToggleFavorite()
+                        }
+                    )
+                }
+                item {
+                    PlayerOptionSheetRow(
+                        icon = PlayerGlyph.More.imageVector(),
+                        title = "File details",
+                        subtitle = "Jellyfin item and playback info",
+                        onClick = {
+                            onDismiss()
+                            onShowFileDetails()
+                        }
+                    )
+                }
+                if (sortedPlaylists.isNotEmpty()) {
+                    item {
+                        HorizontalDivider(
+                            modifier = Modifier.padding(vertical = 4.dp),
+                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)
+                        )
+                    }
+                    item {
+                        Text(
+                            text = "Add to playlist",
+                            modifier = Modifier.padding(start = 6.dp, top = 2.dp, end = 6.dp, bottom = 2.dp),
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    items(sortedPlaylists, key = { it.id }) { playlist ->
+                        PlayerOptionSheetRow(
+                            icon = PlayerGlyph.Queue.imageVector(),
+                            title = playlist.name,
+                            subtitle = listOfNotNull(
+                                playlist.folder.takeIf { it.isNotBlank() },
+                                playlist.trackIds.size.countLabel("song")
+                            ).joinToString(" - ").ifBlank { "Playlist" },
+                            onClick = {
+                                onDismiss()
+                                onAddToPlaylist(playlist)
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlayerOptionSheetRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String? = null,
+    selected: Boolean = false,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(22.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(22.dp),
+        color = if (selected) {
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.76f)
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLow
+        },
+        tonalElevation = if (selected) 2.dp else 0.dp
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                modifier = Modifier.size(40.dp),
+                shape = CircleShape,
+                color = if (selected) {
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                } else {
+                    MaterialTheme.colorScheme.surfaceContainerHigh
+                }
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = if (selected) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        modifier = Modifier.size(21.dp)
+                    )
+                }
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (!subtitle.isNullOrBlank()) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TrackFileDetailsDialog(
+    track: MusicTrack,
+    isDownloaded: Boolean,
+    downloadProgress: OfflineDownloadProgress?,
+    onDismiss: () -> Unit
+) {
+    val downloadStatus = when {
+        downloadProgress != null -> "Downloading ${downloadProgress.percentLabel()}"
+        isDownloaded -> "Downloaded"
+        else -> "Streaming from server"
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("File details") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                TrackFileDetailRow(label = "Title", value = track.title)
+                TrackFileDetailRow(label = "Artist", value = track.artist)
+                TrackFileDetailRow(label = "Album", value = track.album)
+                TrackFileDetailRow(label = "Duration", value = formatDuration(track.durationMs))
+                TrackFileDetailRow(label = "Status", value = downloadStatus)
+                TrackFileDetailRow(label = "Jellyfin ID", value = track.id)
+                TrackFileDetailRow(label = "Artwork item", value = track.imageItemId ?: "None")
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Done")
+            }
+        }
+    )
+}
+
+@Composable
+private fun TrackFileDetailRow(
+    label: String,
+    value: String
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -5608,7 +7887,7 @@ private fun QueuePullHandle(
 ) {
     Box(
         modifier = modifier
-            .height(96.dp)
+            .height(82.dp)
             .swipeUpToOpen(onOpen)
             .clickable(onClick = onOpen),
         contentAlignment = Alignment.BottomCenter
@@ -5710,6 +7989,10 @@ private fun QueueBottomSheet(
     onTrackClick: (MusicTrack) -> Unit,
     onMove: (Int, Int) -> Unit,
     onPlayNext: (MusicTrack) -> Unit,
+    onRemove: (Int) -> Unit,
+    onClear: () -> Unit,
+    onShuffle: () -> Unit,
+    onSaveAsPlaylist: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -5758,12 +8041,38 @@ private fun QueueBottomSheet(
                     Text("Done")
                 }
             }
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                item {
+                    FilterChip(
+                        selected = false,
+                        onClick = onShuffle,
+                        enabled = queue.size > 2,
+                        label = { Text("Reshuffle") }
+                    )
+                }
+                item {
+                    FilterChip(
+                        selected = false,
+                        onClick = onSaveAsPlaylist,
+                        enabled = queue.isNotEmpty(),
+                        label = { Text("Save playlist") }
+                    )
+                }
+                item {
+                    FilterChip(
+                        selected = false,
+                        onClick = onClear,
+                        enabled = queue.size > 1,
+                        label = { Text("Clear upcoming") }
+                    )
+                }
+            }
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(bottom = 18.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                itemsIndexed(queue, key = { _, track -> track.id }) { index, item ->
+                itemsIndexed(queue, key = { index, track -> "$index:${track.id}" }) { index, item ->
                     QueueTrackRow(
                         track = item,
                         session = session,
@@ -5773,7 +8082,8 @@ private fun QueueBottomSheet(
                         onClick = { onTrackClick(item) },
                         onMoveUp = { onMove(index, index - 1) },
                         onMoveDown = { onMove(index, index + 1) },
-                        onPlayNext = { onPlayNext(item) }
+                        onPlayNext = { onPlayNext(item) },
+                        onRemove = { onRemove(index) }
                     )
                 }
             }
@@ -5791,7 +8101,8 @@ private fun QueueTrackRow(
     onClick: () -> Unit,
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
-    onPlayNext: () -> Unit
+    onPlayNext: () -> Unit,
+    onRemove: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     Surface(
@@ -5876,6 +8187,14 @@ private fun QueueTrackRow(
                         onClick = {
                             menuExpanded = false
                             onPlayNext()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Remove from queue") },
+                        enabled = !isCurrent,
+                        onClick = {
+                            menuExpanded = false
+                            onRemove()
                         }
                     )
                 }
@@ -5983,6 +8302,92 @@ private fun PlayerGlyph.imageVector(): ImageVector = when (this) {
 
 private object PlayerIconVectors {
     private val stroke = SolidColor(Color.Black)
+
+    val Home: ImageVector = ImageVector.Builder(
+        name = "Home",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(
+            fill = null,
+            stroke = stroke,
+            strokeLineWidth = 2f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round
+        ) {
+            moveTo(4f, 11f)
+            lineTo(12f, 4.5f)
+            lineTo(20f, 11f)
+            moveTo(6.3f, 10.6f)
+            verticalLineTo(19.2f)
+            curveTo(6.3f, 19.64f, 6.66f, 20f, 7.1f, 20f)
+            horizontalLineTo(10f)
+            verticalLineTo(15f)
+            horizontalLineTo(14f)
+            verticalLineTo(20f)
+            horizontalLineTo(16.9f)
+            curveTo(17.34f, 20f, 17.7f, 19.64f, 17.7f, 19.2f)
+            verticalLineTo(10.6f)
+        }
+    }.build()
+
+    val HomeFilled: ImageVector = ImageVector.Builder(
+        name = "HomeFilled",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(fill = stroke) {
+            moveTo(3.3f, 10.45f)
+            lineTo(11.35f, 3.9f)
+            curveTo(11.73f, 3.59f, 12.27f, 3.59f, 12.65f, 3.9f)
+            lineTo(20.7f, 10.45f)
+            curveTo(21.14f, 10.81f, 21.2f, 11.46f, 20.84f, 11.9f)
+            curveTo(20.5f, 12.31f, 19.91f, 12.39f, 19.47f, 12.1f)
+            verticalLineTo(19.1f)
+            curveTo(19.47f, 20.15f, 18.62f, 21f, 17.57f, 21f)
+            horizontalLineTo(14.2f)
+            curveTo(13.76f, 21f, 13.4f, 20.64f, 13.4f, 20.2f)
+            verticalLineTo(15.4f)
+            horizontalLineTo(10.6f)
+            verticalLineTo(20.2f)
+            curveTo(10.6f, 20.64f, 10.24f, 21f, 9.8f, 21f)
+            horizontalLineTo(6.43f)
+            curveTo(5.38f, 21f, 4.53f, 20.15f, 4.53f, 19.1f)
+            verticalLineTo(12.1f)
+            curveTo(4.09f, 12.39f, 3.5f, 12.31f, 3.16f, 11.9f)
+            curveTo(2.8f, 11.46f, 2.86f, 10.81f, 3.3f, 10.45f)
+            close()
+        }
+    }.build()
+
+    val Search: ImageVector = ImageVector.Builder(
+        name = "Search",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(
+            fill = null,
+            stroke = stroke,
+            strokeLineWidth = 2f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round
+        ) {
+            moveTo(11f, 5f)
+            curveTo(7.69f, 5f, 5f, 7.69f, 5f, 11f)
+            curveTo(5f, 14.31f, 7.69f, 17f, 11f, 17f)
+            curveTo(14.31f, 17f, 17f, 14.31f, 17f, 11f)
+            curveTo(17f, 7.69f, 14.31f, 5f, 11f, 5f)
+            close()
+            moveTo(15.4f, 15.4f)
+            lineTo(20f, 20f)
+        }
+    }.build()
 
     val Pause: ImageVector = ImageVector.Builder(
         name = "Pause",
@@ -6135,6 +8540,27 @@ private object PlayerIconVectors {
         }
     }.build()
 
+    val FavoriteFilled: ImageVector = ImageVector.Builder(
+        name = "FavoriteFilled",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(fill = stroke) {
+            moveTo(12f, 21f)
+            lineTo(10.54f, 19.68f)
+            curveTo(5.38f, 15.01f, 2.3f, 12.22f, 2.3f, 8.56f)
+            curveTo(2.3f, 5.58f, 4.64f, 3.25f, 7.58f, 3.25f)
+            curveTo(9.28f, 3.25f, 10.9f, 4.04f, 12f, 5.28f)
+            curveTo(13.1f, 4.04f, 14.72f, 3.25f, 16.42f, 3.25f)
+            curveTo(19.36f, 3.25f, 21.7f, 5.58f, 21.7f, 8.56f)
+            curveTo(21.7f, 12.22f, 18.62f, 15.01f, 13.46f, 19.68f)
+            lineTo(12f, 21f)
+            close()
+        }
+    }.build()
+
     val Download: ImageVector = ImageVector.Builder(
         name = "Download",
         defaultWidth = 24.dp,
@@ -6195,15 +8621,23 @@ private object PlayerIconVectors {
             strokeLineCap = StrokeCap.Round,
             strokeLineJoin = StrokeJoin.Round
         ) {
-            moveTo(14f, 4f)
-            lineTo(20f, 10f)
-            moveTo(16f, 6f)
-            lineTo(10f, 12f)
-            lineTo(8f, 18f)
-            lineTo(6f, 20f)
-            moveTo(10f, 12f)
-            lineTo(12f, 14f)
-            lineTo(18f, 8f)
+            moveTo(8f, 3.5f)
+            horizontalLineTo(16f)
+            moveTo(10f, 3.5f)
+            verticalLineTo(9.2f)
+            curveTo(10f, 10.2f, 9.2f, 11f, 8.2f, 11f)
+            horizontalLineTo(7f)
+            verticalLineTo(14f)
+            horizontalLineTo(17f)
+            verticalLineTo(11f)
+            horizontalLineTo(15.8f)
+            curveTo(14.8f, 11f, 14f, 10.2f, 14f, 9.2f)
+            verticalLineTo(3.5f)
+            moveTo(12f, 14f)
+            verticalLineTo(21f)
+            moveTo(9.8f, 18.8f)
+            lineTo(12f, 21f)
+            lineTo(14.2f, 18.8f)
         }
     }.build()
 
@@ -6215,18 +8649,32 @@ private object PlayerIconVectors {
         viewportHeight = 24f
     ).apply {
         path(fill = stroke) {
-            moveTo(14f, 3.4f)
-            lineTo(20.6f, 10f)
-            lineTo(18.9f, 11.7f)
-            lineTo(17.2f, 10f)
-            lineTo(12.7f, 14.5f)
-            lineTo(9.1f, 15.7f)
-            lineTo(6.4f, 20.6f)
-            lineTo(5f, 19.2f)
-            lineTo(9.3f, 14.9f)
-            lineTo(10.5f, 11.3f)
-            lineTo(15f, 6.8f)
-            lineTo(13.3f, 5.1f)
+            moveTo(7f, 3f)
+            curveTo(7f, 2.45f, 7.45f, 2f, 8f, 2f)
+            horizontalLineTo(16f)
+            curveTo(16.55f, 2f, 17f, 2.45f, 17f, 3f)
+            curveTo(17f, 3.55f, 16.55f, 4f, 16f, 4f)
+            horizontalLineTo(15f)
+            verticalLineTo(9.15f)
+            curveTo(15f, 9.62f, 15.38f, 10f, 15.85f, 10f)
+            horizontalLineTo(17.5f)
+            curveTo(18.05f, 10f, 18.5f, 10.45f, 18.5f, 11f)
+            verticalLineTo(13.6f)
+            curveTo(18.5f, 14.15f, 18.05f, 14.6f, 17.5f, 14.6f)
+            horizontalLineTo(13f)
+            verticalLineTo(21.2f)
+            lineTo(12f, 22.2f)
+            lineTo(11f, 21.2f)
+            verticalLineTo(14.6f)
+            horizontalLineTo(6.5f)
+            curveTo(5.95f, 14.6f, 5.5f, 14.15f, 5.5f, 13.6f)
+            verticalLineTo(11f)
+            curveTo(5.5f, 10.45f, 5.95f, 10f, 6.5f, 10f)
+            horizontalLineTo(8.15f)
+            curveTo(8.62f, 10f, 9f, 9.62f, 9f, 9.15f)
+            verticalLineTo(4f)
+            horizontalLineTo(8f)
+            curveTo(7.45f, 4f, 7f, 3.55f, 7f, 3f)
             close()
         }
     }.build()
@@ -6261,6 +8709,44 @@ private object PlayerIconVectors {
         viewportWidth = 24f,
         viewportHeight = 24f
     ).apply {
+        path(
+            fill = null,
+            stroke = stroke,
+            strokeLineWidth = 1.9f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round
+        ) {
+            moveTo(4.5f, 5f)
+            horizontalLineTo(7.6f)
+            verticalLineTo(19f)
+            horizontalLineTo(4.5f)
+            close()
+            moveTo(9.4f, 5f)
+            horizontalLineTo(12.5f)
+            verticalLineTo(19f)
+            horizontalLineTo(9.4f)
+            close()
+            moveTo(14.3f, 6.1f)
+            lineTo(17.4f, 5.25f)
+            lineTo(20.6f, 18.1f)
+            lineTo(17.5f, 18.95f)
+            close()
+            moveTo(5.35f, 16.2f)
+            horizontalLineTo(6.75f)
+            moveTo(10.25f, 16.2f)
+            horizontalLineTo(11.65f)
+            moveTo(17.2f, 16.1f)
+            lineTo(18.6f, 15.72f)
+        }
+    }.build()
+
+    val LibraryFilled: ImageVector = ImageVector.Builder(
+        name = "LibraryFilled",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
         path(fill = stroke) {
             moveTo(4f, 5f)
             horizontalLineTo(7.5f)
@@ -6290,6 +8776,77 @@ private object PlayerIconVectors {
         }
     }.build()
 
+    private fun ImageVector.Builder.materialSettingsPath() {
+        path(fill = stroke) {
+            moveTo(19.43f, 12.98f)
+            curveTo(19.47f, 12.66f, 19.5f, 12.33f, 19.5f, 12f)
+            curveTo(19.5f, 11.67f, 19.48f, 11.34f, 19.43f, 11.02f)
+            lineTo(21.54f, 9.37f)
+            curveTo(21.73f, 9.22f, 21.78f, 8.95f, 21.66f, 8.73f)
+            lineTo(19.66f, 5.27f)
+            curveTo(19.54f, 5.05f, 19.28f, 4.96f, 19.06f, 5.05f)
+            lineTo(16.57f, 6.05f)
+            curveTo(16.05f, 5.65f, 15.49f, 5.32f, 14.88f, 5.07f)
+            lineTo(14.5f, 2.42f)
+            curveTo(14.46f, 2.18f, 14.25f, 2f, 14f, 2f)
+            horizontalLineTo(10f)
+            curveTo(9.75f, 2f, 9.54f, 2.18f, 9.5f, 2.42f)
+            lineTo(9.12f, 5.07f)
+            curveTo(8.51f, 5.32f, 7.95f, 5.66f, 7.43f, 6.05f)
+            lineTo(4.94f, 5.05f)
+            curveTo(4.71f, 4.97f, 4.46f, 5.05f, 4.34f, 5.27f)
+            lineTo(2.34f, 8.73f)
+            curveTo(2.21f, 8.95f, 2.27f, 9.22f, 2.46f, 9.37f)
+            lineTo(4.57f, 11.02f)
+            curveTo(4.53f, 11.34f, 4.5f, 11.67f, 4.5f, 12f)
+            curveTo(4.5f, 12.33f, 4.52f, 12.66f, 4.57f, 12.98f)
+            lineTo(2.46f, 14.63f)
+            curveTo(2.27f, 14.78f, 2.22f, 15.05f, 2.34f, 15.27f)
+            lineTo(4.34f, 18.73f)
+            curveTo(4.46f, 18.95f, 4.72f, 19.04f, 4.94f, 18.95f)
+            lineTo(7.43f, 17.95f)
+            curveTo(7.95f, 18.35f, 8.51f, 18.68f, 9.12f, 18.93f)
+            lineTo(9.5f, 21.58f)
+            curveTo(9.54f, 21.82f, 9.75f, 22f, 10f, 22f)
+            horizontalLineTo(14f)
+            curveTo(14.25f, 22f, 14.46f, 21.82f, 14.5f, 21.58f)
+            lineTo(14.88f, 18.93f)
+            curveTo(15.49f, 18.68f, 16.05f, 18.34f, 16.57f, 17.95f)
+            lineTo(19.06f, 18.95f)
+            curveTo(19.29f, 19.03f, 19.54f, 18.95f, 19.66f, 18.73f)
+            lineTo(21.66f, 15.27f)
+            curveTo(21.78f, 15.05f, 21.73f, 14.78f, 21.54f, 14.63f)
+            lineTo(19.43f, 12.98f)
+            close()
+            moveTo(12f, 15.5f)
+            curveTo(10.07f, 15.5f, 8.5f, 13.93f, 8.5f, 12f)
+            curveTo(8.5f, 10.07f, 10.07f, 8.5f, 12f, 8.5f)
+            curveTo(13.93f, 8.5f, 15.5f, 10.07f, 15.5f, 12f)
+            curveTo(15.5f, 13.93f, 13.93f, 15.5f, 12f, 15.5f)
+            close()
+        }
+    }
+
+    val Settings: ImageVector = ImageVector.Builder(
+        name = "Settings",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        materialSettingsPath()
+    }.build()
+
+    val SettingsFilled: ImageVector = ImageVector.Builder(
+        name = "SettingsFilled",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        materialSettingsPath()
+    }.build()
+
     val Queue: ImageVector = ImageVector.Builder(
         name = "Queue",
         defaultWidth = 24.dp,
@@ -6313,6 +8870,28 @@ private object PlayerIconVectors {
             moveTo(17f, 15f)
             verticalLineTo(21f)
             lineTo(21f, 18f)
+            close()
+        }
+    }.build()
+
+    val MusicNote: ImageVector = ImageVector.Builder(
+        name = "MusicNote",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(fill = stroke) {
+            moveTo(12f, 3f)
+            verticalLineTo(14.55f)
+            curveTo(11.41f, 14.21f, 10.73f, 14f, 10f, 14f)
+            curveTo(7.79f, 14f, 6f, 15.34f, 6f, 17f)
+            curveTo(6f, 18.66f, 7.79f, 20f, 10f, 20f)
+            curveTo(12.21f, 20f, 14f, 18.66f, 14f, 17f)
+            verticalLineTo(7f)
+            horizontalLineTo(18f)
+            verticalLineTo(3f)
+            horizontalLineTo(12f)
             close()
         }
     }.build()
@@ -6392,13 +8971,10 @@ private fun DiscAlbumStage(
     progress: Float,
     session: JellyfinSession?,
     onSeek: (Float) -> Unit,
-    onScratch: (Float) -> Unit,
-    onScratchEnd: () -> Unit
+    modifier: Modifier = Modifier
 ) {
     val latestProgress by rememberUpdatedState(progress)
     val latestOnSeek by rememberUpdatedState(onSeek)
-    val latestOnScratch by rememberUpdatedState(onScratch)
-    val latestOnScratchEnd by rememberUpdatedState(onScratchEnd)
     var isScratching by remember { mutableStateOf(false) }
     var scratchProgress by remember { mutableFloatStateOf(progress) }
     var discRotation by remember(track.id) { mutableFloatStateOf(0f) }
@@ -6422,10 +8998,64 @@ private fun DiscAlbumStage(
     }
 
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .aspectRatio(1f)
-            .padding(horizontal = 6.dp),
+            .padding(horizontal = 6.dp)
+            .pointerInput(track.id) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(pass = PointerEventPass.Initial, requireUnconsumed = false)
+                    val stageWidth = size.width.toFloat()
+                    val stageHeight = size.height.toFloat()
+                    val centerRadius = distanceFromCenter(down.position, stageWidth, stageHeight)
+                    val outerRadius = minOf(stageWidth, stageHeight) * 0.43f
+                    val deadZone = minOf(stageWidth, stageHeight) * DISC_SCRATCH_DEAD_ZONE
+                    if (centerRadius < deadZone || centerRadius > outerRadius) {
+                        return@awaitEachGesture
+                    }
+
+                    isScratching = true
+                    scratchProgress = latestProgress
+                    var lastAngle = angleForOffset(
+                        offset = down.position,
+                        width = stageWidth,
+                        height = stageHeight
+                    )
+
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) break
+
+                        val radiusFromCenter = distanceFromCenter(
+                            offset = change.position,
+                            width = stageWidth,
+                            height = stageHeight
+                        )
+                        if (radiusFromCenter >= deadZone * 0.82f && radiusFromCenter <= outerRadius * 1.08f) {
+                            val angle = angleForOffset(
+                                offset = change.position,
+                                width = stageWidth,
+                                height = stageHeight
+                            )
+                            val deltaAngle = shortestAngleDelta(lastAngle, angle)
+                            lastAngle = angle
+
+                            if (abs(deltaAngle) > 0.05f) {
+                                discRotation = (discRotation + deltaAngle) % 360f
+                                scratchProgress = (
+                                    scratchProgress +
+                                        (deltaAngle / 360f) * DISC_SCRATCH_SEEK_SCALE
+                                    ).coerceIn(0f, 0.995f)
+                                latestOnSeek(scratchProgress)
+                            }
+                        }
+                        change.consume()
+                    }
+
+                    isScratching = false
+                }
+            },
         contentAlignment = Alignment.Center
     ) {
         CircularSeekRing(
@@ -6438,65 +9068,8 @@ private fun DiscAlbumStage(
         VinylDisc(
             track = track,
             session = session,
-            modifier = Modifier
-                .fillMaxSize(0.86f)
-                .pointerInput(Unit) {
-                    var lastAngle = 0f
-                    var lastEventTime = 0L
-                    detectDragGestures(
-                        onDragStart = { offset ->
-                            isScratching = true
-                            scratchProgress = latestProgress
-                            lastAngle = angleForOffset(
-                                offset = offset,
-                                width = size.width.toFloat(),
-                                height = size.height.toFloat()
-                            )
-                            lastEventTime = SystemClock.elapsedRealtime()
-                        },
-                        onDragEnd = {
-                            isScratching = false
-                            latestOnScratchEnd()
-                        },
-                        onDragCancel = {
-                            isScratching = false
-                            latestOnScratchEnd()
-                        },
-                        onDrag = { change, _ ->
-                            val radiusFromCenter = distanceFromCenter(
-                                offset = change.position,
-                                width = size.width.toFloat(),
-                                height = size.height.toFloat()
-                            )
-                            val deadZone = minOf(size.width, size.height) * DISC_SCRATCH_DEAD_ZONE
-                            if (radiusFromCenter < deadZone) {
-                                change.consume()
-                                return@detectDragGestures
-                            }
-
-                            val now = SystemClock.elapsedRealtime()
-                            val angle = angleForOffset(
-                                offset = change.position,
-                                width = size.width.toFloat(),
-                                height = size.height.toFloat()
-                            )
-                            val deltaAngle = shortestAngleDelta(lastAngle, angle)
-                            val elapsedMs = (now - lastEventTime).coerceAtLeast(1L)
-                            lastAngle = angle
-                            lastEventTime = now
-
-                            discRotation = (discRotation + deltaAngle) % 360f
-                            scratchProgress = (
-                                scratchProgress +
-                                    (deltaAngle / 360f) * DISC_SCRATCH_SEEK_SCALE
-                                ).coerceIn(0f, 0.995f)
-                            latestOnSeek(scratchProgress)
-                            latestOnScratch(deltaAngle / elapsedMs.toFloat())
-                            change.consume()
-                        }
-                    )
-                }
-                .rotate(discRotation)
+            rotationDegrees = discRotation,
+            modifier = Modifier.fillMaxSize(0.86f)
         )
         TurntableArmOverlay(
             progress = stageProgress,
@@ -6595,391 +9168,86 @@ private fun TurntableArmOverlay(
         label = "tonearmOffRecord"
     )
     val colorScheme = MaterialTheme.colorScheme
-    Canvas(modifier = modifier) {
+    BoxWithConstraints(modifier = modifier) {
         val p = progress.coerceIn(0f, 1f)
-        val accent = colorScheme.primary
         val swing = ((offRecord - 0.12f) / 0.88f).coerceIn(0f, 1f)
         val lift = (offRecord / 0.46f).coerceIn(0f, 1f)
         fun mix(start: Float, end: Float, amount: Float): Float = start + (end - start) * amount
 
-        val pivot = Offset(size.width * 0.895f, size.height * 0.095f)
         val onRecordStartAngle = 1.68f
         val onRecordEndAngle = 2.03f
-        val offRecordAngle = 1.3f
-        val onRecordAngle = mix(onRecordStartAngle, onRecordEndAngle, p)
-        val armAngle = mix(onRecordAngle, offRecordAngle, swing)
-        val cartridgeAngle = armAngle + 0.2f
-        val armLength = size.minDimension * 0.57f
-        val cartridgeLength = size.minDimension * 0.082f
-        val cartridgeWidth = size.minDimension * 0.03f
-        val pipeDirection = Offset(cos(armAngle), sin(armAngle))
-        val cartridgeDirection = Offset(cos(cartridgeAngle), sin(cartridgeAngle))
-        val stylus = Offset(
-            x = pivot.x + pipeDirection.x * armLength,
-            y = pivot.y + pipeDirection.y * armLength
+        val offRecordAngle = 1.48f
+        val armAngle = mix(
+            mix(onRecordStartAngle, onRecordEndAngle, p),
+            offRecordAngle,
+            swing
         )
-        val cartridgeBack = Offset(
-            x = stylus.x - cartridgeDirection.x * cartridgeLength,
-            y = stylus.y - cartridgeDirection.y * cartridgeLength
-        )
-        val pipeInset = 24.dp.toPx()
-        val pipeStart = Offset(
-            x = pivot.x + pipeDirection.x * pipeInset,
-            y = pivot.y + pipeDirection.y * pipeInset
-        )
-        val armNormal = Offset(x = -sin(armAngle), y = cos(armAngle))
-        val armCurve = size.minDimension * 0.052f
-        fun armPath(offset: Offset = Offset.Zero): Path = Path().apply {
-            moveTo(pipeStart.x + offset.x, pipeStart.y + offset.y)
-            cubicTo(
-                pivot.x + pipeDirection.x * armLength * 0.24f + armNormal.x * armCurve + offset.x,
-                pivot.y + pipeDirection.y * armLength * 0.24f + armNormal.y * armCurve + offset.y,
-                pivot.x + pipeDirection.x * armLength * 0.66f - armNormal.x * armCurve * 0.55f + offset.x,
-                pivot.y + pipeDirection.y * armLength * 0.66f - armNormal.y * armCurve * 0.55f + offset.y,
-                cartridgeBack.x + offset.x,
-                cartridgeBack.y + offset.y
-            )
-        }
-        fun armNormalOffset(amount: Float): Offset = Offset(
-            x = armNormal.x * amount,
-            y = armNormal.y * amount
-        )
-        val normal = Offset(
-            x = -sin(cartridgeAngle) * cartridgeWidth,
-            y = cos(cartridgeAngle) * cartridgeWidth
-        )
-        val railGap = 3.dp.toPx()
-        val baseRadius = 27.dp.toPx()
-        val metalBrush = Brush.linearGradient(
-            colors = listOf(
-                Color(0xFF202925).copy(alpha = 0.9f),
-                Color(0xFFE0E9E5).copy(alpha = 0.88f),
-                Color(0xFFAEBDB7).copy(alpha = 0.9f),
-                Color(0xFF53615C).copy(alpha = 0.84f)
-            ),
-            start = Offset(pivot.x - armNormal.x * 9.dp.toPx(), pivot.y - armNormal.y * 9.dp.toPx()),
-            end = Offset(pivot.x + armNormal.x * 11.dp.toPx(), pivot.y + armNormal.y * 11.dp.toPx())
-        )
+        val armRotationDegrees = armAngle * 180f / PI.toFloat() - 90f
+        val stageSize = minOf(maxWidth, maxHeight)
+        val pivotX = maxWidth * 0.918f
+        val pivotY = maxHeight * 0.072f
+        val armHeight = stageSize * 0.78f
+        val armWidth = armHeight * (172f / 565f)
+        val armPivotY = 0.125f
+        val armPainter = painterResource(R.drawable.turntable_arm)
 
-        val liftShadowOffset = Offset(
-            x = (2.2f + lift * 2.6f).dp.toPx(),
-            y = (3.2f + lift * 7.2f).dp.toPx()
-        )
-        val restAlpha = 0.25f + swing * 0.62f
-        val restPost = Offset(size.width * 0.925f, size.height * 0.29f)
-        drawLine(
-            color = Color.Black.copy(alpha = 0.2f * restAlpha),
-            start = Offset(restPost.x + 2.dp.toPx(), restPost.y - 16.dp.toPx()),
-            end = Offset(restPost.x + 2.dp.toPx(), restPost.y + 36.dp.toPx()),
-            strokeWidth = 7.dp.toPx(),
-            cap = StrokeCap.Round
-        )
-        drawLine(
-            color = Color(0xFF788782).copy(alpha = restAlpha),
-            start = Offset(restPost.x, restPost.y - 18.dp.toPx()),
-            end = Offset(restPost.x, restPost.y + 34.dp.toPx()),
-            strokeWidth = 4.dp.toPx(),
-            cap = StrokeCap.Round
-        )
-        drawLine(
-            color = Color(0xFFD8E2DE).copy(alpha = restAlpha),
-            start = Offset(restPost.x - 7.dp.toPx(), restPost.y - 18.dp.toPx()),
-            end = Offset(restPost.x + 8.dp.toPx(), restPost.y - 18.dp.toPx()),
-            strokeWidth = 3.2.dp.toPx(),
-            cap = StrokeCap.Round
-        )
-        drawCircle(
-            color = Color.Black.copy(alpha = 0.22f * restAlpha),
-            radius = 6.dp.toPx(),
-            center = Offset(restPost.x + 1.dp.toPx(), restPost.y + 35.dp.toPx())
-        )
-
-        val rearDirection = Offset(-cartridgeDirection.x, -cartridgeDirection.y)
-        val counterweightCenter = Offset(
-            x = pivot.x + rearDirection.x * 23.dp.toPx(),
-            y = pivot.y + rearDirection.y * 23.dp.toPx()
-        )
-        drawLine(
-            color = Color.Black.copy(alpha = 0.18f),
-            start = Offset(pivot.x + 2.dp.toPx(), pivot.y + 3.dp.toPx()),
-            end = Offset(counterweightCenter.x + 2.dp.toPx(), counterweightCenter.y + 3.dp.toPx()),
-            strokeWidth = 11.dp.toPx(),
-            cap = StrokeCap.Round
-        )
-        drawLine(
-            color = Color(0xFF9AA8A3).copy(alpha = 0.86f),
-            start = pivot,
-            end = counterweightCenter,
-            strokeWidth = 6.dp.toPx(),
-            cap = StrokeCap.Round
-        )
-        drawCircle(
-            color = Color.Black.copy(alpha = 0.26f),
-            radius = 14.dp.toPx(),
-            center = Offset(counterweightCenter.x + 2.dp.toPx(), counterweightCenter.y + 3.dp.toPx())
-        )
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    Color(0xFFE7EFEB).copy(alpha = 0.92f),
-                    Color(0xFF8D9B96).copy(alpha = 0.9f),
-                    Color(0xFF38423F).copy(alpha = 0.9f)
-                ),
-                center = Offset(counterweightCenter.x - 4.dp.toPx(), counterweightCenter.y - 5.dp.toPx()),
-                radius = 15.dp.toPx()
-            ),
-            radius = 13.dp.toPx(),
-            center = counterweightCenter
-        )
-        drawCircle(
-            color = Color.Black.copy(alpha = 0.24f),
-            radius = 9.dp.toPx(),
-            center = counterweightCenter,
-            style = Stroke(width = 1.5.dp.toPx())
-        )
-
-        drawPath(
-            path = armPath(liftShadowOffset),
-            color = Color.Black.copy(alpha = 0.2f + lift * 0.08f),
-            style = Stroke(width = (11.5f + lift * 2.2f).dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
-        )
-        drawPath(
-            path = armPath(),
-            color = Color.Black.copy(alpha = 0.22f),
-            style = Stroke(width = 10.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
-        )
-        drawPath(
-            path = armPath(),
-            brush = metalBrush,
-            style = Stroke(width = 6.4.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
-        )
-        drawPath(
-            path = armPath(armNormalOffset(-2.2.dp.toPx())),
-            color = Color.White.copy(alpha = 0.62f),
-            style = Stroke(width = 1.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
-        )
-        drawPath(
-            path = armPath(armNormalOffset(2.4.dp.toPx())),
-            color = Color.Black.copy(alpha = 0.2f),
-            style = Stroke(width = 1.1.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
-        )
-        drawLine(
-            color = Color.Black.copy(alpha = 0.18f),
-            start = Offset(pivot.x + 2.dp.toPx(), pivot.y + 3.dp.toPx()),
-            end = Offset(pipeStart.x + 2.dp.toPx(), pipeStart.y + 3.dp.toPx()),
-            strokeWidth = 12.dp.toPx(),
-            cap = StrokeCap.Round
-        )
-        drawLine(
-            color = Color(0xFFB8C8C1).copy(alpha = 0.88f),
-            start = pivot,
-            end = pipeStart,
-            strokeWidth = 6.dp.toPx(),
-            cap = StrokeCap.Round
-        )
-        drawLine(
-            color = Color.White.copy(alpha = 0.32f),
-            start = Offset(
-                x = pivot.x - armNormal.x * 1.8.dp.toPx(),
-                y = pivot.y - armNormal.y * 1.8.dp.toPx()
-            ),
-            end = Offset(
-                x = pipeStart.x - armNormal.x * 1.8.dp.toPx(),
-                y = pipeStart.y - armNormal.y * 1.8.dp.toPx()
-            ),
-            strokeWidth = 0.9.dp.toPx(),
-            cap = StrokeCap.Round
-        )
-
-        fun drawPipeCollar(center: Offset) {
-            drawLine(
-                color = Color.Black.copy(alpha = 0.34f),
-                start = Offset(
-                    x = center.x - armNormal.x * 5.4.dp.toPx(),
-                    y = center.y - armNormal.y * 5.4.dp.toPx()
-                ),
-                end = Offset(
-                    x = center.x + armNormal.x * 5.4.dp.toPx(),
-                    y = center.y + armNormal.y * 5.4.dp.toPx()
-                ),
-                strokeWidth = 5.2.dp.toPx(),
-                cap = StrokeCap.Round
-            )
-            drawLine(
-                color = Color(0xFFDDE7E3).copy(alpha = 0.92f),
-                start = Offset(
-                    x = center.x - armNormal.x * 4.6.dp.toPx(),
-                    y = center.y - armNormal.y * 4.6.dp.toPx()
-                ),
-                end = Offset(
-                    x = center.x + armNormal.x * 4.6.dp.toPx(),
-                    y = center.y + armNormal.y * 4.6.dp.toPx()
-                ),
-                strokeWidth = 2.8.dp.toPx(),
-                cap = StrokeCap.Round
-            )
-        }
-        drawPipeCollar(pipeStart)
-        drawPipeCollar(
-            Offset(
-                x = cartridgeBack.x - cartridgeDirection.x * 1.2.dp.toPx(),
-                y = cartridgeBack.y - cartridgeDirection.y * 1.2.dp.toPx()
-            )
-        )
-
-        val cartridge = Path().apply {
-            moveTo(cartridgeBack.x - normal.x, cartridgeBack.y - normal.y)
-            lineTo(cartridgeBack.x + normal.x, cartridgeBack.y + normal.y)
-            lineTo(stylus.x + normal.x * 0.46f, stylus.y + normal.y * 0.46f)
-            lineTo(stylus.x - normal.x * 0.46f, stylus.y - normal.y * 0.46f)
-            close()
-        }
-        drawLine(
-            color = Color.Black.copy(alpha = 0.26f),
-            start = Offset(
-                x = cartridgeBack.x - armNormal.x * railGap,
-                y = cartridgeBack.y - armNormal.y * railGap
-            ),
-            end = Offset(
-                x = cartridgeBack.x + armNormal.x * railGap,
-                y = cartridgeBack.y + armNormal.y * railGap
-            ),
-            strokeWidth = 6.dp.toPx(),
-            cap = StrokeCap.Round
-        )
-        drawPath(
-            path = Path().apply {
-                moveTo(cartridgeBack.x - normal.x + 2.dp.toPx(), cartridgeBack.y - normal.y + 2.dp.toPx())
-                lineTo(cartridgeBack.x + normal.x + 2.dp.toPx(), cartridgeBack.y + normal.y + 2.dp.toPx())
-                lineTo(stylus.x + normal.x * 0.46f + 2.dp.toPx(), stylus.y + normal.y * 0.46f + 2.dp.toPx())
-                lineTo(stylus.x - normal.x * 0.46f + 2.dp.toPx(), stylus.y - normal.y * 0.46f + 2.dp.toPx())
-                close()
-            },
-            color = Color.Black.copy(alpha = 0.18f)
-        )
-        drawPath(
-            path = cartridge,
-            brush = Brush.linearGradient(
-                colors = listOf(
-                    Color(0xFFF0F4F1).copy(alpha = 0.95f),
-                    Color(0xFFB6C0BA).copy(alpha = 0.93f),
-                    Color(0xFF58635E).copy(alpha = 0.9f)
-                ),
-                start = Offset(cartridgeBack.x - normal.x, cartridgeBack.y - normal.y),
-                end = Offset(stylus.x + normal.x, stylus.y + normal.y)
-            )
-        )
-        drawPath(
-            path = cartridge,
-            color = Color(0xFF6F7C77).copy(alpha = 0.45f),
-            style = Stroke(width = 1.dp.toPx(), join = StrokeJoin.Round)
-        )
-        for (index in 0 until 3) {
-            val along = cartridgeLength * (0.24f + index * 0.18f)
-            val grooveCenter = Offset(
-                x = cartridgeBack.x + cartridgeDirection.x * along,
-                y = cartridgeBack.y + cartridgeDirection.y * along
-            )
-            drawLine(
-                color = Color(0xFF6F7C77).copy(alpha = 0.38f),
-                start = Offset(
-                    x = grooveCenter.x - normal.x * 0.34f,
-                    y = grooveCenter.y - normal.y * 0.34f
-                ),
-                end = Offset(
-                    x = grooveCenter.x + normal.x * 0.34f,
-                    y = grooveCenter.y + normal.y * 0.34f
-                ),
-                strokeWidth = 0.9.dp.toPx(),
-                cap = StrokeCap.Round
-            )
-        }
-        drawLine(
-            color = Color(0xFF293532).copy(alpha = 0.9f),
-            start = Offset(
-                x = stylus.x - cartridgeDirection.x * 3.dp.toPx(),
-                y = stylus.y - cartridgeDirection.y * 3.dp.toPx()
-            ),
-            end = Offset(
-                x = stylus.x + cartridgeDirection.x * 4.dp.toPx(),
-                y = stylus.y + cartridgeDirection.y * 4.dp.toPx()
-            ),
-            strokeWidth = 1.4.dp.toPx(),
-            cap = StrokeCap.Round
-        )
-        drawCircle(
-            color = accent.copy(alpha = 0.82f - lift * 0.36f),
-            radius = (1.5f + lift * 0.5f).dp.toPx(),
-            center = stylus
-        )
-        drawCircle(
-            color = Color.Black.copy(alpha = 0.22f),
-            radius = baseRadius + 2.dp.toPx(),
-            center = Offset(pivot.x + 1.dp.toPx(), pivot.y + 3.dp.toPx())
-        )
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    Color.White.copy(alpha = 0.96f),
-                    Color(0xFFB6C6C0).copy(alpha = 0.92f),
-                    Color(0xFF64706C).copy(alpha = 0.88f)
-                ),
-                center = Offset(pivot.x - 7.dp.toPx(), pivot.y - 8.dp.toPx()),
-                radius = baseRadius + 2.dp.toPx()
-            ),
-            radius = baseRadius,
-            center = pivot
-        )
-        drawCircle(
-            color = accent.copy(alpha = 0.46f - lift * 0.18f),
-            radius = 20.5.dp.toPx(),
-            center = pivot,
-            style = Stroke(width = 2.4.dp.toPx())
-        )
-        drawCircle(
-            color = Color.Black.copy(alpha = 0.38f),
-            radius = 15.5.dp.toPx(),
-            center = pivot,
-            style = Stroke(width = 2.dp.toPx())
-        )
-        for (angleDegrees in listOf(44f, 136f, 224f, 316f)) {
-            val angle = angleDegrees * PI.toFloat() / 180f
-            val screwCenter = Offset(
-                x = pivot.x + cos(angle) * 20.dp.toPx(),
-                y = pivot.y + sin(angle) * 20.dp.toPx()
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val accent = colorScheme.primary
+            val pivot = Offset(size.width * 0.918f, size.height * 0.072f)
+            drawCircle(
+                color = Color.Black.copy(alpha = 0.18f + lift * 0.08f),
+                radius = 34.dp.toPx(),
+                center = Offset(pivot.x + 4.dp.toPx(), pivot.y + 6.dp.toPx())
             )
             drawCircle(
-                color = Color.Black.copy(alpha = 0.34f),
-                radius = 3.2.dp.toPx(),
-                center = screwCenter
-            )
-            drawCircle(
-                color = Color.White.copy(alpha = 0.48f),
-                radius = 1.4.dp.toPx(),
-                center = Offset(screwCenter.x - 0.8.dp.toPx(), screwCenter.y - 0.8.dp.toPx())
-            )
-            drawLine(
-                color = Color.Black.copy(alpha = 0.28f),
-                start = Offset(screwCenter.x - 1.8.dp.toPx(), screwCenter.y),
-                end = Offset(screwCenter.x + 1.8.dp.toPx(), screwCenter.y),
-                strokeWidth = 0.7.dp.toPx(),
-                cap = StrokeCap.Round
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.18f),
+                        accent.copy(alpha = 0.1f),
+                        Color.Transparent
+                    ),
+                    center = Offset(pivot.x - 10.dp.toPx(), pivot.y - 10.dp.toPx()),
+                    radius = 42.dp.toPx()
+                ),
+                radius = 42.dp.toPx(),
+                center = pivot
             )
         }
-        drawCircle(
-            color = blendColors(accent, Color.Black, 0.34f).copy(alpha = 0.9f),
-            radius = 9.5.dp.toPx(),
-            center = pivot
+
+        Image(
+            painter = armPainter,
+            contentDescription = null,
+            modifier = Modifier
+                .size(width = armWidth, height = armHeight)
+                .offset(
+                    x = pivotX - armWidth * 0.5f + 5.dp + (lift * 3f).dp,
+                    y = pivotY - armHeight * armPivotY + 7.dp + (lift * 2f).dp
+                )
+                .graphicsLayer {
+                    rotationZ = armRotationDegrees
+                    transformOrigin = TransformOrigin(0.5f, armPivotY)
+                    alpha = 0.38f + lift * 0.1f
+                }
+                .blur(9.dp),
+            contentScale = ContentScale.Fit,
+            colorFilter = ColorFilter.tint(Color.Black)
         )
-        drawCircle(
-            color = Color.Black.copy(alpha = 0.66f),
-            radius = 6.dp.toPx(),
-            center = pivot
-        )
-        drawCircle(
-            color = Color.White.copy(alpha = 0.55f),
-            radius = 2.4.dp.toPx(),
-            center = Offset(pivot.x - 2.dp.toPx(), pivot.y - 2.dp.toPx())
+
+        Image(
+            painter = armPainter,
+            contentDescription = null,
+            modifier = Modifier
+                .size(width = armWidth, height = armHeight)
+                .offset(
+                    x = pivotX - armWidth * 0.5f,
+                    y = pivotY - armHeight * armPivotY
+                )
+                .graphicsLayer {
+                    rotationZ = armRotationDegrees
+                    transformOrigin = TransformOrigin(0.5f, armPivotY)
+                    alpha = 0.98f
+                },
+            contentScale = ContentScale.Fit
         )
     }
 }
@@ -6988,13 +9256,11 @@ private fun TurntableArmOverlay(
 private fun VinylDisc(
     track: MusicTrack,
     session: JellyfinSession?,
+    rotationDegrees: Float,
     modifier: Modifier = Modifier
 ) {
     val tint = track.tint
-    val colorScheme = MaterialTheme.colorScheme
-    val surface = colorScheme.surface
-    val labelDark = blendColors(colorScheme.primaryContainer, Color.Black, 0.28f)
-    Box(
+    BoxWithConstraints(
         modifier = modifier
             .graphicsLayer {
                 shape = CircleShape
@@ -7004,58 +9270,144 @@ private fun VinylDisc(
             .background(Color.Black),
         contentAlignment = Alignment.Center
     ) {
-        AlbumArtworkImage(
-            track = track,
-            session = session,
+        val knobSize = minOf(maxWidth, maxHeight) * 0.15f
+
+        Box(
             modifier = Modifier
-                .fillMaxSize(0.985f)
+                .fillMaxSize()
                 .graphicsLayer {
-                    shape = CircleShape
-                    clip = true
+                    rotationZ = rotationDegrees
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            AlbumArtworkImage(
+                track = track,
+                session = session,
+                modifier = Modifier
+                    .fillMaxSize(0.925f)
+                    .graphicsLayer {
+                        shape = CircleShape
+                        clip = true
+                    }
+                    .clip(CircleShape)
+                    .alpha(0.9f),
+                imageSize = 384,
+                imageQuality = 78
+            )
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val radius = size.minDimension / 2f
+                val center = Offset(size.width / 2f, size.height / 2f)
+
+                drawCircle(
+                    color = Color.Black.copy(alpha = 0.08f),
+                    radius = radius,
+                    center = center
+                )
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            tint.copy(alpha = 0.08f),
+                            tint.copy(alpha = 0.03f),
+                            Color.Transparent,
+                            Color.Black.copy(alpha = 0.18f)
+                        ),
+                        center = Offset(size.width * 0.34f, size.height * 0.28f),
+                        radius = radius * 1.1f
+                    ),
+                    radius = radius,
+                    center = center
+                )
+                drawCircle(
+                    color = Color.Black.copy(alpha = 0.2f),
+                    radius = radius * 0.948f,
+                    center = center,
+                    style = Stroke(width = radius * 0.052f)
+                )
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            Color.Black.copy(alpha = 0.045f),
+                            Color.Black.copy(alpha = 0.24f),
+                            Color.Black.copy(alpha = 0.44f)
+                        ),
+                        center = center,
+                        radius = radius
+                    ),
+                    radius = radius,
+                    center = center
+                )
+                for (index in 0..184) {
+                    val grooveRadius = radius * (0.288f + index * 0.0036f)
+                    val strongGroove = index % 12 == 0
+                    val midGroove = index % 4 == 0
+                    drawCircle(
+                        color = Color.Black.copy(
+                            alpha = when {
+                                strongGroove -> 0.16f
+                                midGroove -> 0.08f
+                                else -> 0.045f
+                            }
+                        ),
+                        radius = grooveRadius,
+                        center = center,
+                        style = Stroke(width = if (strongGroove) 0.58.dp.toPx() else 0.32.dp.toPx())
+                    )
+                    drawCircle(
+                        color = Color.White.copy(
+                            alpha = when {
+                                strongGroove -> 0.11f
+                                midGroove -> 0.052f
+                                else -> 0.03f
+                            }
+                        ),
+                        radius = grooveRadius,
+                        center = center,
+                        style = Stroke(width = if (strongGroove) 0.48.dp.toPx() else 0.26.dp.toPx())
+                    )
                 }
-                .clip(CircleShape)
-                .alpha(0.88f),
-            imageSize = 520,
-            imageQuality = 86,
-            networkDelayMs = 1_200L
-        )
+                drawCircle(
+                    color = Color.Black.copy(alpha = 0.24f),
+                    radius = radius * 0.982f,
+                    center = center,
+                    style = Stroke(width = 4.dp.toPx())
+                )
+                drawCircle(
+                    color = Color.Black.copy(alpha = 0.22f),
+                    radius = radius * 0.99f,
+                    center = center,
+                    style = Stroke(width = radius * 0.058f)
+                )
+                drawCircle(
+                    color = Color.White.copy(alpha = 0.1f),
+                    radius = radius * 0.955f,
+                    center = center,
+                    style = Stroke(width = 1.dp.toPx())
+                )
+                drawCircle(
+                    color = Color.White.copy(alpha = 0.12f),
+                    radius = radius * 0.78f,
+                    center = center,
+                    style = Stroke(width = 1.2.dp.toPx())
+                )
+                drawCircle(
+                    color = Color.White.copy(alpha = 0.1f),
+                    radius = radius * 0.53f,
+                    center = center,
+                    style = Stroke(width = 1.dp.toPx())
+                )
+                drawVinylSpeckleTexture(
+                    center = center,
+                    outerRadius = radius * 0.96f,
+                    innerRadius = radius * 0.29f,
+                    seed = track.id.hashCode()
+                )
+            }
+        }
         Canvas(modifier = Modifier.fillMaxSize()) {
             val radius = size.minDimension / 2f
             val center = Offset(size.width / 2f, size.height / 2f)
 
-            drawCircle(
-                color = Color.Black.copy(alpha = 0.1f),
-                radius = radius,
-                center = center
-            )
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        tint.copy(alpha = 0.1f),
-                        tint.copy(alpha = 0.035f),
-                        Color.Transparent,
-                        Color.Black.copy(alpha = 0.22f)
-                    ),
-                    center = Offset(size.width * 0.34f, size.height * 0.28f),
-                    radius = radius * 1.1f
-                ),
-                radius = radius,
-                center = center
-            )
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        Color.Transparent,
-                        Color.Black.copy(alpha = 0.05f),
-                        Color.Black.copy(alpha = 0.3f),
-                        Color.Black.copy(alpha = 0.52f)
-                    ),
-                    center = center,
-                    radius = radius
-                ),
-                radius = radius,
-                center = center
-            )
             drawReferenceVinylShines(center = center, radius = radius)
             drawSoftVinylShade(
                 center = center,
@@ -7063,14 +9415,14 @@ private fun VinylDisc(
                 startAngle = 198f,
                 sweepAngle = 98f,
                 width = radius * 0.18f,
-                baseAlpha = 0.16f
+                baseAlpha = 0.14f
             )
             val softSpotCenter = Offset(size.width * 0.36f, size.height * 0.26f)
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        Color(0xFFE8F5FF).copy(alpha = 0.075f),
-                        Color.White.copy(alpha = 0.024f),
+                        Color(0xFFE8F5FF).copy(alpha = 0.07f),
+                        Color.White.copy(alpha = 0.022f),
                         Color.Transparent
                     ),
                     center = softSpotCenter,
@@ -7079,133 +9431,33 @@ private fun VinylDisc(
                 radius = radius * 0.34f,
                 center = softSpotCenter
             )
-            for (index in 0..184) {
-                val grooveRadius = radius * (0.288f + index * 0.0036f)
-                val strongGroove = index % 12 == 0
-                val midGroove = index % 4 == 0
-                drawCircle(
-                    color = Color.Black.copy(
-                        alpha = when {
-                            strongGroove -> 0.16f
-                            midGroove -> 0.08f
-                            else -> 0.045f
-                        }
-                    ),
-                    radius = grooveRadius,
-                    center = center,
-                    style = Stroke(width = if (strongGroove) 0.58.dp.toPx() else 0.32.dp.toPx())
-                )
-                drawCircle(
-                    color = Color.White.copy(
-                        alpha = when {
-                            strongGroove -> 0.11f
-                            midGroove -> 0.052f
-                            else -> 0.03f
-                        }
-                    ),
-                    radius = grooveRadius,
-                    center = center,
-                    style = Stroke(width = if (strongGroove) 0.48.dp.toPx() else 0.26.dp.toPx())
-                )
-            }
-            drawCircle(
-                color = Color.Black.copy(alpha = 0.24f),
-                radius = radius * 0.982f,
-                center = center,
-                style = Stroke(width = 4.dp.toPx())
-            )
-            drawCircle(
-                color = Color.White.copy(alpha = 0.1f),
-                radius = radius * 0.955f,
-                center = center,
-                style = Stroke(width = 1.dp.toPx())
-            )
-            drawCircle(
-                color = Color.White.copy(alpha = 0.12f),
-                radius = radius * 0.78f,
-                center = center,
-                style = Stroke(width = 1.2.dp.toPx())
-            )
-            drawCircle(
-                color = Color.White.copy(alpha = 0.1f),
-                radius = radius * 0.53f,
-                center = center,
-                style = Stroke(width = 1.dp.toPx())
-            )
-            drawVinylSpeckleTexture(
-                center = center,
-                outerRadius = radius * 0.96f,
-                innerRadius = radius * 0.29f,
-                seed = track.id.hashCode()
-            )
-            drawCircle(
-                color = Color.Black.copy(alpha = 0.22f),
-                radius = radius * 0.285f,
-                center = center
-            )
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        blendColors(tint, Color.Black, 0.52f).copy(alpha = 0.92f),
-                        Color(0xFF171615).copy(alpha = 0.96f),
-                        Color.Black.copy(alpha = 0.98f)
-                    ),
-                    center = Offset(center.x - radius * 0.08f, center.y - radius * 0.09f),
-                    radius = radius * 0.28f
-                ),
-                radius = radius * 0.255f,
-                center = center
-            )
-            drawCircle(
-                color = tint.copy(alpha = 0.58f),
-                radius = radius * 0.258f,
-                center = center,
-                style = Stroke(width = 2.8.dp.toPx())
-            )
-            drawCircle(
-                color = Color.White.copy(alpha = 0.12f),
-                radius = radius * 0.214f,
-                center = center,
-                style = Stroke(width = 1.dp.toPx())
-            )
         }
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val radius = size.minDimension / 2f
-            val center = Offset(size.width / 2f, size.height / 2f)
-
-            drawCircle(
-                color = Color.Black.copy(alpha = 0.32f),
-                radius = radius * 0.15f,
-                center = center,
-                style = Stroke(width = 1.2.dp.toPx())
-            )
-            for (index in 0 until 6) {
-                val angle = (index * 60f + 22f) * PI.toFloat() / 180f
-                drawLine(
-                    color = labelDark.copy(alpha = 0.5f),
-                    start = Offset(
-                        x = center.x + cos(angle) * radius * 0.04f,
-                        y = center.y + sin(angle) * radius * 0.04f
-                    ),
-                    end = Offset(
-                        x = center.x + cos(angle) * radius * 0.22f,
-                        y = center.y + sin(angle) * radius * 0.22f
-                    ),
-                    strokeWidth = 2.dp.toPx(),
-                    cap = StrokeCap.Round
+        Image(
+            painter = painterResource(R.drawable.turntable_shine),
+            contentDescription = null,
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(CircleShape)
+                .alpha(0.42f),
+            contentScale = ContentScale.Crop
+        )
+        Image(
+            painter = painterResource(R.drawable.turntable_knob),
+            contentDescription = null,
+            modifier = Modifier
+                .size(knobSize)
+                .offset(
+                    x = knobSize * 0.088f,
+                    y = knobSize * 0.018f
                 )
-            }
-            drawCircle(
-                color = surface.copy(alpha = 0.96f),
-                radius = radius * 0.028f,
-                center = center
+                .alpha(0.98f),
+            contentScale = ContentScale.Fit,
+            colorFilter = ColorFilter.colorMatrix(
+                ColorMatrix().apply {
+                    setToSaturation(0f)
+                }
             )
-            drawCircle(
-                color = labelDark,
-                radius = radius * 0.014f,
-                center = center
-            )
-        }
+        )
     }
 }
 
@@ -7219,7 +9471,7 @@ private fun DrawScope.drawReferenceVinylShines(center: Offset, radius: Float) {
         startAngle = 178f,
         sweepAngle = 76f,
         strokeWidth = radius * 0.58f,
-        color = coolWhite.copy(alpha = 0.105f),
+        color = coolWhite.copy(alpha = 0.07f),
         blurRadius = radius * 0.12f
     )
     drawBlurredArcStroke(
@@ -7228,7 +9480,7 @@ private fun DrawScope.drawReferenceVinylShines(center: Offset, radius: Float) {
         startAngle = 186f,
         sweepAngle = 42f,
         strokeWidth = radius * 0.3f,
-        color = Color.White.copy(alpha = 0.14f),
+        color = Color.White.copy(alpha = 0.09f),
         blurRadius = radius * 0.065f
     )
     drawBlurredArcStroke(
@@ -7237,7 +9489,7 @@ private fun DrawScope.drawReferenceVinylShines(center: Offset, radius: Float) {
         startAngle = 214f,
         sweepAngle = 92f,
         strokeWidth = radius * 0.52f,
-        color = coolWhite.copy(alpha = 0.105f),
+        color = coolWhite.copy(alpha = 0.07f),
         blurRadius = radius * 0.105f
     )
     drawBlurredArcStroke(
@@ -7246,7 +9498,7 @@ private fun DrawScope.drawReferenceVinylShines(center: Offset, radius: Float) {
         startAngle = 230f,
         sweepAngle = 48f,
         strokeWidth = radius * 0.22f,
-        color = Color.White.copy(alpha = 0.17f),
+        color = Color.White.copy(alpha = 0.11f),
         blurRadius = radius * 0.052f
     )
     drawBlurredArcStroke(
@@ -7255,7 +9507,7 @@ private fun DrawScope.drawReferenceVinylShines(center: Offset, radius: Float) {
         startAngle = 238f,
         sweepAngle = 36f,
         strokeWidth = radius * 0.085f,
-        color = Color.White.copy(alpha = 0.16f),
+        color = Color.White.copy(alpha = 0.1f),
         blurRadius = radius * 0.032f
     )
     drawBlurredArcStroke(
@@ -7264,7 +9516,7 @@ private fun DrawScope.drawReferenceVinylShines(center: Offset, radius: Float) {
         startAngle = 18f,
         sweepAngle = 66f,
         strokeWidth = radius * 0.4f,
-        color = softBlue.copy(alpha = 0.07f),
+        color = softBlue.copy(alpha = 0.045f),
         blurRadius = radius * 0.086f
     )
     drawBlurredArcStroke(
@@ -7273,7 +9525,7 @@ private fun DrawScope.drawReferenceVinylShines(center: Offset, radius: Float) {
         startAngle = 34f,
         sweepAngle = 38f,
         strokeWidth = radius * 0.14f,
-        color = Color.White.copy(alpha = 0.12f),
+        color = Color.White.copy(alpha = 0.075f),
         blurRadius = radius * 0.04f
     )
     drawBlurredArcStroke(
@@ -7282,7 +9534,7 @@ private fun DrawScope.drawReferenceVinylShines(center: Offset, radius: Float) {
         startAngle = 292f,
         sweepAngle = 58f,
         strokeWidth = radius * 0.34f,
-        color = coolWhite.copy(alpha = 0.058f),
+        color = coolWhite.copy(alpha = 0.038f),
         blurRadius = radius * 0.088f
     )
     drawBlurredArcStroke(
@@ -7291,17 +9543,17 @@ private fun DrawScope.drawReferenceVinylShines(center: Offset, radius: Float) {
         startAngle = 300f,
         sweepAngle = 34f,
         strokeWidth = radius * 0.18f,
-        color = Color.White.copy(alpha = 0.055f),
+        color = Color.White.copy(alpha = 0.036f),
         blurRadius = radius * 0.055f
     )
 
     val fineBands = listOf(
-        Triple(0.94f, 192f, 0.046f),
-        Triple(0.88f, 206f, 0.04f),
-        Triple(0.73f, 240f, 0.052f),
-        Triple(0.64f, 255f, 0.044f),
-        Triple(0.9f, 42f, 0.035f),
-        Triple(0.78f, 318f, 0.03f)
+        Triple(0.94f, 192f, 0.03f),
+        Triple(0.88f, 206f, 0.026f),
+        Triple(0.73f, 240f, 0.034f),
+        Triple(0.64f, 255f, 0.028f),
+        Triple(0.9f, 42f, 0.022f),
+        Triple(0.78f, 318f, 0.019f)
     )
     fineBands.forEach { (radiusScale, angle, alpha) ->
         drawBlurredArcStroke(
@@ -7559,8 +9811,8 @@ private fun AudioBarsVisualizer(
             for (index in 0 until VISUALIZER_BAR_COUNT) {
                 val goal = target.getOrElse(index) { 0f }.coerceIn(0f, 1f)
                 val level = current.getOrElse(index) { 0f }
-                val speed = if (goal > level) 5.8f else 3.2f
-                val blend = (deltaSeconds * speed).coerceIn(0.04f, 0.28f)
+                val speed = if (goal > level) 11.5f else 6.4f
+                val blend = (deltaSeconds * speed).coerceIn(0.08f, 0.42f)
                 val smoothed = level + (goal - level) * blend
                 next[index] = smoothed
                 if (smoothed > maxLevel) maxLevel = smoothed
@@ -7573,7 +9825,7 @@ private fun AudioBarsVisualizer(
         }
     }
 
-    val hasLiveLevels = displayedLevels.any { it > 0.01f }
+    val hasLiveLevels = displayedLevels.any { it > 0.006f }
 
     Canvas(modifier = modifier) {
         val barCount = VISUALIZER_BAR_COUNT
@@ -7587,9 +9839,9 @@ private fun AudioBarsVisualizer(
             val next = displayedLevels.getOrElse(index + 1) { rawLevel }
             val level = (rawLevel * 0.72f + previous * 0.14f + next * 0.14f).coerceIn(0f, 1f)
             val height = if (hasLiveLevels) {
-                size.height * (0.1f + sqrt(level) * 0.72f)
+                size.height * (0.14f + sqrt(level) * 0.78f)
             } else {
-                1.5.dp.toPx()
+                3.dp.toPx()
             }
             val x = step * index + step / 2f
             drawLine(
@@ -7808,9 +10060,10 @@ private class JellyfinPlayer(private val context: Context) {
     private var currentSession: JellyfinSession? = null
     private var audioFocusRequest: AudioFocusRequest? = null
     private var resumeOnAudioFocusGain = false
-    private var visualizerEnabled = true
+    private var visualizerEnabled = false
     private var smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
     private var lastVisualizerCaptureAt = 0L
+    private var lastPlaybackReportAt = 0L
     private var visualizerPumpRunning = false
     private var playbackGeneration = 0
     private val warmupGeneration = AtomicInteger(0)
@@ -7840,6 +10093,7 @@ private class JellyfinPlayer(private val context: Context) {
     )
 
     fun play(track: MusicTrack, session: JellyfinSession) {
+        reportCurrentPlaybackStopped()
         val generation = ++playbackGeneration
         val preparedPlayer = takePreparedWarmPlayer(track, session)
         releasePlayerForReplacement()
@@ -7850,6 +10104,7 @@ private class JellyfinPlayer(private val context: Context) {
         smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         lastVisualizerCaptureAt = 0L
+        lastPlaybackReportAt = 0L
 
         if (!requestAudioFocus()) {
             isPlaying = false
@@ -7868,20 +10123,44 @@ private class JellyfinPlayer(private val context: Context) {
 
         val nextPlayer = MediaPlayer()
         mediaPlayer = nextPlayer
-        runCatching {
-            nextPlayer.configureDataSource(session, track)
-            configureActivePlayer(nextPlayer, generation, track)
-            nextPlayer.prepareAsync()
-            publishPlaybackState(track)
-        }.onFailure {
-            if (nextPlayer.isActivePlayback(generation)) {
-                abandonAudioFocus()
-                isPlaying = false
-                mediaPlayer = null
-                status = it.readableMessage()
-                publishPlaybackState(track)
+        publishPlaybackState(track)
+        thread(name = "jellyfin-open-stream", isDaemon = true) {
+            val result = runCatching {
+                nextPlayer.configureDataSource(session, track)
             }
-            releaseMediaPlayerAsync(nextPlayer)
+            mainHandler.post {
+                if (!nextPlayer.isActivePlayback(generation)) {
+                    releaseMediaPlayerAsync(nextPlayer)
+                    return@post
+                }
+                result
+                    .onSuccess {
+                        runCatching {
+                            configureActivePlayer(nextPlayer, generation, track)
+                            nextPlayer.prepareAsync()
+                            publishPlaybackState(track)
+                        }.onFailure {
+                            if (nextPlayer.isActivePlayback(generation)) {
+                                abandonAudioFocus()
+                                isPlaying = false
+                                mediaPlayer = null
+                                status = it.readableMessage()
+                                publishPlaybackState(track)
+                            }
+                            releaseMediaPlayerAsync(nextPlayer)
+                        }
+                    }
+                    .onFailure {
+                        if (nextPlayer.isActivePlayback(generation)) {
+                            abandonAudioFocus()
+                            isPlaying = false
+                            mediaPlayer = null
+                            status = it.readableMessage()
+                            publishPlaybackState(track)
+                        }
+                        releaseMediaPlayerAsync(nextPlayer)
+                    }
+            }
         }
     }
 
@@ -7950,6 +10229,7 @@ private class JellyfinPlayer(private val context: Context) {
             isPlaying = false
             status = "Paused"
             publishPlaybackState()
+            reportCurrentPlaybackProgress(force = true, isPaused = true)
         } else {
             if (!requestAudioFocus()) {
                 status = "Audio focus unavailable"
@@ -7969,6 +10249,7 @@ private class JellyfinPlayer(private val context: Context) {
                 startVisualizerPump()
             }
             publishPlaybackState()
+            reportCurrentPlaybackProgress(force = true, isPaused = false)
         }
     }
 
@@ -7992,6 +10273,7 @@ private class JellyfinPlayer(private val context: Context) {
             if (duration > 0) {
                 progress = activePlayer.currentPosition.toFloat() / duration.toFloat()
                 notificationController.syncPlaybackState(isPlaying, status, progress)
+                reportCurrentPlaybackProgress()
             }
         }
     }
@@ -8008,11 +10290,13 @@ private class JellyfinPlayer(private val context: Context) {
                     status = "Paused"
                 }
                 publishPlaybackState()
+                reportCurrentPlaybackProgress(force = true, isPaused = !isPlaying)
             }
         }
     }
 
     fun release() {
+        reportCurrentPlaybackStopped()
         playbackGeneration++
         releasePlayer()
         currentTrack = null
@@ -8027,15 +10311,43 @@ private class JellyfinPlayer(private val context: Context) {
         notificationController.release()
     }
 
+    private fun reportCurrentPlaybackStarted(track: MusicTrack) {
+        val session = currentSession ?: return
+        val positionMs = mediaPlayer?.runCatching { currentPosition.toLong() }?.getOrNull() ?: 0L
+        lastPlaybackReportAt = SystemClock.elapsedRealtime()
+        reportPlaybackStart(context, session, track, positionMs)
+    }
+
+    private fun reportCurrentPlaybackProgress(force: Boolean = false, isPaused: Boolean = !isPlaying) {
+        val track = currentTrack ?: return
+        val session = currentSession ?: return
+        val now = SystemClock.elapsedRealtime()
+        if (!force && now - lastPlaybackReportAt < 10_000L) return
+        val positionMs = mediaPlayer?.runCatching { currentPosition.toLong() }?.getOrNull()
+            ?: (track.durationMs * progress.coerceIn(0f, 1f)).toLong()
+        lastPlaybackReportAt = now
+        reportPlaybackProgress(context, session, track, positionMs, isPaused)
+    }
+
+    private fun reportCurrentPlaybackStopped() {
+        val track = currentTrack ?: return
+        val session = currentSession ?: return
+        val positionMs = mediaPlayer?.runCatching { currentPosition.toLong() }?.getOrNull()
+            ?: (track.durationMs * progress.coerceIn(0f, 1f)).toLong()
+        lastPlaybackReportAt = 0L
+        reportPlaybackStopped(context, session, track, positionMs)
+    }
+
     private fun MediaPlayer.configureDataSource(session: JellyfinSession, track: MusicTrack) {
         setAudioAttributes(playbackAudioAttributes())
         val offlineFile = offlinePlayableFileFor(context, session, track)
         if (offlineFile != null) {
             setDataSource(offlineFile.absolutePath)
         } else {
+            val transcoded = loadTranscodedStreamingEnabled(context)
             setDataSource(
                 context,
-                Uri.parse(track.streamUrl(session)),
+                Uri.parse(track.streamUrl(session, transcoded = transcoded)),
                 session.streamHeaders()
             )
         }
@@ -8056,6 +10368,7 @@ private class JellyfinPlayer(private val context: Context) {
             smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
             visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
             publishPlaybackState(track)
+            reportCurrentPlaybackStopped()
         }
         player.setOnErrorListener { errorPlayer, _, _ ->
             if (!errorPlayer.isActivePlayback(generation)) return@setOnErrorListener true
@@ -8096,6 +10409,7 @@ private class JellyfinPlayer(private val context: Context) {
             }
             syncProgress()
             publishPlaybackState(track)
+            reportCurrentPlaybackStarted(track)
         }.onFailure {
             if (player.isActivePlayback(generation)) {
                 abandonAudioFocus()
@@ -8206,6 +10520,7 @@ private class JellyfinPlayer(private val context: Context) {
                             startVisualizerPump()
                         }
                         publishPlaybackState()
+                        reportCurrentPlaybackProgress(force = true, isPaused = false)
                     }
                 }
                 resumeOnAudioFocusGain = false
@@ -8239,6 +10554,7 @@ private class JellyfinPlayer(private val context: Context) {
             isPlaying = false
             status = "Paused"
             publishPlaybackState()
+            reportCurrentPlaybackProgress(force = true, isPaused = true)
         }
     }
 
@@ -8308,7 +10624,7 @@ private class JellyfinPlayer(private val context: Context) {
                             publishNativeVisualizerLevels(fftToBars(data))
                         }
                     },
-                    (Visualizer.getMaxCaptureRate() / 3).coerceAtLeast(1_000),
+                    (Visualizer.getMaxCaptureRate() / 2).coerceAtLeast(1_000),
                     false,
                     true
                 )
@@ -8343,7 +10659,7 @@ private class JellyfinPlayer(private val context: Context) {
                 sum += normalized * normalized
             }
             val rms = sqrt(sum / (end - start).coerceAtLeast(1))
-            rawBars[bar] = ((rms - 0.012f) / 0.34f).coerceIn(0f, 1f)
+            rawBars[bar] = sqrt((rms * 3.8f).coerceIn(0f, 1f))
         }
         for (bar in bars.indices) {
             val previous = rawBars.getOrElse(bar - 1) { rawBars[bar] }
@@ -8358,20 +10674,33 @@ private class JellyfinPlayer(private val context: Context) {
         val rawBars = FloatArray(VISUALIZER_BAR_COUNT)
         val usableBins = ((fft.size / 2) - 1).coerceAtLeast(1)
         for (bar in rawBars.indices) {
-            val startBin = 1 + (bar * usableBins / VISUALIZER_BAR_COUNT)
-            val endBin = 1 + ((bar + 1) * usableBins / VISUALIZER_BAR_COUNT).coerceAtLeast(startBin + 1)
+            val startFraction = bar.toFloat() / VISUALIZER_BAR_COUNT
+            val endFraction = (bar + 1).toFloat() / VISUALIZER_BAR_COUNT
+            val startBin = 1 + (startFraction * startFraction * usableBins).toInt()
+            val endBin = (1 + (endFraction * endFraction * usableBins).toInt())
+                .coerceAtLeast(startBin + 1)
             var sum = 0f
+            var peak = 0f
             var count = 0
             for (bin in startBin until endBin.coerceAtMost(usableBins + 1)) {
                 val real = fft.getOrElse(bin * 2) { 0 }.toFloat()
                 val imag = fft.getOrElse(bin * 2 + 1) { 0 }.toFloat()
-                sum += sqrt(real * real + imag * imag) / 128f
+                val magnitude = sqrt(real * real + imag * imag) / 128f
+                sum += magnitude
+                if (magnitude > peak) peak = magnitude
                 count++
             }
             val average = sum / count.coerceAtLeast(1)
-            rawBars[bar] = ((average - 0.02f) / 0.72f).coerceIn(0f, 1f)
+            val blended = average * 0.64f + peak * 0.36f
+            val shaped = (ln(1f + blended * 4.8f) / ln(5.8f)).coerceIn(0f, 1f)
+            val lowEndLift = 1f + (1f - bar.toFloat() / (VISUALIZER_BAR_COUNT - 1).coerceAtLeast(1)) * 0.32f
+            rawBars[bar] = (shaped * lowEndLift).coerceIn(0f, 1f)
         }
-        return rawBars
+        return FloatArray(VISUALIZER_BAR_COUNT) { index ->
+            val previous = rawBars.getOrElse(index - 1) { rawBars[index] }
+            val next = rawBars.getOrElse(index + 1) { rawBars[index] }
+            (rawBars[index] * 0.64f + previous * 0.18f + next * 0.18f).coerceIn(0f, 1f)
+        }
     }
 
     private fun fallbackVisualizerLevels(nowMs: Long, trackId: String?): FloatArray {
@@ -8399,7 +10728,7 @@ private class JellyfinPlayer(private val context: Context) {
         for (index in 0 until VISUALIZER_BAR_COUNT) {
             val current = smoothedVisualizerLevels[index]
             val next = target.getOrElse(index) { 0f }
-            val smoothing = if (next > current) 0.24f else 0.12f
+            val smoothing = if (next > current) 0.42f else 0.2f
             smoothedVisualizerLevels[index] = current + (next - current) * smoothing
         }
         return smoothedVisualizerLevels.copyOf()
@@ -8425,97 +10754,6 @@ private class JellyfinPlayer(private val context: Context) {
             release()
         }
         visualizer = null
-    }
-}
-
-private class ScratchSoundEngine {
-    private val sampleRate = 44_100
-    private val channelConfig = AudioFormat.CHANNEL_OUT_MONO
-    private val encoding = AudioFormat.ENCODING_PCM_16BIT
-    private val minBufferSize = AudioTrack
-        .getMinBufferSize(sampleRate, channelConfig, encoding)
-        .takeIf { it > 0 }
-        ?: sampleRate / 5
-    private val audioTrack = AudioTrack.Builder()
-        .setAudioAttributes(
-            AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
-                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                .build()
-        )
-        .setAudioFormat(
-            AudioFormat.Builder()
-                .setEncoding(encoding)
-                .setSampleRate(sampleRate)
-                .setChannelMask(channelConfig)
-                .build()
-        )
-        .setBufferSizeInBytes(minBufferSize.coerceAtLeast(sampleRate / 6))
-        .setTransferMode(AudioTrack.MODE_STREAM)
-        .setSessionId(AudioManager.AUDIO_SESSION_ID_GENERATE)
-        .build()
-    private val scratchBuffer = ShortArray((sampleRate * 0.065f).toInt())
-    private var lastScratchAt = 0L
-
-    fun playScratch(angularVelocity: Float) {
-        if (audioTrack.state != AudioTrack.STATE_INITIALIZED) return
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastScratchAt < 18L) return
-        lastScratchAt = now
-
-        runCatching {
-            val velocity = angularVelocity.coerceIn(-2.4f, 2.4f)
-            val intensity = (abs(velocity) / 1.25f).coerceIn(0.18f, 1f)
-            val direction = if (velocity >= 0f) 1f else -1f
-            val frameCount = (sampleRate * (0.026f + intensity * 0.035f))
-                .toInt()
-                .coerceAtMost(scratchBuffer.size)
-            var carrierPhase = 0f
-            var gatePhase = 0f
-            val baseFrequency = 380f + intensity * 1_850f
-
-            for (index in 0 until frameCount) {
-                val t = index / frameCount.toFloat()
-                val envelope = sin((PI * t).toFloat()).coerceAtLeast(0f)
-                val sweep = if (direction > 0f) t else 1f - t
-                val frequency = baseFrequency + sweep * intensity * 1_500f
-                carrierPhase = (carrierPhase + frequency / sampleRate) % 1f
-                gatePhase = (gatePhase + (28f + intensity * 94f) / sampleRate) % 1f
-
-                val saw = carrierPhase * 2f - 1f
-                val noise = Random.nextFloat() * 2f - 1f
-                val gate = if (gatePhase < 0.48f) 1f else -0.55f
-                val sample = (noise * 0.62f + saw * 0.38f) *
-                    gate *
-                    envelope *
-                    (0.22f + intensity * 0.42f)
-                scratchBuffer[index] = (sample * Short.MAX_VALUE)
-                    .toInt()
-                    .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                    .toShort()
-            }
-
-            if (audioTrack.playState != AudioTrack.PLAYSTATE_PLAYING) {
-                audioTrack.play()
-            }
-            audioTrack.write(scratchBuffer, 0, frameCount, AudioTrack.WRITE_NON_BLOCKING)
-        }
-    }
-
-    fun stop() {
-        runCatching {
-            if (audioTrack.playState == AudioTrack.PLAYSTATE_PLAYING) {
-                audioTrack.pause()
-                audioTrack.flush()
-            }
-        }
-    }
-
-    fun release() {
-        runCatching {
-            stop()
-            audioTrack.release()
-        }
     }
 }
 
@@ -8552,6 +10790,7 @@ private class JellyfinRepository(private val context: Context) {
         onPartial: ((List<MusicTrack>) -> Unit)? = null
     ): List<MusicTrack> {
         val pageSize = 500
+        var expectedTrackCount: Int? = null
         return buildList {
             var startIndex = 0
             val seenTrackIds = mutableSetOf<String>()
@@ -8567,8 +10806,14 @@ private class JellyfinRepository(private val context: Context) {
                     append("&Limit=$pageSize")
                 }
                 val response = JSONObject(request(url = url, method = "GET", body = null, session = session))
+                if (expectedTrackCount == null) {
+                    expectedTrackCount = response.optInt("TotalRecordCount", 0).takeIf { it > 0 }
+                }
                 val items = response.optJSONArray("Items") ?: JSONArray()
-                if (items.length() == 0) break
+                if (items.length() == 0) {
+                    throwIfLibraryReturnedTooFew(expectedTrackCount, seenTrackIds.size)
+                    break
+                }
 
                 var addedTracks = 0
                 for (index in 0 until items.length()) {
@@ -8612,7 +10857,10 @@ private class JellyfinRepository(private val context: Context) {
                 if (isNotEmpty()) {
                     onPartial?.invoke(toList().sortedWith(MusicTrackSort))
                 }
-                if (items.length() < pageSize || addedTracks == 0) break
+                if (items.length() < pageSize || addedTracks == 0) {
+                    throwIfLibraryReturnedTooFew(expectedTrackCount, seenTrackIds.size)
+                    break
+                }
             }
         }.sortedWith(MusicTrackSort)
     }
@@ -8661,6 +10909,13 @@ private class JellyfinRepository(private val context: Context) {
     private fun authorizationHeader(session: JellyfinSession?): String {
         val base = "MediaBrowser Client=\"Jellyfin Music\", Device=\"Android\", DeviceId=\"$deviceId\", Version=\"0.1.0\""
         return session?.let { "$base, Token=\"${it.token}\"" } ?: base
+    }
+}
+
+private fun throwIfLibraryReturnedTooFew(expectedCount: Int?, actualCount: Int) {
+    val expected = expectedCount ?: return
+    if (expected > actualCount) {
+        throw IOException("Library sync incomplete: Jellyfin reported $expected songs but returned $actualCount.")
     }
 }
 
@@ -8960,6 +11215,70 @@ private fun isWifiConnected(context: Context): Boolean {
     return capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
 }
 
+private fun reportPlaybackStart(
+    context: Context,
+    session: JellyfinSession,
+    track: MusicTrack,
+    positionMs: Long
+) {
+    postPlaybackReport(context, session, "Playing", track, positionMs, isPaused = false)
+}
+
+private fun reportPlaybackProgress(
+    context: Context,
+    session: JellyfinSession,
+    track: MusicTrack,
+    positionMs: Long,
+    isPaused: Boolean
+) {
+    postPlaybackReport(context, session, "Playing/Progress", track, positionMs, isPaused)
+}
+
+private fun reportPlaybackStopped(
+    context: Context,
+    session: JellyfinSession,
+    track: MusicTrack,
+    positionMs: Long
+) {
+    postPlaybackReport(context, session, "Playing/Stopped", track, positionMs, isPaused = true)
+}
+
+private fun postPlaybackReport(
+    context: Context,
+    session: JellyfinSession,
+    endpoint: String,
+    track: MusicTrack,
+    positionMs: Long,
+    isPaused: Boolean
+) {
+    if (!loadPlaybackReportingEnabled(context)) return
+    thread(name = "jellyfin-playback-report", isDaemon = true) {
+        runCatching {
+            val body = JSONObject()
+                .put("ItemId", track.id)
+                .put("PositionTicks", positionMs.coerceAtLeast(0L) * 10_000L)
+                .put("IsPaused", isPaused)
+                .put("CanSeek", true)
+                .put("PlayMethod", "DirectStream")
+            val url = URL("${session.serverUrl}/Sessions/$endpoint")
+            val connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 8_000
+                readTimeout = 8_000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+                session.streamHeaders().forEach { (key, value) -> setRequestProperty(key, value) }
+            }
+            try {
+                connection.outputStream.bufferedWriter().use { it.write(body.toString()) }
+                connection.inputStream.close()
+            } finally {
+                connection.disconnect()
+            }
+        }
+    }
+}
+
 private fun clearSavedSession(context: Context) {
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
@@ -8983,7 +11302,7 @@ private fun saveUseAlbumArtColors(context: Context, enabled: Boolean) {
 
 private fun loadVisualizerEnabled(context: Context): Boolean =
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        .getBoolean(PREF_VISUALIZER_ENABLED, true)
+        .getBoolean(PREF_VISUALIZER_ENABLED, false)
 
 private fun saveVisualizerEnabled(context: Context, enabled: Boolean) {
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -9036,6 +11355,61 @@ private fun saveOfflineStorageLimitMb(context: Context, limitMb: Int) {
         .apply()
 }
 
+private fun loadDownloadedOnlyMode(context: Context): Boolean =
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getBoolean(PREF_DOWNLOADED_ONLY_MODE, false)
+
+private fun saveDownloadedOnlyMode(context: Context, enabled: Boolean) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(PREF_DOWNLOADED_ONLY_MODE, enabled)
+        .apply()
+}
+
+private fun loadAutoSyncOnLaunch(context: Context): Boolean =
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getBoolean(PREF_AUTO_SYNC_ON_LAUNCH, false)
+
+private fun saveAutoSyncOnLaunch(context: Context, enabled: Boolean) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(PREF_AUTO_SYNC_ON_LAUNCH, enabled)
+        .apply()
+}
+
+private fun loadGaplessPrebufferEnabled(context: Context): Boolean =
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getBoolean(PREF_GAPLESS_PREBUFFER_ENABLED, true)
+
+private fun saveGaplessPrebufferEnabled(context: Context, enabled: Boolean) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(PREF_GAPLESS_PREBUFFER_ENABLED, enabled)
+        .apply()
+}
+
+private fun loadTranscodedStreamingEnabled(context: Context): Boolean =
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getBoolean(PREF_TRANSCODED_STREAMING_ENABLED, false)
+
+private fun saveTranscodedStreamingEnabled(context: Context, enabled: Boolean) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(PREF_TRANSCODED_STREAMING_ENABLED, enabled)
+        .apply()
+}
+
+private fun loadPlaybackReportingEnabled(context: Context): Boolean =
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getBoolean(PREF_PLAYBACK_REPORTING_ENABLED, true)
+
+private fun savePlaybackReportingEnabled(context: Context, enabled: Boolean) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(PREF_PLAYBACK_REPORTING_ENABLED, enabled)
+        .apply()
+}
+
 private fun likedTracksPreferenceKey(session: JellyfinSession): String =
     "$PREF_LIKED_TRACK_IDS_PREFIX${stableCacheKey("${session.serverUrl}|${session.userId}")}"
 
@@ -9049,6 +11423,22 @@ private fun saveLikedTrackIds(context: Context, session: JellyfinSession, likedT
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
         .putStringSet(likedTracksPreferenceKey(session), likedTrackIds.toSet())
+        .apply()
+}
+
+private fun favoriteAlbumKeysPreferenceKey(session: JellyfinSession): String =
+    "$PREF_FAVORITE_ALBUM_KEYS_PREFIX${stableCacheKey("${session.serverUrl}|${session.userId}")}"
+
+private fun loadFavoriteAlbumKeys(context: Context, session: JellyfinSession): Set<String> =
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getStringSet(favoriteAlbumKeysPreferenceKey(session), emptySet())
+        ?.toSet()
+        ?: emptySet()
+
+private fun saveFavoriteAlbumKeys(context: Context, session: JellyfinSession, favoriteAlbumKeys: Set<String>) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putStringSet(favoriteAlbumKeysPreferenceKey(session), favoriteAlbumKeys.toSet())
         .apply()
 }
 
@@ -9090,6 +11480,74 @@ private fun savePinnedLibraryItems(
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
         .putString(pinnedLibraryItemsPreferenceKey(session), items.toString())
+        .apply()
+}
+
+private fun localPlaylistsPreferenceKey(session: JellyfinSession): String =
+    "$PREF_LOCAL_PLAYLISTS_PREFIX${stableCacheKey("${session.serverUrl}|${session.userId}")}"
+
+private fun newLocalPlaylistId(name: String): String =
+    stableCacheKey("$name|${System.currentTimeMillis()}|${Random.nextLong()}").take(24)
+
+private fun loadLocalPlaylists(context: Context, session: JellyfinSession): List<LocalPlaylist> {
+    val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getString(localPlaylistsPreferenceKey(session), null)
+        ?: return emptyList()
+    return runCatching {
+        val root = JSONObject(raw)
+        if (root.optInt("version", 0) > LOCAL_PLAYLISTS_VERSION) return@runCatching emptyList()
+        val items = root.optJSONArray("playlists") ?: JSONArray()
+        buildList {
+            for (index in 0 until items.length()) {
+                val item = items.optJSONObject(index) ?: continue
+                val id = item.optString("id").takeIf { it.isNotBlank() } ?: continue
+                val name = item.optString("name").takeIf { it.isNotBlank() } ?: continue
+                val trackItems = item.optJSONArray("trackIds") ?: JSONArray()
+                val trackIds = buildList {
+                    for (trackIndex in 0 until trackItems.length()) {
+                        trackItems.optString(trackIndex).takeIf { it.isNotBlank() }?.let(::add)
+                    }
+                }.distinct()
+                add(
+                    LocalPlaylist(
+                        id = id,
+                        name = name,
+                        folder = item.optString("folder").orEmpty(),
+                        trackIds = trackIds,
+                        isFavorite = item.optBoolean("isFavorite", false),
+                        updatedAt = item.optLong("updatedAt", 0L)
+                    )
+                )
+            }
+        }.distinctBy { it.id }.sortedWith(LocalPlaylistSort)
+    }.getOrDefault(emptyList())
+}
+
+private fun saveLocalPlaylists(
+    context: Context,
+    session: JellyfinSession,
+    playlists: List<LocalPlaylist>
+) {
+    val items = JSONArray()
+    playlists.sortedWith(LocalPlaylistSort).forEach { playlist ->
+        val trackItems = JSONArray()
+        playlist.trackIds.distinct().forEach(trackItems::put)
+        items.put(
+            JSONObject()
+                .put("id", playlist.id)
+                .put("name", playlist.name)
+                .put("folder", playlist.folder)
+                .put("trackIds", trackItems)
+                .put("isFavorite", playlist.isFavorite)
+                .put("updatedAt", playlist.updatedAt)
+        )
+    }
+    val root = JSONObject()
+        .put("version", LOCAL_PLAYLISTS_VERSION)
+        .put("playlists", items)
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(localPlaylistsPreferenceKey(session), root.toString())
         .apply()
 }
 
@@ -9144,39 +11602,51 @@ private fun PinnedLibraryItem.asDetail(): LibraryDetail =
 
 private fun PinnedLibraryItem.resolvePinnedItem(
     tracks: List<MusicTrack>,
-    downloadedTrackIds: Set<String>
+    downloadedTrackIds: Set<String>,
+    playlists: List<LocalPlaylist>
 ): ResolvedPinnedItem? {
     val detail = asDetail()
-    val detailTracks = tracks.tracksForDetail(detail, downloadedTrackIds)
+    val detailTracks = tracks.tracksForDetail(detail, downloadedTrackIds, playlists)
     if (detail.type != LibraryCollectionType.Downloaded && detailTracks.isEmpty()) return null
     return ResolvedPinnedItem(
         item = this,
-        title = detail.titleLabel(),
-        subtitle = detail.subtitleLabel(detailTracks),
+        title = detail.titleLabel(playlists),
+        subtitle = detail.subtitleLabel(detailTracks, playlists),
         artworkTrack = detailTracks.firstOrNull(),
         shape = if (type == LibraryCollectionType.Artist) CircleShape else RoundedCornerShape(8.dp),
         detail = detail
     )
 }
 
-private fun LibraryDetail.titleLabel(): String =
+private fun LibraryDetail.titleLabel(playlists: List<LocalPlaylist> = emptyList()): String =
     when (type) {
         LibraryCollectionType.Downloaded -> "Downloaded songs"
+        LibraryCollectionType.Playlist -> playlists.firstOrNull { it.id == key }?.name ?: key
         else -> key
     }
 
-private fun LibraryDetail.subtitleLabel(tracks: List<MusicTrack>): String =
+private fun LibraryDetail.subtitleLabel(
+    tracks: List<MusicTrack>,
+    playlists: List<LocalPlaylist> = emptyList()
+): String =
     when (type) {
         LibraryCollectionType.Album -> tracks.firstOrNull()?.artist?.let { artist ->
             "${tracks.size.countLabel("song")} - $artist"
         } ?: "Album"
         LibraryCollectionType.Artist -> tracks.size.countLabel("song")
+        LibraryCollectionType.Playlist -> playlists.firstOrNull { it.id == key }?.let { playlist ->
+            listOfNotNull(
+                playlist.folder.takeIf { it.isNotBlank() },
+                tracks.size.countLabel("song")
+            ).joinToString(" - ")
+        } ?: tracks.size.countLabel("song")
         LibraryCollectionType.Downloaded -> "${tracks.size.countLabel("song")} saved offline"
     }
 
 private fun List<MusicTrack>.tracksForDetail(
     detail: LibraryDetail,
-    downloadedTrackIds: Set<String>
+    downloadedTrackIds: Set<String>,
+    playlists: List<LocalPlaylist> = emptyList()
 ): List<MusicTrack> =
     when (detail.type) {
         LibraryCollectionType.Album -> filter { it.album.equals(detail.key, ignoreCase = true) }
@@ -9190,6 +11660,9 @@ private fun List<MusicTrack>.tracksForDetail(
             )
         LibraryCollectionType.Downloaded -> filter { it.id in downloadedTrackIds }
             .sortedWith(MusicTrackSort)
+        LibraryCollectionType.Playlist -> playlists.firstOrNull { it.id == detail.key }
+            ?.resolveTracks(this)
+            ?: emptyList()
     }
 
 private fun List<MusicTrack>.filterForLibrary(
@@ -9223,19 +11696,110 @@ private fun availableLettersForTab(
     selectedTab: LibraryTab,
     songs: List<MusicTrack>,
     albums: List<LibraryGroup>,
-    artists: List<LibraryGroup>
-): List<Char> =
-    when (selectedTab) {
-        LibraryTab.Songs -> songs.mapNotNull { it.title.firstLibraryLetter() }
-        LibraryTab.Albums -> albums.mapNotNull { it.title.firstLibraryLetter() }
-        LibraryTab.Artists -> artists.mapNotNull { it.title.firstLibraryLetter() }
-    }.distinct().sorted()
+    artists: List<LibraryGroup>,
+    playlists: List<LibraryGroup> = emptyList()
+): List<Char> {
+    val hasItems = when (selectedTab) {
+        LibraryTab.Songs -> songs.isNotEmpty()
+        LibraryTab.Albums -> albums.isNotEmpty()
+        LibraryTab.Artists -> artists.isNotEmpty()
+        LibraryTab.Playlists -> playlists.isNotEmpty()
+    }
+    return if (hasItems) LibraryAlphabetRail else emptyList()
+}
 
-private fun String.firstLibraryLetter(): Char? =
-    trim()
-        .firstOrNull { it.isLetterOrDigit() }
-        ?.uppercaseChar()
-        ?.let { if (it.isLetter()) it else '#' }
+private fun libraryLetterScrollTargets(
+    selectedTab: LibraryTab,
+    songs: List<MusicTrack>,
+    albums: List<LibraryGroup>,
+    artists: List<LibraryGroup>,
+    playlists: List<LibraryGroup>,
+    gridView: Boolean,
+    hasPinnedShelf: Boolean
+): Map<Char, Int> {
+    var firstContentIndex = 1 // Sticky LibraryToolbar
+    if (hasPinnedShelf) firstContentIndex += 1
+
+    val exactTargets = when (selectedTab) {
+        LibraryTab.Songs -> letterScrollTargetsFor(
+            items = songs,
+            startItemIndex = firstContentIndex + if (songs.isNotEmpty()) 1 else 0,
+            gridView = gridView,
+            selector = { it.title }
+        )
+        LibraryTab.Albums -> letterScrollTargetsFor(
+            items = albums,
+            startItemIndex = firstContentIndex,
+            gridView = gridView,
+            selector = { it.title }
+        )
+        LibraryTab.Artists -> letterScrollTargetsFor(
+            items = artists,
+            startItemIndex = firstContentIndex,
+            gridView = gridView,
+            selector = { it.title }
+        )
+        LibraryTab.Playlists -> letterScrollTargetsFor(
+            items = playlists,
+            startItemIndex = firstContentIndex + 1,
+            gridView = gridView,
+            selector = { it.title }
+        )
+    }
+    return exactTargets.withRailFallbackTargets()
+}
+
+private fun <T> letterScrollTargetsFor(
+    items: List<T>,
+    startItemIndex: Int,
+    gridView: Boolean,
+    selector: (T) -> String
+): Map<Char, Int> {
+    val targets = linkedMapOf<Char, Int>()
+    items.forEachIndexed { index, item ->
+        val letter = selector(item).firstLibraryLetter() ?: return@forEachIndexed
+        if (letter !in targets) {
+            targets[letter] = startItemIndex + if (gridView) index / 2 else index
+        }
+    }
+    return targets
+}
+
+private fun Map<Char, Int>.withRailFallbackTargets(): Map<Char, Int> {
+    if (isEmpty()) return emptyMap()
+    return buildMap {
+        LibraryAlphabetRail.forEachIndexed { index, letter ->
+            val target = this@withRailFallbackTargets[letter]
+                ?: ((index + 1)..LibraryAlphabetRail.lastIndex)
+                    .firstNotNullOfOrNull { nextIndex -> this@withRailFallbackTargets[LibraryAlphabetRail[nextIndex]] }
+                ?: ((index - 1) downTo 0)
+                    .firstNotNullOfOrNull { previousIndex -> this@withRailFallbackTargets[LibraryAlphabetRail[previousIndex]] }
+            if (target != null) {
+                put(letter, target)
+            }
+        }
+    }
+}
+
+private fun String.firstLibraryLetter(): Char? {
+    val first = trim().firstOrNull() ?: return null
+    val upper = first.uppercaseChar()
+    return when {
+        first.isDigit() -> LibraryNumberIndex
+        upper in 'A'..'Z' -> upper
+        else -> LibraryOtherIndex
+    }
+}
+
+private fun String.libraryIndexSortWeight(): Int =
+    firstLibraryLetter()?.let { letter ->
+        when (letter) {
+            LibraryNumberIndex -> 0
+            LibraryOtherIndex -> LibraryAlphabetRail.lastIndex
+            in 'A'..'Z' -> letter - 'A' + 1
+            else -> LibraryAlphabetRail.lastIndex
+        }
+    } ?: LibraryAlphabetRail.lastIndex
 
 private fun List<MusicTrack>.homeMix(seed: Long): List<MusicTrack> {
     val queue = distinctBy { it.id }.toMutableList()
@@ -9301,6 +11865,108 @@ private fun normalizeServerUrl(input: String): String {
         .removeSuffix("/")
 }
 
+private fun topSearchResult(
+    query: String,
+    tracks: List<MusicTrack>,
+    albums: List<LibraryGroup>,
+    artists: List<LibraryGroup>,
+    playlists: List<LibraryGroup>
+): SearchTopResult? {
+    val needle = query.searchKey()
+    if (needle.isBlank()) return null
+    val tokens = needle.split(' ').filter { it.isNotBlank() }
+    if (tokens.isEmpty()) return null
+
+    data class Candidate(
+        val score: Int,
+        val priority: Int,
+        val result: SearchTopResult
+    )
+
+    val candidates = buildList {
+        tracks.take(16).forEach { track ->
+            track.searchScore(needle, tokens)?.let { score ->
+                add(
+                    Candidate(
+                        score = score,
+                        priority = 3,
+                        result = SearchTopResult(
+                            type = SearchTopResultType.Song,
+                            title = track.title,
+                            subtitle = "${track.artist} - ${track.album}",
+                            artworkTrack = track,
+                            artworkShape = RoundedCornerShape(8.dp),
+                            track = track
+                        )
+                    )
+                )
+            }
+        }
+        albums.take(12).forEach { group ->
+            group.searchScore(needle, tokens)?.let { score ->
+                add(
+                    Candidate(
+                        score = score,
+                        priority = 0,
+                        result = SearchTopResult(
+                            type = SearchTopResultType.Album,
+                            title = group.title,
+                            subtitle = group.subtitle,
+                            artworkTrack = group.tracks.firstOrNull(),
+                            artworkShape = RoundedCornerShape(8.dp),
+                            detail = LibraryDetail(LibraryCollectionType.Album, group.key)
+                        )
+                    )
+                )
+            }
+        }
+        artists.take(12).forEach { group ->
+            group.searchScore(needle, tokens)?.let { score ->
+                add(
+                    Candidate(
+                        score = score,
+                        priority = 1,
+                        result = SearchTopResult(
+                            type = SearchTopResultType.Artist,
+                            title = group.title,
+                            subtitle = group.subtitle,
+                            artworkTrack = group.tracks.firstOrNull(),
+                            artworkShape = CircleShape,
+                            detail = LibraryDetail(LibraryCollectionType.Artist, group.key)
+                        )
+                    )
+                )
+            }
+        }
+        playlists.take(12).forEach { group ->
+            group.searchScore(needle, tokens)?.let { score ->
+                add(
+                    Candidate(
+                        score = score,
+                        priority = 2,
+                        result = SearchTopResult(
+                            type = SearchTopResultType.Playlist,
+                            title = group.title,
+                            subtitle = group.subtitle,
+                            artworkTrack = group.tracks.firstOrNull(),
+                            artworkShape = RoundedCornerShape(8.dp),
+                            detail = LibraryDetail(LibraryCollectionType.Playlist, group.key)
+                        )
+                    )
+                )
+            }
+        }
+    }
+
+    return candidates
+        .minWithOrNull(
+            compareBy<Candidate> { it.score }
+                .thenBy { it.priority }
+                .thenBy { it.result.title.lowercase(Locale.getDefault()) }
+        )
+        ?.result
+}
+
 private fun List<MusicTrack>.filterBy(query: String): List<MusicTrack> {
     val needle = query.searchKey()
     if (needle.isBlank()) return this
@@ -9340,6 +12006,7 @@ private fun List<MusicTrack>.sortedForLibrary(sortMode: LibrarySortMode): List<M
         LibrarySortMode.Title -> sortedWith(MusicTrackSort)
         LibrarySortMode.Artist -> sortedWith(
             compareBy<MusicTrack>(
+                { it.artist.libraryIndexSortWeight() },
                 { it.artist.lowercase(Locale.getDefault()) },
                 { it.title.lowercase(Locale.getDefault()) },
                 { it.album.lowercase(Locale.getDefault()) }
@@ -9347,6 +12014,7 @@ private fun List<MusicTrack>.sortedForLibrary(sortMode: LibrarySortMode): List<M
         )
         LibrarySortMode.Album -> sortedWith(
             compareBy<MusicTrack>(
+                { it.album.libraryIndexSortWeight() },
                 { it.album.lowercase(Locale.getDefault()) },
                 { it.artist.lowercase(Locale.getDefault()) },
                 { it.title.lowercase(Locale.getDefault()) }
@@ -9361,9 +12029,15 @@ private fun List<MusicTrack>.sortedForLibrary(sortMode: LibrarySortMode): List<M
 private fun List<LibraryGroup>.sortedGroupsForLibrary(sortMode: LibrarySortMode): List<LibraryGroup> =
     when (sortMode) {
         LibrarySortMode.Title,
-        LibrarySortMode.Album -> sortedBy { it.title.lowercase(Locale.getDefault()) }
+        LibrarySortMode.Album -> sortedWith(
+            compareBy<LibraryGroup>(
+                { it.title.libraryIndexSortWeight() },
+                { it.title.lowercase(Locale.getDefault()) }
+            )
+        )
         LibrarySortMode.Artist -> sortedWith(
             compareBy<LibraryGroup>(
+                { it.tracks.firstOrNull()?.artist?.libraryIndexSortWeight() ?: LibraryAlphabetRail.lastIndex },
                 { it.tracks.firstOrNull()?.artist?.lowercase(Locale.getDefault()).orEmpty() },
                 { it.title.lowercase(Locale.getDefault()) }
             )
@@ -9486,6 +12160,53 @@ private fun List<MusicTrack>.groupByArtist(): List<LibraryGroup> =
                 tracks = artistTracks
             )
         }
+
+private fun List<LocalPlaylist>.toLibraryGroups(tracks: List<MusicTrack>): List<LibraryGroup> {
+    if (isEmpty()) return emptyList()
+    val tracksById = tracks.associateBy { it.id }
+    return sortedWith(LocalPlaylistSort).map { playlist ->
+        val playlistTracks = playlist.trackIds.mapNotNull { tracksById[it] }
+        val fallbackTint = AlbumTints[abs(playlist.id.hashCode()) % AlbumTints.size]
+        val folderLabel = playlist.folder.takeIf { it.isNotBlank() }
+        LibraryGroup(
+            title = playlist.name,
+            subtitle = listOfNotNull(
+                folderLabel,
+                playlistTracks.size.countLabel("song"),
+                "Local playlist".takeIf { playlistTracks.isEmpty() }
+            ).joinToString(" - "),
+            tint = playlistTracks.firstOrNull()?.tint ?: fallbackTint,
+            tracks = playlistTracks,
+            key = playlist.id
+        )
+    }
+}
+
+private fun LocalPlaylist.resolveTracks(tracks: List<MusicTrack>): List<MusicTrack> {
+    if (trackIds.isEmpty() || tracks.isEmpty()) return emptyList()
+    val tracksById = tracks.associateBy { it.id }
+    return trackIds.mapNotNull { tracksById[it] }
+}
+
+private fun MusicTrack.toAutoTrackItem(): MediaBrowser.MediaItem =
+    MediaBrowser.MediaItem(
+        MediaDescription.Builder()
+            .setMediaId("$AUTO_TRACK_PREFIX$id")
+            .setTitle(title)
+            .setSubtitle(notificationSubtitle())
+            .build(),
+        MediaBrowser.MediaItem.FLAG_PLAYABLE
+    )
+
+private fun LibraryGroup.toAutoGroupItem(prefix: String, flags: Int): MediaBrowser.MediaItem =
+    MediaBrowser.MediaItem(
+        MediaDescription.Builder()
+            .setMediaId("$prefix${Uri.encode(title)}")
+            .setTitle(title)
+            .setSubtitle(subtitle)
+            .build(),
+        flags
+    )
 
 private fun JSONArray?.joinOrFallback(fallback: String): String {
     if (this == null || length() == 0) return fallback.ifBlank { "Unknown artist" }
