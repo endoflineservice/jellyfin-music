@@ -7266,10 +7266,13 @@ private fun FullPlayerScreen(
                     }
                 }
             } else {
+                val mobileTopInset = if (maxHeight >= 840.dp) 22.dp else 12.dp
+                val mobileControlGap = if (maxHeight >= 840.dp) 62.dp else 28.dp
+
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(top = 2.dp),
+                        .padding(top = mobileTopInset),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     DiscAlbumStage(
@@ -7298,7 +7301,7 @@ private fun FullPlayerScreen(
                         isPlaying = isPlaying,
                         onSeek = onSeek
                     )
-                    Spacer(Modifier.height(18.dp))
+                    Spacer(Modifier.height(mobileControlGap))
                     PlayerTransportControls(
                         status = status,
                         isPlaying = isPlaying,
@@ -9239,18 +9242,21 @@ private fun TurntableArmOverlay(
             swing
         )
         val armRotationDegrees = armAngle * 180f / PI.toFloat() - 90f
+        val pivotXFraction = 0.918f
+        val pivotYFraction = 0.105f
+        val armHeightFraction = 0.76f
         val stageSize = minOf(maxWidth, maxHeight)
-        val pivotX = maxWidth * 0.918f
-        val pivotY = maxHeight * 0.072f
-        val armHeight = stageSize * 0.78f
+        val pivotX = maxWidth * pivotXFraction
+        val pivotY = maxHeight * pivotYFraction
+        val armHeight = stageSize * armHeightFraction
         val armWidth = armHeight * (172f / 565f)
         val armPivotY = 0.125f
         val armPainter = painterResource(R.drawable.turntable_arm)
 
         Canvas(modifier = Modifier.fillMaxSize()) {
             val accent = colorScheme.primary
-            val pivot = Offset(size.width * 0.918f, size.height * 0.072f)
-            val armHeightPx = size.minDimension * 0.78f
+            val pivot = Offset(size.width * pivotXFraction, size.height * pivotYFraction)
+            val armHeightPx = size.minDimension * armHeightFraction
             val armWidthPx = armHeightPx * (172f / 565f)
             val armRotationRadians = armRotationDegrees * PI.toFloat() / 180f
             fun rotatedArmOffset(x: Float, y: Float): Offset {
