@@ -183,6 +183,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -383,6 +384,7 @@ private const val MAX_ALBUM_ART_CACHE_FILES = 128
 private const val DEFAULT_OFFLINE_STORAGE_LIMIT_MB = 1024
 private const val DISC_SCRATCH_SEEK_SCALE = 0.55f
 private const val DISC_SCRATCH_DEAD_ZONE = 0.22f
+private const val USER_SEEK_PROGRESS_HOLD_MS = 2_000L
 private const val VISUALIZER_BAR_COUNT = 28
 private const val VISUALIZER_CAPTURE_STALE_MS = 320L
 private const val VISUALIZER_FALLBACK_FRAME_MS = 64L
@@ -412,21 +414,30 @@ data class MusicTrack(
     val imageTag: String?,
     val tint: Color
 ) {
-    fun streamUrl(session: JellyfinSession, transcoded: Boolean = false): String {
+    fun streamUrl(
+        session: JellyfinSession,
+        transcoded: Boolean = false,
+        startPositionMs: Long = 0L
+    ): String {
         val encodedId = encode(id)
         val encodedToken = encode(session.token)
+        val startTimeParameter = startPositionMs
+            .takeIf { it > 0L }
+            ?.let { "&StartTimeTicks=${it * 10_000L}" }
+            .orEmpty()
         if (transcoded) {
             return "${session.serverUrl}/Audio/$encodedId/universal" +
                 "?UserId=${encode(session.userId)}" +
                 "&DeviceId=${encode("jellyfin-music-${stableCacheKey("${session.serverUrl}|${session.userId}").take(16)}")}" +
                 "&MaxStreamingBitrate=192000" +
-                "&Container=mp3,aac,m4a,opus,webma,webm" +
+                "&Container=mp3" +
                 "&TranscodingContainer=mp3" +
                 "&TranscodingProtocol=http" +
                 "&AudioCodec=mp3" +
+                startTimeParameter +
                 "&api_key=$encodedToken"
         }
-        return "${session.serverUrl}/Audio/$encodedId/stream?Static=true&api_key=$encodedToken"
+        return "${session.serverUrl}/Audio/$encodedId/stream?Static=true$startTimeParameter&api_key=$encodedToken"
     }
 
     fun imageUrl(session: JellyfinSession?, size: Int = 512, quality: Int = 86): String? {
@@ -1809,8 +1820,8 @@ private fun JellyfinMusicApp() {
                             "Library refresh incomplete: ${it.readableMessage()}"
                         } else {
                             it.readableMessage()
-	                    }
-	                }
+                        }
+                    }
             }
         }
     }
@@ -1913,7 +1924,6 @@ private fun JellyfinMusicApp() {
     }
 
     fun showNowPlayingPlayer() {
-        selectedDestination = AppDestination.Player
         showPlayer = true
         isPlayerOpenDragging = false
         playerOpenDragOffsetPx = 0f
@@ -2327,15 +2337,13 @@ private fun JellyfinMusicApp() {
         }
     }
     val closePlayer = {
-        selectedDestination = AppDestination.Home
         showPlayer = false
         isPlayerDismissDragging = false
         playerDismissDragOffsetPx = 0f
         isPlayerOpenDragging = false
         playerOpenDragOffsetPx = 0f
     }
-    val showTopBar = showPlayer ||
-        session == null ||
+    val showTopBar = session == null ||
         activeLibraryDetail != null ||
         selectedDestination == AppDestination.Profile
     val playerDismissOffsetPx by animateFloatAsState(
@@ -2371,42 +2379,42 @@ private fun JellyfinMusicApp() {
         }
     }
 
-    JellyfinMusicTheme(albumAccentColor = albumAccentColor, darkTheme = darkTheme) {
-        Scaffold(
-            modifier = if (showPlayer) {
-                Modifier
-                    .offset { IntOffset(0, playerDismissOffsetPx.roundToInt()) }
-                    .swipeDownToDismiss(
-                        onDismiss = closePlayer,
-                        startZone = 96.dp,
-                        dismissDistance = 118.dp,
-                        onDragStart = {
-                            isPlayerDismissDragging = true
-                        },
-                        onDragOffsetChange = { offset ->
-                            playerDismissDragOffsetPx = offset
-                        },
-                        onDragEnd = { dismissed ->
-                            isPlayerDismissDragging = false
-                            if (!dismissed) {
-                                playerDismissDragOffsetPx = 0f
-                            }
-                        }
-                    )
-            } else {
-                Modifier
-            },
-            topBar = {
+        JellyfinMusicTheme(albumAccentColor = albumAccentColor, darkTheme = darkTheme) {
+            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                val activeTrack = player.currentTrack
+                val connectedSession = session
+                val visibleTracks = remember(tracks, downloadedOnlyMode, offlineDownloads) {
+                    if (downloadedOnlyMode) {
+                        tracks.filter { it.id in offlineDownloads }
+                    } else {
+                        tracks
+                    }
+                }
+                val density = LocalDensity.current
+                val openSheetOffsetPx = if (isPlayerOpenDragging) {
+                    with(density) { maxHeight.toPx() } + playerOpenOffsetPx
+                } else {
+                    0f
+                }
+                val fullPlayerOffsetPx = if (isPlayerOpenDragging) {
+                    openSheetOffsetPx.coerceAtLeast(0f)
+                } else {
+                    playerDismissOffsetPx
+                }
+
+                Scaffold(
+                modifier = Modifier,
+                topBar = {
                 if (showTopBar) {
                     TopAppBar(
                         modifier = Modifier,
                         navigationIcon = {
                             when {
                                 showPlayer -> IconButton(onClick = closePlayer) {
-                                    Icon(
-                                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                        contentDescription = "Back to Home"
-                                    )
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                            contentDescription = "Close player"
+                                        )
                                 }
                                 activeLibraryDetail != null -> IconButton(onClick = { activeLibraryDetail = null }) {
                                     Icon(
@@ -2445,7 +2453,7 @@ private fun JellyfinMusicApp() {
             bottomBar = {
                 val activeSession = session
                 val activeTrack = player.currentTrack
-                if (activeSession != null && !showPlayer) {
+                if (activeSession != null && (!showPlayer || isPlayerOpenDragging)) {
                     Column {
                         if (activeTrack != null) {
                             NowPlayingBar(
@@ -2454,10 +2462,12 @@ private fun JellyfinMusicApp() {
                                 isPlaying = player.isPlaying,
                                 progress = player.progress,
                                 status = player.status,
-                                openDragOffsetPx = playerOpenOffsetPx,
                                 onOpen = ::showNowPlayingPlayer,
                                 onOpenDragStart = {
+                                    showPlayer = true
                                     isPlayerOpenDragging = true
+                                    isPlayerDismissDragging = false
+                                    playerDismissDragOffsetPx = 0f
                                 },
                                 onOpenDragOffsetChange = { offset ->
                                     playerOpenDragOffsetPx = offset
@@ -2465,6 +2475,7 @@ private fun JellyfinMusicApp() {
                                 onOpenDragEnd = { opened ->
                                     isPlayerOpenDragging = false
                                     if (!opened) {
+                                        showPlayer = false
                                         playerOpenDragOffsetPx = 0f
                                     }
                                 },
@@ -2485,7 +2496,9 @@ private fun JellyfinMusicApp() {
                                 val reselectedSearch =
                                     destination == AppDestination.Search && reselected
                                 hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                selectedDestination = destination
+                                if (destination != AppDestination.Player) {
+                                    selectedDestination = destination
+                                }
                                 when (destination) {
                                     AppDestination.Home -> {
                                         selectedTab = LibraryTab.Songs
@@ -2588,16 +2601,7 @@ private fun JellyfinMusicApp() {
             },
             containerColor = MaterialTheme.colorScheme.background
         ) { innerPadding ->
-            val activeTrack = player.currentTrack
-            val connectedSession = session
             val isSearchDestination = selectedDestination == AppDestination.Search
-            val visibleTracks = remember(tracks, downloadedOnlyMode, offlineDownloads) {
-                if (downloadedOnlyMode) {
-                    tracks.filter { it.id in offlineDownloads }
-                } else {
-                    tracks
-                }
-            }
             val recentTracks = remember(visibleTracks, recentTrackIds) {
                 recentTrackIds.mapNotNull { trackId -> visibleTracks.firstOrNull { it.id == trackId } }
             }
@@ -2751,67 +2755,24 @@ private fun JellyfinMusicApp() {
                     emptyMap()
                 }
             }
-            if (showPlayer && activeTrack != null) {
-                val fullPlayerQueue = playQueue.ifEmpty { visibleTracks.queueStartingAt(activeTrack) }
-                FullPlayerScreen(
-                    track = activeTrack,
-                    isPlaying = player.isPlaying,
-                    progress = player.progress,
-                    visualizerLevels = player.visualizerLevels,
-                    status = player.status,
-                    queue = fullPlayerQueue,
-                    session = connectedSession,
-                    modifier = Modifier.padding(innerPadding),
-                    onToggle = { player.toggle() },
-                    onSeek = { player.seekToFraction(it) },
-                    onPrevious = { playAdjacent(-1) },
-                    onNext = { playAdjacent(1) },
-                    onReplay = { session?.let { player.play(activeTrack, it) } },
-                    shuffleEnabled = shuffleEnabled,
-                    repeatEnabled = repeatEnabled,
-                    visualizerEnabled = visualizerEnabled,
-                    isFavorite = activeTrack.id in likedTrackIds,
-                    isDownloaded = activeTrack.id in offlineDownloads,
-                    downloadProgress = downloadProgressById[activeTrack.id],
-                    playlists = localPlaylists,
-                    onToggleShuffle = { shuffleEnabled = !shuffleEnabled },
-                    onToggleRepeat = { repeatEnabled = !repeatEnabled },
-                    onToggleFavorite = { toggleLiked(activeTrack) },
-                    onToggleDownload = { toggleOfflineDownload(activeTrack) },
-                    onGoToAlbum = {
-                        openLibraryDetail(LibraryDetail(LibraryCollectionType.Album, activeTrack.album))
-                    },
-                    onGoToArtist = {
-                        openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, activeTrack.artist))
-                    },
-                    onStartRadio = { startRadioFrom(fullPlayerQueue, activeTrack) },
-                    onAddToPlaylist = { playlist -> addTrackToPlaylist(playlist, activeTrack) },
-                    onQueueTrackClick = ::playQueuedTrack,
-                    onQueueMove = ::moveQueueTrack,
-                    onQueuePlayNext = ::playTrackNext,
-                    onQueueRemove = ::removeQueueTrack,
-                    onQueueClear = ::clearQueueAfterCurrent,
-                    onQueueShuffle = ::reshuffleQueueAfterCurrent,
-                    onQueueSaveAsPlaylist = { saveQueueAsPlaylist(fullPlayerQueue) }
-                )
-            } else {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(innerPadding)
-                        .imePadding()
-                ) {
-                LazyColumn(
-                    state = mainListState,
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(
-                        start = 16.dp,
-                        top = 0.dp,
-                        end = if (libraryLetterRailLetters.isNotEmpty()) 38.dp else 16.dp,
-                        bottom = 20.dp
-                    ),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(innerPadding)
+                            .imePadding()
+                    ) {
+                    LazyColumn(
+                        state = mainListState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            start = 16.dp,
+                            top = 0.dp,
+                            end = if (libraryLetterRailLetters.isNotEmpty()) 38.dp else 16.dp,
+                            bottom = 20.dp
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
                 if (connectedSession == null) {
                     item {
                         SettingsSectionHeader("Connection")
@@ -2960,142 +2921,142 @@ private fun JellyfinMusicApp() {
                             }
                         }
 
-	                        AppDestination.Liked -> {
-	                            val likedTracks = visibleTracks.filter { it.id in likedTrackIds }
-	                            val favoriteAlbumGroups = visibleTracks
-	                                .groupByAlbum()
-	                                .filter { it.key in favoriteAlbumKeys }
-	                            val favoriteArtistGroups = (likedTracks + favoriteAlbumGroups.flatMap { it.tracks })
-	                                .distinctBy { it.id }
-	                                .groupByArtist()
-	                                .sortedGroupsForLibrary(LibrarySortMode.Artist)
-	                            item {
-	                                FavoritesHeader(
-	                                    selectedTab = favoritesTab,
-	                                    trackCount = likedTracks.size,
-	                                    albumCount = favoriteAlbumGroups.size,
-	                                    artistCount = favoriteArtistGroups.size,
-	                                    onTabSelected = { favoritesTab = it }
-	                                )
-	                            }
-	                            when (favoritesTab) {
-	                                FavoritesTab.Tracks -> {
-	                                    if (likedTracks.isEmpty()) {
-	                                        item {
-	                                            EmptyLibraryMessage(
-	                                                isBusy = isBusy,
-	                                                statusText = statusText.takeIf { tracks.isEmpty() },
-	                                                emptyText = "No favorite tracks yet"
-	                                            )
-	                                        }
-	                                    } else {
-	                                        items(
-	                                            likedTracks.chunked(2),
-	                                            key = { row -> row.joinToString(separator = "|") { it.id } }
-	                                        ) { rowTracks ->
-	                                            Row(
-	                                                modifier = Modifier.fillMaxWidth(),
-	                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-	                                            ) {
-	                                                rowTracks.forEach { track ->
-	                                                    LibraryTrackGridCard(
-	                                                        track = track,
-	                                                        session = connectedSession,
-	                                                        isCurrent = player.currentTrack?.id == track.id,
-	                                                        isDownloaded = track.id in offlineDownloads,
-	                                                        onClick = {
-	                                                            playTrack(track, openPlayer = true, source = likedTracks)
-	                                                        },
-	                                                        modifier = Modifier.weight(1f)
-	                                                    )
-	                                                }
-	                                                if (rowTracks.size == 1) {
-	                                                    Spacer(Modifier.weight(1f))
-	                                                }
-	                                            }
-	                                        }
-	                                    }
-	                                }
-	                                FavoritesTab.Albums -> {
-	                                    if (favoriteAlbumGroups.isEmpty()) {
-	                                        item {
-	                                            EmptyLibraryMessage(
-	                                                isBusy = isBusy,
-	                                                statusText = statusText.takeIf { tracks.isEmpty() },
-	                                                emptyText = "No favorite albums yet"
-	                                            )
-	                                        }
-	                                    } else {
-	                                        items(
-	                                            favoriteAlbumGroups.chunked(2),
-	                                            key = { row -> row.joinToString(separator = "|") { it.key } }
-	                                        ) { rowGroups ->
-	                                            Row(
-	                                                modifier = Modifier.fillMaxWidth(),
-	                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-	                                            ) {
-	                                                rowGroups.forEach { group ->
-	                                                    LibraryGroupGridCard(
-	                                                        group = group,
-	                                                        session = connectedSession,
-	                                                        artworkShape = RoundedCornerShape(8.dp),
-	                                                        isFavorite = true,
-	                                                        onToggleFavorite = { toggleFavoriteAlbum(group.key) },
-	                                                        onClick = {
-	                                                            openLibraryDetail(
-	                                                                LibraryDetail(LibraryCollectionType.Album, group.key)
-	                                                            )
-	                                                        },
-	                                                        modifier = Modifier.weight(1f)
-	                                                    )
-	                                                }
-	                                                if (rowGroups.size == 1) {
-	                                                    Spacer(Modifier.weight(1f))
-	                                                }
-	                                            }
-	                                        }
-	                                    }
-	                                }
-	                                FavoritesTab.Artists -> {
-	                                    if (favoriteArtistGroups.isEmpty()) {
-	                                        item {
-	                                            EmptyLibraryMessage(
-	                                                isBusy = isBusy,
-	                                                statusText = statusText.takeIf { tracks.isEmpty() },
-	                                                emptyText = "No favorite artists yet"
-	                                            )
-	                                        }
-	                                    } else {
-	                                        items(
-	                                            favoriteArtistGroups.chunked(2),
-	                                            key = { row -> row.joinToString(separator = "|") { it.title } }
-	                                        ) { rowGroups ->
-	                                            Row(
-	                                                modifier = Modifier.fillMaxWidth(),
-	                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-	                                            ) {
-	                                                rowGroups.forEach { group ->
-	                                                    LibraryGroupGridCard(
-	                                                        group = group,
-	                                                        session = connectedSession,
-	                                                        artworkShape = CircleShape,
-	                                                        onClick = {
-	                                                            openLibraryDetail(
-	                                                                LibraryDetail(LibraryCollectionType.Artist, group.title)
-	                                                            )
-	                                                        },
-	                                                        modifier = Modifier.weight(1f)
-	                                                    )
-	                                                }
-	                                                if (rowGroups.size == 1) {
-	                                                    Spacer(Modifier.weight(1f))
-	                                                }
-	                                            }
-	                                        }
-	                                    }
-	                                }
-	                            }
-	                        }
+                            AppDestination.Liked -> {
+                                val likedTracks = visibleTracks.filter { it.id in likedTrackIds }
+                                val favoriteAlbumGroups = visibleTracks
+                                    .groupByAlbum()
+                                    .filter { it.key in favoriteAlbumKeys }
+                                val favoriteArtistGroups = (likedTracks + favoriteAlbumGroups.flatMap { it.tracks })
+                                    .distinctBy { it.id }
+                                    .groupByArtist()
+                                    .sortedGroupsForLibrary(LibrarySortMode.Artist)
+                                item {
+                                    FavoritesHeader(
+                                        selectedTab = favoritesTab,
+                                        trackCount = likedTracks.size,
+                                        albumCount = favoriteAlbumGroups.size,
+                                        artistCount = favoriteArtistGroups.size,
+                                        onTabSelected = { favoritesTab = it }
+                                    )
+                                }
+                                when (favoritesTab) {
+                                    FavoritesTab.Tracks -> {
+                                        if (likedTracks.isEmpty()) {
+                                            item {
+                                                EmptyLibraryMessage(
+                                                    isBusy = isBusy,
+                                                    statusText = statusText.takeIf { tracks.isEmpty() },
+                                                    emptyText = "No favorite tracks yet"
+                                                )
+                                            }
+                                        } else {
+                                            items(
+                                                likedTracks.chunked(2),
+                                                key = { row -> row.joinToString(separator = "|") { it.id } }
+                                            ) { rowTracks ->
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                                ) {
+                                                    rowTracks.forEach { track ->
+                                                        LibraryTrackGridCard(
+                                                            track = track,
+                                                            session = connectedSession,
+                                                            isCurrent = player.currentTrack?.id == track.id,
+                                                            isDownloaded = track.id in offlineDownloads,
+                                                            onClick = {
+                                                                playTrack(track, openPlayer = true, source = likedTracks)
+                                                            },
+                                                            modifier = Modifier.weight(1f)
+                                                        )
+                                                    }
+                                                    if (rowTracks.size == 1) {
+                                                        Spacer(Modifier.weight(1f))
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    FavoritesTab.Albums -> {
+                                        if (favoriteAlbumGroups.isEmpty()) {
+                                            item {
+                                                EmptyLibraryMessage(
+                                                    isBusy = isBusy,
+                                                    statusText = statusText.takeIf { tracks.isEmpty() },
+                                                    emptyText = "No favorite albums yet"
+                                                )
+                                            }
+                                        } else {
+                                            items(
+                                                favoriteAlbumGroups.chunked(2),
+                                                key = { row -> row.joinToString(separator = "|") { it.key } }
+                                            ) { rowGroups ->
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                                ) {
+                                                    rowGroups.forEach { group ->
+                                                        LibraryGroupGridCard(
+                                                            group = group,
+                                                            session = connectedSession,
+                                                            artworkShape = RoundedCornerShape(8.dp),
+                                                            isFavorite = true,
+                                                            onToggleFavorite = { toggleFavoriteAlbum(group.key) },
+                                                            onClick = {
+                                                                openLibraryDetail(
+                                                                    LibraryDetail(LibraryCollectionType.Album, group.key)
+                                                                )
+                                                            },
+                                                            modifier = Modifier.weight(1f)
+                                                        )
+                                                    }
+                                                    if (rowGroups.size == 1) {
+                                                        Spacer(Modifier.weight(1f))
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    FavoritesTab.Artists -> {
+                                        if (favoriteArtistGroups.isEmpty()) {
+                                            item {
+                                                EmptyLibraryMessage(
+                                                    isBusy = isBusy,
+                                                    statusText = statusText.takeIf { tracks.isEmpty() },
+                                                    emptyText = "No favorite artists yet"
+                                                )
+                                            }
+                                        } else {
+                                            items(
+                                                favoriteArtistGroups.chunked(2),
+                                                key = { row -> row.joinToString(separator = "|") { it.title } }
+                                            ) { rowGroups ->
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                                ) {
+                                                    rowGroups.forEach { group ->
+                                                        LibraryGroupGridCard(
+                                                            group = group,
+                                                            session = connectedSession,
+                                                            artworkShape = CircleShape,
+                                                            onClick = {
+                                                                openLibraryDetail(
+                                                                    LibraryDetail(LibraryCollectionType.Artist, group.title)
+                                                                )
+                                                            },
+                                                            modifier = Modifier.weight(1f)
+                                                        )
+                                                    }
+                                                    if (rowGroups.size == 1) {
+                                                        Spacer(Modifier.weight(1f))
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
 
                         else -> {
                             val isHomeTab = selectedDestination == AppDestination.Home
@@ -3293,50 +3254,50 @@ private fun JellyfinMusicApp() {
                                     "Your music will appear here"
                                 }
                                 val isLibrarySearching = librarySearchQuery.isNotBlank()
-	                                val hasLibrarySearchResults = libraryStackedTracks.isNotEmpty() ||
-	                                    libraryAlbumGroups.isNotEmpty() ||
-	                                    libraryArtistGroups.isNotEmpty() ||
-	                                    playlistGroups.isNotEmpty()
-	                                stickyHeader {
-	                                    Box(
-	                                        modifier = Modifier
-	                                            .fillMaxWidth()
-	                                            .background(MaterialTheme.colorScheme.background)
-	                                    ) {
-	                                        LibraryToolbar(
-	                                            selectedTab = selectedTab,
-	                                            activeFilters = activeLibraryFilters,
-	                                            sortMode = librarySortMode,
-	                                            isBusy = isBusy,
-	                                            onSearchClick = {
-	                                                searchQuery = librarySearchQuery
-	                                                librarySearchQuery = ""
-	                                                selectedDestination = AppDestination.Search
-	                                                searchFocusRequests++
-	                                            },
-	                                            onCreateClick = {
-	                                                selectedTab = LibraryTab.Playlists
-	                                                libraryLetterFilter = null
-	                                            },
-	                                            onTabSelected = {
-	                                                selectedTab = it
-	                                                libraryLetterFilter = null
-	                                            },
-	                                            onToggleFilter = { filter ->
-	                                                activeLibraryFilters = if (filter in activeLibraryFilters) {
-	                                                    activeLibraryFilters - filter
-	                                                } else {
-	                                                    activeLibraryFilters + filter
-	                                                }
-	                                                libraryLetterFilter = null
-	                                            },
-	                                            onSortModeChange = { librarySortMode = it }
-	                                        )
-	                                    }
-	                                }
-	                                if (!isLibrarySearching && pinnedLibraryItems.isNotEmpty()) {
-	                                    item {
-	                                        PinnedLibraryShelf(
+                                    val hasLibrarySearchResults = libraryStackedTracks.isNotEmpty() ||
+                                        libraryAlbumGroups.isNotEmpty() ||
+                                        libraryArtistGroups.isNotEmpty() ||
+                                        playlistGroups.isNotEmpty()
+                                    stickyHeader {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .background(MaterialTheme.colorScheme.background)
+                                        ) {
+                                            LibraryToolbar(
+                                                selectedTab = selectedTab,
+                                                activeFilters = activeLibraryFilters,
+                                                sortMode = librarySortMode,
+                                                isBusy = isBusy,
+                                                onSearchClick = {
+                                                    searchQuery = librarySearchQuery
+                                                    librarySearchQuery = ""
+                                                    selectedDestination = AppDestination.Search
+                                                    searchFocusRequests++
+                                                },
+                                                onCreateClick = {
+                                                    selectedTab = LibraryTab.Playlists
+                                                    libraryLetterFilter = null
+                                                },
+                                                onTabSelected = {
+                                                    selectedTab = it
+                                                    libraryLetterFilter = null
+                                                },
+                                                onToggleFilter = { filter ->
+                                                    activeLibraryFilters = if (filter in activeLibraryFilters) {
+                                                        activeLibraryFilters - filter
+                                                    } else {
+                                                        activeLibraryFilters + filter
+                                                    }
+                                                    libraryLetterFilter = null
+                                                },
+                                                onSortModeChange = { librarySortMode = it }
+                                            )
+                                        }
+                                    }
+                                    if (!isLibrarySearching && pinnedLibraryItems.isNotEmpty()) {
+                                        item {
+                                            PinnedLibraryShelf(
                                             pinnedItems = pinnedLibraryItems,
                                             tracks = visibleTracks,
                                             downloadedTrackIds = offlineDownloads.keys,
@@ -3345,9 +3306,9 @@ private fun JellyfinMusicApp() {
                                             onOpenDetail = ::openLibraryDetail,
                                             onUnpin = ::togglePinnedLibraryItem
                                         )
-	                                    }
-	                                }
-	                                if (isLibrarySearching && !hasLibrarySearchResults) {
+                                        }
+                                    }
+                                    if (isLibrarySearching && !hasLibrarySearchResults) {
                                     item {
                                         EmptyLibraryMessage(
                                             isBusy = isBusy,
@@ -3778,10 +3739,10 @@ private fun JellyfinMusicApp() {
                                 }
                             } else {
                                 val queryIsBlank = searchQuery.isBlank()
-	                                val hasSearchResults = displayedTracks.isNotEmpty() ||
-	                                    searchAlbumGroups.isNotEmpty() ||
-	                                    searchArtistGroups.isNotEmpty() ||
-	                                    searchPlaylistGroups.isNotEmpty()
+                                    val hasSearchResults = displayedTracks.isNotEmpty() ||
+                                        searchAlbumGroups.isNotEmpty() ||
+                                        searchArtistGroups.isNotEmpty() ||
+                                        searchPlaylistGroups.isNotEmpty()
                                     val topSearchResult = topSearchResult(
                                         query = searchQuery,
                                         tracks = displayedTracks,
@@ -3790,8 +3751,8 @@ private fun JellyfinMusicApp() {
                                         playlists = searchPlaylistGroups
                                     )
 
-	                                item {
-	                                    SearchHeader(
+                                    item {
+                                        SearchHeader(
                                         searchQuery = searchQuery,
                                         resultCounts = searchResultCounts,
                                         isBusy = isBusy,
@@ -3890,8 +3851,8 @@ private fun JellyfinMusicApp() {
                                             statusText = statusText,
                                             emptyText = emptySearchText
                                         )
-	                                    }
-	                                } else {
+                                        }
+                                    } else {
                                         topSearchResult?.let { result ->
                                             item {
                                                 SearchTopResultCard(
@@ -3905,9 +3866,9 @@ private fun JellyfinMusicApp() {
                                                 )
                                             }
                                         }
-	                                    if (searchAlbumGroups.isNotEmpty()) {
-	                                        item {
-	                                            SearchSectionHeader(
+                                        if (searchAlbumGroups.isNotEmpty()) {
+                                            item {
+                                                SearchSectionHeader(
                                                 title = "Albums",
                                                 count = searchAlbumGroups.size
                                             )
@@ -4068,12 +4029,79 @@ private fun JellyfinMusicApp() {
                         modifier = Modifier
                             .align(Alignment.CenterEnd)
                             .fillMaxHeight()
-                            .padding(top = 88.dp, end = 3.dp, bottom = 112.dp)
-                    )
+                                .padding(top = 88.dp, end = 3.dp, bottom = 112.dp)
+                        )
+                    }
                 }
             }
-        }
-    }
+            if (showPlayer && activeTrack != null) {
+                val fullPlayerQueue = playQueue.ifEmpty { visibleTracks.queueStartingAt(activeTrack) }
+                FullPlayerScreen(
+                    track = activeTrack,
+                    isPlaying = player.isPlaying,
+                    progress = player.progress,
+                    visualizerLevels = player.visualizerLevels,
+                    status = player.status,
+                    queue = fullPlayerQueue,
+                    session = connectedSession,
+                    modifier = Modifier
+                        .matchParentSize()
+                        .offset { IntOffset(0, fullPlayerOffsetPx.roundToInt()) }
+                        .swipeDownToDismiss(
+                            onDismiss = closePlayer,
+                            startZone = 96.dp,
+                            dismissDistance = 118.dp,
+                            onDragStart = {
+                                isPlayerDismissDragging = true
+                                isPlayerOpenDragging = false
+                                playerOpenDragOffsetPx = 0f
+                            },
+                            onDragOffsetChange = { offset ->
+                                playerDismissDragOffsetPx = offset
+                            },
+                            onDragEnd = { dismissed ->
+                                isPlayerDismissDragging = false
+                                if (!dismissed) {
+                                    playerDismissDragOffsetPx = 0f
+                                }
+                            }
+                        ),
+                    onClose = closePlayer,
+                    onToggle = { player.toggle() },
+                    onSeek = { player.seekToFraction(it) },
+                    onPrevious = { playAdjacent(-1) },
+                    onNext = { playAdjacent(1) },
+                    onReplay = { connectedSession?.let { player.play(activeTrack, it) } },
+                    shuffleEnabled = shuffleEnabled,
+                    repeatEnabled = repeatEnabled,
+                    visualizerEnabled = visualizerEnabled,
+                    isFavorite = activeTrack.id in likedTrackIds,
+                    isDownloaded = activeTrack.id in offlineDownloads,
+                    downloadProgress = downloadProgressById[activeTrack.id],
+                    playlists = localPlaylists,
+                    onToggleShuffle = { shuffleEnabled = !shuffleEnabled },
+                    onToggleRepeat = { repeatEnabled = !repeatEnabled },
+                    onToggleFavorite = { toggleLiked(activeTrack) },
+                    onToggleDownload = { toggleOfflineDownload(activeTrack) },
+                    onGoToAlbum = {
+                        openLibraryDetail(LibraryDetail(LibraryCollectionType.Album, activeTrack.album))
+                    },
+                    onGoToArtist = {
+                        openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, activeTrack.artist))
+                    },
+                    onStartRadio = { startRadioFrom(fullPlayerQueue, activeTrack) },
+                    onAddToPlaylist = { playlist -> addTrackToPlaylist(playlist, activeTrack) },
+                    onQueueTrackClick = ::playQueuedTrack,
+                    onQueueMove = ::moveQueueTrack,
+                    onQueuePlayNext = ::playTrackNext,
+                    onQueueRemove = ::removeQueueTrack,
+                    onQueueClear = ::clearQueueAfterCurrent,
+                    onQueueShuffle = ::reshuffleQueueAfterCurrent,
+                    onQueueSaveAsPlaylist = { saveQueueAsPlaylist(fullPlayerQueue) }
+                )
+            }
+}
+}
 }
 }
 
@@ -7118,6 +7146,7 @@ private fun FullPlayerScreen(
     queue: List<MusicTrack>,
     session: JellyfinSession?,
     modifier: Modifier = Modifier,
+    onClose: () -> Unit,
     onToggle: () -> Unit,
     onSeek: (Float) -> Unit,
     onPrevious: () -> Unit,
@@ -7167,6 +7196,7 @@ private fun FullPlayerScreen(
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
+                .statusBarsPadding()
                 .navigationBarsPadding()
                 .padding(horizontal = 22.dp, vertical = 12.dp)
         ) {
@@ -7237,7 +7267,9 @@ private fun FullPlayerScreen(
                 }
             } else {
                 Column(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(top = 2.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     DiscAlbumStage(
@@ -7247,7 +7279,7 @@ private fun FullPlayerScreen(
                         session = session,
                         onSeek = onSeek
                     )
-                    Spacer(Modifier.height(16.dp))
+                    Spacer(Modifier.height(12.dp))
                     PlayerTitleActionsRow(
                         track = track,
                         isFavorite = isFavorite,
@@ -7257,6 +7289,7 @@ private fun FullPlayerScreen(
                             actionsExpanded = true
                         }
                     )
+                    Spacer(Modifier.height(2.dp))
                     PlayerProgressSection(
                         track = track,
                         progress = progress,
@@ -7265,29 +7298,41 @@ private fun FullPlayerScreen(
                         isPlaying = isPlaying,
                         onSeek = onSeek
                     )
-                    Box(
+                    Spacer(Modifier.height(18.dp))
+                    PlayerTransportControls(
+                        status = status,
+                        isPlaying = isPlaying,
+                        shuffleEnabled = shuffleEnabled,
+                        repeatEnabled = repeatEnabled,
+                        onToggleShuffle = onToggleShuffle,
+                        onPrevious = onPrevious,
+                        onToggle = onToggle,
+                        onReplay = onReplay,
+                        onNext = onNext,
+                        onToggleRepeat = onToggleRepeat,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .weight(1f),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        PlayerTransportControls(
-                            status = status,
-                            isPlaying = isPlaying,
-                            shuffleEnabled = shuffleEnabled,
-                            repeatEnabled = repeatEnabled,
-                            onToggleShuffle = onToggleShuffle,
-                            onPrevious = onPrevious,
-                            onToggle = onToggle,
-                            onReplay = onReplay,
-                            onNext = onNext,
-                            onToggleRepeat = onToggleRepeat
-                        )
-                    }
-                    Spacer(Modifier.height(8.dp))
+                    )
+                    Spacer(Modifier.weight(1f))
                     Spacer(Modifier.height(72.dp))
                 }
             }
+        }
+
+        IconButton(
+            onClick = onClose,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .statusBarsPadding()
+                .padding(start = 12.dp, top = 8.dp)
+                .size(48.dp)
+                .background(colorScheme.surface.copy(alpha = 0.68f), CircleShape)
+        ) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = "Close player",
+                tint = colorScheme.onSurface
+            )
         }
 
         if (!showQueue) {
@@ -7887,7 +7932,7 @@ private fun QueuePullHandle(
 ) {
     Box(
         modifier = modifier
-            .height(82.dp)
+            .height(66.dp)
             .swipeUpToOpen(onOpen)
             .clickable(onClick = onOpen),
         contentAlignment = Alignment.BottomCenter
@@ -8976,13 +9021,21 @@ private fun DiscAlbumStage(
     val latestProgress by rememberUpdatedState(progress)
     val latestOnSeek by rememberUpdatedState(onSeek)
     var isScratching by remember { mutableStateOf(false) }
+    var holdScrubProgress by remember { mutableStateOf(false) }
     var scratchProgress by remember { mutableFloatStateOf(progress) }
     var discRotation by remember(track.id) { mutableFloatStateOf(0f) }
-    val stageProgress = if (isScratching) scratchProgress else progress
+    val stageProgress = if (isScratching || holdScrubProgress) scratchProgress else progress
 
-    LaunchedEffect(progress, isScratching) {
-        if (!isScratching) {
+    LaunchedEffect(progress, isScratching, holdScrubProgress) {
+        if (!isScratching && !holdScrubProgress) {
             scratchProgress = progress
+        }
+    }
+
+    LaunchedEffect(holdScrubProgress, track.id) {
+        if (holdScrubProgress) {
+            delay(900)
+            holdScrubProgress = false
         }
     }
 
@@ -9015,6 +9068,7 @@ private fun DiscAlbumStage(
                     }
 
                     isScratching = true
+                    holdScrubProgress = false
                     scratchProgress = latestProgress
                     var lastAngle = angleForOffset(
                         offset = down.position,
@@ -9054,6 +9108,8 @@ private fun DiscAlbumStage(
                     }
 
                     isScratching = false
+                    holdScrubProgress = true
+                    latestOnSeek(scratchProgress)
                 }
             },
         contentAlignment = Alignment.Center
@@ -9194,6 +9250,18 @@ private fun TurntableArmOverlay(
         Canvas(modifier = Modifier.fillMaxSize()) {
             val accent = colorScheme.primary
             val pivot = Offset(size.width * 0.918f, size.height * 0.072f)
+            val armHeightPx = size.minDimension * 0.78f
+            val armWidthPx = armHeightPx * (172f / 565f)
+            val armRotationRadians = armRotationDegrees * PI.toFloat() / 180f
+            fun rotatedArmOffset(x: Float, y: Float): Offset {
+                val cosRotation = cos(armRotationRadians)
+                val sinRotation = sin(armRotationRadians)
+                return Offset(
+                    x = x * cosRotation - y * sinRotation,
+                    y = x * sinRotation + y * cosRotation
+                )
+            }
+
             drawCircle(
                 color = Color.Black.copy(alpha = 0.18f + lift * 0.08f),
                 radius = 34.dp.toPx(),
@@ -9212,6 +9280,54 @@ private fun TurntableArmOverlay(
                 radius = 42.dp.toPx(),
                 center = pivot
             )
+
+            val stylusShadowCenter = pivot +
+                rotatedArmOffset(armWidthPx * 0.04f, armHeightPx * 0.84f) +
+                Offset(8.dp.toPx() + lift * 4.dp.toPx(), 10.dp.toPx() + lift * 3.dp.toPx())
+            val wideShadowPaint = AndroidPaint().apply {
+                isAntiAlias = true
+                color = AndroidColor.argb(
+                    ((0.42f + lift * 0.08f) * 255f).roundToInt().coerceIn(0, 255),
+                    0,
+                    0,
+                    0
+                )
+                maskFilter = BlurMaskFilter(18.dp.toPx(), BlurMaskFilter.Blur.NORMAL)
+            }
+            val coreShadowPaint = AndroidPaint().apply {
+                isAntiAlias = true
+                color = AndroidColor.argb(
+                    ((0.56f + lift * 0.08f) * 255f).roundToInt().coerceIn(0, 255),
+                    0,
+                    0,
+                    0
+                )
+                maskFilter = BlurMaskFilter(9.dp.toPx(), BlurMaskFilter.Blur.NORMAL)
+            }
+            drawIntoCanvas { canvas ->
+                val nativeCanvas = canvas.nativeCanvas
+                nativeCanvas.save()
+                nativeCanvas.rotate(armRotationDegrees, stylusShadowCenter.x, stylusShadowCenter.y)
+                nativeCanvas.drawOval(
+                    RectF(
+                        stylusShadowCenter.x - 34.dp.toPx(),
+                        stylusShadowCenter.y - 18.dp.toPx(),
+                        stylusShadowCenter.x + 44.dp.toPx(),
+                        stylusShadowCenter.y + 24.dp.toPx()
+                    ),
+                    wideShadowPaint
+                )
+                nativeCanvas.drawOval(
+                    RectF(
+                        stylusShadowCenter.x - 20.dp.toPx(),
+                        stylusShadowCenter.y - 10.dp.toPx(),
+                        stylusShadowCenter.x + 28.dp.toPx(),
+                        stylusShadowCenter.y + 15.dp.toPx()
+                    ),
+                    coreShadowPaint
+                )
+                nativeCanvas.restore()
+            }
         }
 
         Image(
@@ -9270,7 +9386,9 @@ private fun VinylDisc(
             .background(Color.Black),
         contentAlignment = Alignment.Center
     ) {
-        val knobSize = minOf(maxWidth, maxHeight) * 0.15f
+        val discSize = minOf(maxWidth, maxHeight)
+        val albumArtSize = discSize * 0.965f
+        val knobSize = discSize * 0.145f
 
         Box(
             modifier = Modifier
@@ -9284,13 +9402,13 @@ private fun VinylDisc(
                 track = track,
                 session = session,
                 modifier = Modifier
-                    .fillMaxSize(0.925f)
+                    .size(albumArtSize)
                     .graphicsLayer {
                         shape = CircleShape
                         clip = true
                     }
                     .clip(CircleShape)
-                    .alpha(0.9f),
+                    .alpha(0.92f),
                 imageSize = 384,
                 imageQuality = 78
             )
@@ -9433,23 +9551,10 @@ private fun VinylDisc(
             )
         }
         Image(
-            painter = painterResource(R.drawable.turntable_shine),
-            contentDescription = null,
-            modifier = Modifier
-                .fillMaxSize()
-                .clip(CircleShape)
-                .alpha(0.42f),
-            contentScale = ContentScale.Crop
-        )
-        Image(
             painter = painterResource(R.drawable.turntable_knob),
             contentDescription = null,
             modifier = Modifier
                 .size(knobSize)
-                .offset(
-                    x = knobSize * 0.088f,
-                    y = knobSize * 0.018f
-                )
                 .alpha(0.98f),
             contentScale = ContentScale.Fit,
             colorFilter = ColorFilter.colorMatrix(
@@ -9862,7 +9967,6 @@ private fun NowPlayingBar(
     isPlaying: Boolean,
     progress: Float,
     status: String,
-    openDragOffsetPx: Float,
     onOpen: () -> Unit,
     onOpenDragStart: () -> Unit,
     onOpenDragOffsetChange: (Float) -> Unit,
@@ -9876,7 +9980,6 @@ private fun NowPlayingBar(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .offset { IntOffset(0, openDragOffsetPx.roundToInt()) }
             .padding(horizontal = 14.dp, vertical = 4.dp)
             .swipeUpToOpen(
                 onOpen = onOpen,
@@ -10066,6 +10169,11 @@ private class JellyfinPlayer(private val context: Context) {
     private var lastPlaybackReportAt = 0L
     private var visualizerPumpRunning = false
     private var playbackGeneration = 0
+    private var pendingSeekTargetMs: Long? = null
+    private var pendingSeekStartedAt = 0L
+    private var queuedSeekTrackId: String? = null
+    private var queuedSeekPositionMs: Long? = null
+    private var streamStartOffsetMs = 0L
     private val warmupGeneration = AtomicInteger(0)
     private val visualizerPump = object : Runnable {
         override fun run() {
@@ -10087,20 +10195,66 @@ private class JellyfinPlayer(private val context: Context) {
     private data class WarmedMediaPlayer(
         val trackId: String,
         val sessionKey: String,
+        val transcoded: Boolean,
         val generation: Int,
         val player: MediaPlayer,
         var isPrepared: Boolean = false
     )
 
     fun play(track: MusicTrack, session: JellyfinSession) {
-        reportCurrentPlaybackStopped()
+        startPlayback(
+            track = track,
+            session = session,
+            transcoded = loadTranscodedStreamingEnabled(context),
+            allowTranscodedFallback = true,
+            bypassOfflineFile = false,
+            reportStopped = true,
+            startPositionMs = queuedSeekPositionFor(track)
+        )
+    }
+
+    private fun startPlayback(
+        track: MusicTrack,
+        session: JellyfinSession,
+        transcoded: Boolean,
+        allowTranscodedFallback: Boolean,
+        bypassOfflineFile: Boolean,
+        reportStopped: Boolean,
+        startPositionMs: Long?
+    ) {
+        if (reportStopped) {
+            reportCurrentPlaybackStopped()
+        }
         val generation = ++playbackGeneration
-        val preparedPlayer = takePreparedWarmPlayer(track, session)
+        if (queuedSeekTrackId != null && queuedSeekTrackId != track.id) {
+            clearQueuedSeekPosition()
+        }
+        val requestedStartPositionMs = startPositionMs
+            ?.takeIf { it > 0L && track.durationMs > 0L }
+            ?.coerceIn(0L, track.durationMs)
+        val canSeekPreparedPlayer = !bypassOfflineFile && canSeekInPlace(track, session)
+        val seekOnPreparedPositionMs = requestedStartPositionMs.takeIf { canSeekPreparedPlayer }
+        val preparedPlayer = if (bypassOfflineFile) {
+            null
+        } else if (requestedStartPositionMs != null && !canSeekPreparedPlayer) {
+            null
+        } else {
+            takePreparedWarmPlayer(track, session, transcoded)
+        }
         releasePlayerForReplacement()
+        streamStartOffsetMs = if (requestedStartPositionMs != null && !canSeekPreparedPlayer) {
+            requestedStartPositionMs
+        } else {
+            0L
+        }
         currentSession = session
         currentTrack = track
         status = "Buffering"
-        progress = 0f
+        progress = requestedStartPositionMs
+            ?.let { (it.toFloat() / track.durationMs.toFloat()).coerceIn(0f, 1f) }
+            ?: 0f
+        pendingSeekTargetMs = requestedStartPositionMs
+        pendingSeekStartedAt = requestedStartPositionMs?.let { SystemClock.elapsedRealtime() } ?: 0L
         smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         lastVisualizerCaptureAt = 0L
@@ -10116,8 +10270,8 @@ private class JellyfinPlayer(private val context: Context) {
 
         if (preparedPlayer != null) {
             mediaPlayer = preparedPlayer
-            configureActivePlayer(preparedPlayer, generation, track)
-            startPreparedPlayer(preparedPlayer, generation, track)
+            configureActivePlayer(preparedPlayer, generation, track, transcoded, allowTranscodedFallback, seekOnPreparedPositionMs)
+            startPreparedPlayer(preparedPlayer, generation, track, seekOnPreparedPositionMs)
             return
         }
 
@@ -10126,7 +10280,7 @@ private class JellyfinPlayer(private val context: Context) {
         publishPlaybackState(track)
         thread(name = "jellyfin-open-stream", isDaemon = true) {
             val result = runCatching {
-                nextPlayer.configureDataSource(session, track)
+                nextPlayer.configureDataSource(session, track, transcoded, bypassOfflineFile, requestedStartPositionMs)
             }
             mainHandler.post {
                 if (!nextPlayer.isActivePlayback(generation)) {
@@ -10136,29 +10290,58 @@ private class JellyfinPlayer(private val context: Context) {
                 result
                     .onSuccess {
                         runCatching {
-                            configureActivePlayer(nextPlayer, generation, track)
+                            configureActivePlayer(
+                                nextPlayer,
+                                generation,
+                                track,
+                                transcoded,
+                                allowTranscodedFallback,
+                                seekOnPreparedPositionMs
+                            )
                             nextPlayer.prepareAsync()
                             publishPlaybackState(track)
                         }.onFailure {
                             if (nextPlayer.isActivePlayback(generation)) {
+                                val retried = retryWithTranscodedStream(
+                                    nextPlayer,
+                                    generation,
+                                    track,
+                                    transcoded,
+                                    allowTranscodedFallback
+                                )
+                                if (!retried) {
+                                    abandonAudioFocus()
+                                    isPlaying = false
+                                    mediaPlayer = null
+                                    status = it.readableMessage()
+                                    publishPlaybackState(track)
+                                    releaseMediaPlayerAsync(nextPlayer)
+                                }
+                            } else {
+                                releaseMediaPlayerAsync(nextPlayer)
+                            }
+                        }
+                    }
+                    .onFailure {
+                        if (nextPlayer.isActivePlayback(generation)) {
+                            val retried = retryWithTranscodedStream(
+                                nextPlayer,
+                                generation,
+                                track,
+                                transcoded,
+                                allowTranscodedFallback
+                            )
+                            if (!retried) {
                                 abandonAudioFocus()
                                 isPlaying = false
                                 mediaPlayer = null
                                 status = it.readableMessage()
                                 publishPlaybackState(track)
+                                releaseMediaPlayerAsync(nextPlayer)
                             }
+                        } else {
                             releaseMediaPlayerAsync(nextPlayer)
                         }
-                    }
-                    .onFailure {
-                        if (nextPlayer.isActivePlayback(generation)) {
-                            abandonAudioFocus()
-                            isPlaying = false
-                            mediaPlayer = null
-                            status = it.readableMessage()
-                            publishPlaybackState(track)
-                        }
-                        releaseMediaPlayerAsync(nextPlayer)
                     }
             }
         }
@@ -10171,8 +10354,9 @@ private class JellyfinPlayer(private val context: Context) {
         }
 
         val sessionKey = session.playbackKey()
+        val transcoded = loadTranscodedStreamingEnabled(context)
         warmedPlayer
-            ?.takeIf { it.trackId == track.id && it.sessionKey == sessionKey }
+            ?.takeIf { it.trackId == track.id && it.sessionKey == sessionKey && it.transcoded == transcoded }
             ?.let { return }
 
         releaseWarmedPlayer()
@@ -10181,20 +10365,22 @@ private class JellyfinPlayer(private val context: Context) {
         val warmup = WarmedMediaPlayer(
             trackId = track.id,
             sessionKey = sessionKey,
+            transcoded = transcoded,
             generation = generation,
             player = nextPlayer
         )
         warmedPlayer = warmup
 
         runCatching {
-            nextPlayer.configureDataSource(session, track)
+            nextPlayer.configureDataSource(session, track, transcoded, bypassOfflineFile = false, startPositionMs = null)
             nextPlayer.setOnPreparedListener {
                 val activeWarmup = warmedPlayer
                 if (
                     activeWarmup?.player === it &&
                     activeWarmup.generation == generation &&
                     activeWarmup.trackId == track.id &&
-                    activeWarmup.sessionKey == sessionKey
+                    activeWarmup.sessionKey == sessionKey &&
+                    activeWarmup.transcoded == transcoded
                 ) {
                     activeWarmup.isPrepared = true
                 } else {
@@ -10218,7 +10404,22 @@ private class JellyfinPlayer(private val context: Context) {
     }
 
     fun toggle() {
-        val activePlayer = mediaPlayer ?: return
+        val activePlayer = mediaPlayer
+        if (activePlayer == null) {
+            val track = currentTrack ?: return
+            val session = currentSession ?: return
+            startPlayback(
+                track = track,
+                session = session,
+                transcoded = loadTranscodedStreamingEnabled(context),
+                allowTranscodedFallback = true,
+                bypassOfflineFile = false,
+                reportStopped = false,
+                startPositionMs = queuedSeekPositionFor(track)
+                    ?: track.durationMs.takeIf { it > 0L }?.let { (it * progress.coerceIn(0f, 1f)).toLong() }
+            )
+            return
+        }
         if (status == "Buffering") return
         if (isPlaying) {
             activePlayer.pause()
@@ -10269,29 +10470,80 @@ private class JellyfinPlayer(private val context: Context) {
     fun syncProgress() {
         val activePlayer = mediaPlayer ?: return
         runCatching {
-            val duration = activePlayer.duration
-            if (duration > 0) {
-                progress = activePlayer.currentPosition.toFloat() / duration.toFloat()
-                notificationController.syncPlaybackState(isPlaying, status, progress)
-                reportCurrentPlaybackProgress()
+            val duration = activePlayer.playbackDurationMs(currentTrack) ?: return@runCatching
+            val currentPosition = activePlayer.playbackPositionWithOffset().coerceIn(0L, duration)
+            val pendingTarget = pendingSeekTargetMs
+            if (pendingTarget != null) {
+                val targetThreshold = (duration / 200L).coerceAtLeast(700L)
+                val seekIsSettled = abs(currentPosition - pendingTarget) <= targetThreshold
+                val seekTimedOut = SystemClock.elapsedRealtime() - pendingSeekStartedAt > USER_SEEK_PROGRESS_HOLD_MS
+                if (!seekIsSettled && !seekTimedOut) {
+                    progress = (pendingTarget.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+                    notificationController.syncPlaybackState(isPlaying, status, progress)
+                    return@runCatching
+                }
+                pendingSeekTargetMs = null
             }
+            progress = (currentPosition.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+            notificationController.syncPlaybackState(isPlaying, status, progress)
+            reportCurrentPlaybackProgress()
         }
     }
 
     fun seekToFraction(fraction: Float) {
-        val activePlayer = mediaPlayer ?: return
-        runCatching {
-            val duration = activePlayer.duration
-            if (duration > 0) {
-                val target = (duration * fraction.coerceIn(0f, 1f)).toInt()
-                activePlayer.seekTo(target)
-                progress = target.toFloat() / duration.toFloat()
-                if (!isPlaying && status != "Ended") {
-                    status = "Paused"
-                }
-                publishPlaybackState()
-                reportCurrentPlaybackProgress(force = true, isPaused = !isPlaying)
+        val track = currentTrack ?: return
+        val activePlayer = mediaPlayer
+        val duration = track.durationMs.takeIf { it > 0L }
+            ?: activePlayer?.playbackDurationMs(track)
+            ?: return
+        val target = positionForFraction(fraction, duration)
+        if (activePlayer == null || status == "Buffering") {
+            queueSeekPosition(track, target, duration)
+            if (status != "Buffering" && status != "Ended") {
+                status = "Paused"
             }
+            publishPlaybackState(track)
+            reportCurrentPlaybackProgress(force = true, isPaused = true)
+            return
+        }
+        val session = currentSession
+        if (session != null && !canSeekInPlace(track, session)) {
+            val shouldResume = isPlaying
+            queueSeekPosition(track, target, duration)
+            if (shouldResume) {
+                startPlayback(
+                    track = track,
+                    session = session,
+                    transcoded = loadTranscodedStreamingEnabled(context),
+                    allowTranscodedFallback = true,
+                    bypassOfflineFile = false,
+                    reportStopped = false,
+                    startPositionMs = target
+                )
+            } else if (status != "Ended") {
+                status = "Paused"
+                publishPlaybackState(track)
+                reportCurrentPlaybackProgress(force = true, isPaused = true)
+            }
+            return
+        }
+        runCatching {
+            activePlayer.seekToPosition(target)
+            pendingSeekTargetMs = target
+            pendingSeekStartedAt = SystemClock.elapsedRealtime()
+            queuedSeekTrackId = null
+            queuedSeekPositionMs = null
+            progress = (target.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+            if (!isPlaying && status != "Ended") {
+                status = "Paused"
+            }
+            publishPlaybackState()
+            reportCurrentPlaybackProgress(force = true, isPaused = !isPlaying)
+        }.onFailure {
+            queueSeekPosition(track, target, duration)
+            status = "Paused"
+            publishPlaybackState(track)
+            reportCurrentPlaybackProgress(force = true, isPaused = true)
         }
     }
 
@@ -10303,6 +10555,9 @@ private class JellyfinPlayer(private val context: Context) {
         currentSession = null
         status = "Ready"
         progress = 0f
+        pendingSeekTargetMs = null
+        pendingSeekStartedAt = 0L
+        clearQueuedSeekPosition()
         publishPlaybackState(null)
     }
 
@@ -10313,7 +10568,7 @@ private class JellyfinPlayer(private val context: Context) {
 
     private fun reportCurrentPlaybackStarted(track: MusicTrack) {
         val session = currentSession ?: return
-        val positionMs = mediaPlayer?.runCatching { currentPosition.toLong() }?.getOrNull() ?: 0L
+        val positionMs = currentPlaybackPositionMs(track) ?: 0L
         lastPlaybackReportAt = SystemClock.elapsedRealtime()
         reportPlaybackStart(context, session, track, positionMs)
     }
@@ -10323,7 +10578,7 @@ private class JellyfinPlayer(private val context: Context) {
         val session = currentSession ?: return
         val now = SystemClock.elapsedRealtime()
         if (!force && now - lastPlaybackReportAt < 10_000L) return
-        val positionMs = mediaPlayer?.runCatching { currentPosition.toLong() }?.getOrNull()
+        val positionMs = currentPlaybackPositionMs(track)
             ?: (track.durationMs * progress.coerceIn(0f, 1f)).toLong()
         lastPlaybackReportAt = now
         reportPlaybackProgress(context, session, track, positionMs, isPaused)
@@ -10332,30 +10587,48 @@ private class JellyfinPlayer(private val context: Context) {
     private fun reportCurrentPlaybackStopped() {
         val track = currentTrack ?: return
         val session = currentSession ?: return
-        val positionMs = mediaPlayer?.runCatching { currentPosition.toLong() }?.getOrNull()
+        val positionMs = currentPlaybackPositionMs(track)
             ?: (track.durationMs * progress.coerceIn(0f, 1f)).toLong()
         lastPlaybackReportAt = 0L
         reportPlaybackStopped(context, session, track, positionMs)
     }
 
-    private fun MediaPlayer.configureDataSource(session: JellyfinSession, track: MusicTrack) {
+    private fun MediaPlayer.configureDataSource(
+        session: JellyfinSession,
+        track: MusicTrack,
+        transcoded: Boolean,
+        bypassOfflineFile: Boolean,
+        startPositionMs: Long?
+    ) {
         setAudioAttributes(playbackAudioAttributes())
-        val offlineFile = offlinePlayableFileFor(context, session, track)
+        val offlineFile = offlinePlayableFileFor(context, session, track).takeUnless { bypassOfflineFile }
         if (offlineFile != null) {
             setDataSource(offlineFile.absolutePath)
         } else {
-            val transcoded = loadTranscodedStreamingEnabled(context)
-            setDataSource(
-                context,
-                Uri.parse(track.streamUrl(session, transcoded = transcoded)),
-                session.streamHeaders()
+            val streamUrl = track.streamUrl(
+                session = session,
+                transcoded = transcoded,
+                startPositionMs = startPositionMs ?: 0L
             )
+            setDataSource(streamUrl)
         }
     }
 
-    private fun configureActivePlayer(player: MediaPlayer, generation: Int, track: MusicTrack) {
+    private fun configureActivePlayer(
+        player: MediaPlayer,
+        generation: Int,
+        track: MusicTrack,
+        transcoded: Boolean,
+        allowTranscodedFallback: Boolean,
+        startPositionMs: Long?
+    ) {
         player.setOnPreparedListener {
-            startPreparedPlayer(it, generation, track)
+            startPreparedPlayer(it, generation, track, queuedSeekPositionFor(track) ?: startPositionMs)
+        }
+        player.setOnSeekCompleteListener {
+            if (!it.isActivePlayback(generation)) return@setOnSeekCompleteListener
+            syncProgress()
+            publishPlaybackState(track)
         }
         player.setOnCompletionListener {
             if (!it.isActivePlayback(generation)) return@setOnCompletionListener
@@ -10365,6 +10638,8 @@ private class JellyfinPlayer(private val context: Context) {
             isPlaying = false
             status = "Ended"
             progress = 1f
+            pendingSeekTargetMs = null
+            pendingSeekStartedAt = 0L
             smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
             visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
             publishPlaybackState(track)
@@ -10372,20 +10647,59 @@ private class JellyfinPlayer(private val context: Context) {
         }
         player.setOnErrorListener { errorPlayer, _, _ ->
             if (!errorPlayer.isActivePlayback(generation)) return@setOnErrorListener true
+            if (retryWithTranscodedStream(errorPlayer, generation, track, transcoded, allowTranscodedFallback)) {
+                return@setOnErrorListener true
+            }
             abandonAudioFocus()
             visualizer?.runCatching { enabled = false }
             stopVisualizerPump()
             isPlaying = false
+            if (mediaPlayer === errorPlayer) {
+                mediaPlayer = null
+            }
             status = "Playback error"
+            pendingSeekTargetMs = null
+            pendingSeekStartedAt = 0L
             smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
             visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
             releaseWarmedPlayer()
             publishPlaybackState(track)
+            releaseMediaPlayerAsync(errorPlayer)
             true
         }
     }
 
-    private fun startPreparedPlayer(player: MediaPlayer, generation: Int, track: MusicTrack) {
+    private fun retryWithTranscodedStream(
+        player: MediaPlayer,
+        generation: Int,
+        track: MusicTrack,
+        transcoded: Boolean,
+        allowTranscodedFallback: Boolean
+    ): Boolean {
+        val session = currentSession ?: return false
+        if (transcoded || !allowTranscodedFallback || !player.isActivePlayback(generation)) return false
+        pendingSeekTargetMs = null
+        pendingSeekStartedAt = 0L
+        val retryStartPositionMs = currentPlaybackPositionMs(track)
+            ?: track.durationMs.takeIf { it > 0L }?.let { (it * progress.coerceIn(0f, 1f)).toLong() }
+        startPlayback(
+            track = track,
+            session = session,
+            transcoded = true,
+            allowTranscodedFallback = false,
+            bypassOfflineFile = true,
+            reportStopped = false,
+            startPositionMs = retryStartPositionMs
+        )
+        return true
+    }
+
+    private fun startPreparedPlayer(
+        player: MediaPlayer,
+        generation: Int,
+        track: MusicTrack,
+        startPositionMs: Long?
+    ) {
         if (!player.isActivePlayback(generation)) {
             releaseMediaPlayerAsync(player)
             return
@@ -10397,10 +10711,22 @@ private class JellyfinPlayer(private val context: Context) {
             return
         }
 
+        val requestedStartPositionMs = startPositionMs
+            ?.takeIf { it > 0L && track.durationMs > 0L }
+            ?.coerceIn(0L, track.durationMs)
         player.runCatching {
+            requestedStartPositionMs?.let { target ->
+                runCatching { seekToPosition(target) }
+                    .onSuccess {
+                        pendingSeekTargetMs = target
+                        pendingSeekStartedAt = SystemClock.elapsedRealtime()
+                        progress = (target.toFloat() / track.durationMs.toFloat()).coerceIn(0f, 1f)
+                    }
+            }
             setVolume(1f, 1f)
             start()
         }.onSuccess {
+            clearQueuedSeekPosition(track)
             isPlaying = true
             status = "Playing"
             if (visualizerEnabled) {
@@ -10422,18 +10748,22 @@ private class JellyfinPlayer(private val context: Context) {
         }
     }
 
-    private fun takePreparedWarmPlayer(track: MusicTrack, session: JellyfinSession): MediaPlayer? {
+    private fun takePreparedWarmPlayer(track: MusicTrack, session: JellyfinSession, transcoded: Boolean): MediaPlayer? {
         val warmup = warmedPlayer ?: return null
         warmedPlayer = null
         warmupGeneration.incrementAndGet()
 
-        val matches = warmup.trackId == track.id && warmup.sessionKey == session.playbackKey() && warmup.isPrepared
+        val matches = warmup.trackId == track.id &&
+            warmup.sessionKey == session.playbackKey() &&
+            warmup.transcoded == transcoded &&
+            warmup.isPrepared
         if (!matches) {
             releaseMediaPlayerAsync(warmup.player)
             return null
         }
 
         warmup.player.runCatching { setOnPreparedListener(null) }
+        warmup.player.runCatching { setOnSeekCompleteListener(null) }
         warmup.player.runCatching { setOnCompletionListener(null) }
         warmup.player.runCatching { setOnErrorListener(null) }
         return warmup.player
@@ -10448,6 +10778,67 @@ private class JellyfinPlayer(private val context: Context) {
 
     private fun MediaPlayer.isActivePlayback(generation: Int): Boolean =
         generation == playbackGeneration && mediaPlayer === this
+
+    private fun MediaPlayer.playbackDurationMs(track: MusicTrack?): Long? {
+        val mediaDuration = runCatching { duration.toLong() }.getOrDefault(0L)
+        val trackDuration = track?.durationMs ?: 0L
+        return when {
+            mediaDuration > 0L -> mediaDuration
+            trackDuration > 0L -> trackDuration
+            else -> null
+        }
+    }
+
+    private fun MediaPlayer.seekToPosition(positionMs: Long) {
+        val boundedPosition = positionMs.coerceIn(0L, Int.MAX_VALUE.toLong())
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            seekTo(boundedPosition, MediaPlayer.SEEK_CLOSEST)
+        } else {
+            @Suppress("DEPRECATION")
+            seekTo(boundedPosition.toInt())
+        }
+    }
+
+    private fun MediaPlayer.playbackPositionWithOffset(): Long =
+        (streamStartOffsetMs + currentPosition.toLong().coerceAtLeast(0L)).coerceAtLeast(0L)
+
+    private fun positionForFraction(fraction: Float, durationMs: Long): Long =
+        (durationMs.toFloat() * fraction.coerceIn(0f, 1f))
+            .roundToInt()
+            .toLong()
+            .coerceIn(0L, durationMs)
+
+    private fun queueSeekPosition(track: MusicTrack, positionMs: Long, durationMs: Long) {
+        queuedSeekTrackId = track.id
+        queuedSeekPositionMs = positionMs.coerceIn(0L, durationMs)
+        pendingSeekTargetMs = queuedSeekPositionMs
+        pendingSeekStartedAt = SystemClock.elapsedRealtime()
+        progress = (queuedSeekPositionMs!!.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+    }
+
+    private fun queuedSeekPositionFor(track: MusicTrack): Long? =
+        queuedSeekPositionMs?.takeIf { queuedSeekTrackId == track.id }
+
+    private fun clearQueuedSeekPosition(track: MusicTrack? = null) {
+        if (track != null && queuedSeekTrackId != track.id) return
+        queuedSeekTrackId = null
+        queuedSeekPositionMs = null
+    }
+
+    private fun canSeekInPlace(track: MusicTrack, session: JellyfinSession): Boolean =
+        offlinePlayableFileFor(context, session, track) != null
+
+    private fun currentPlaybackPositionMs(track: MusicTrack): Long? {
+        val pendingTarget = pendingSeekTargetMs
+        if (pendingTarget != null &&
+            SystemClock.elapsedRealtime() - pendingSeekStartedAt <= USER_SEEK_PROGRESS_HOLD_MS
+        ) {
+            return pendingTarget
+        }
+        return mediaPlayer?.runCatching { currentPosition.toLong().coerceAtLeast(0L) }?.getOrNull()
+            ?.let { (streamStartOffsetMs + it).coerceAtLeast(0L) }
+            ?: track.durationMs.takeIf { it > 0L }?.let { (it * progress.coerceIn(0f, 1f)).toLong() }
+    }
 
     private fun publishPlaybackState(track: MusicTrack? = currentTrack) {
         saveWidgetState(context, track, status, progress)
@@ -10564,6 +10955,9 @@ private class JellyfinPlayer(private val context: Context) {
         releaseMediaPlayerAsync(mediaPlayer)
         mediaPlayer = null
         isPlaying = false
+        pendingSeekTargetMs = null
+        pendingSeekStartedAt = 0L
+        streamStartOffsetMs = 0L
         smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
     }
@@ -10576,6 +10970,9 @@ private class JellyfinPlayer(private val context: Context) {
         releaseMediaPlayerAsync(mediaPlayer)
         mediaPlayer = null
         isPlaying = false
+        pendingSeekTargetMs = null
+        pendingSeekStartedAt = 0L
+        streamStartOffsetMs = 0L
         smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
     }
@@ -10583,6 +10980,7 @@ private class JellyfinPlayer(private val context: Context) {
     private fun releaseMediaPlayerAsync(player: MediaPlayer?) {
         val stalePlayer = player ?: return
         stalePlayer.runCatching { setOnPreparedListener(null) }
+        stalePlayer.runCatching { setOnSeekCompleteListener(null) }
         stalePlayer.runCatching { setOnCompletionListener(null) }
         stalePlayer.runCatching { setOnErrorListener(null) }
         thread(name = "jellyfin-player-release", isDaemon = true) {
