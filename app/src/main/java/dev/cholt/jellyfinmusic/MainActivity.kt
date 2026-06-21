@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.BroadcastReceiver
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -30,11 +31,13 @@ import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
+import android.provider.MediaStore
 import android.service.media.MediaBrowserService
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
@@ -378,10 +381,33 @@ private const val PREF_FAVORITE_ALBUM_KEYS_PREFIX = "favorite_album_keys_"
 private const val PREF_PINNED_LIBRARY_ITEMS_PREFIX = "pinned_library_items_"
 private const val PREF_RECENT_TRACK_IDS_PREFIX = "recent_track_ids_"
 private const val PREF_LOCAL_PLAYLISTS_PREFIX = "local_playlists_"
+private const val PREF_LAST_QUEUE_IDS_PREFIX = "last_queue_ids_"
 private const val PREF_OFFLINE_WIFI_ONLY = "offline_wifi_only"
 private const val PREF_OFFLINE_STORAGE_LIMIT_MB = "offline_storage_limit_mb"
 private const val PREF_DOWNLOADED_ONLY_MODE = "downloaded_only_mode"
 private const val PREF_AUTO_SYNC_ON_LAUNCH = "auto_sync_on_launch"
+private const val PREF_STREAMING_TRY_DIRECT_FIRST = "streaming_try_direct_first"
+private const val PREF_STREAMING_FORCE_TRANSCODING = "streaming_force_transcoding"
+private const val PREF_STREAMING_WIFI_BITRATE_KBPS = "streaming_wifi_bitrate_kbps"
+private const val PREF_STREAMING_CELLULAR_BITRATE_KBPS = "streaming_cellular_bitrate_kbps"
+private const val PREF_STREAMING_PREFERRED_BITRATE_KBPS = "streaming_preferred_bitrate_kbps"
+private const val PREF_STARTUP_DEFAULT_DESTINATION = "startup_default_destination"
+private const val PREF_STARTUP_RESUME_LAST_TAB = "startup_resume_last_tab"
+private const val PREF_STARTUP_AUTO_CONNECT = "startup_auto_connect"
+private const val PREF_STARTUP_RESTORE_LAST_QUEUE = "startup_restore_last_queue"
+private const val PREF_LAST_DESTINATION = "last_destination"
+private const val PREF_QUEUE_TAP_ACTION = "queue_tap_action"
+private const val PREF_QUEUE_SHUFFLE_AFTER_CURRENT = "queue_shuffle_after_current"
+private const val PREF_PLAYBACK_STOP_AFTER_CURRENT = "playback_stop_after_current"
+private const val PREF_PLAYBACK_SLEEP_TIMER_MINUTES = "playback_sleep_timer_minutes"
+private const val PREF_PLAYBACK_REMEMBER_SPEED = "playback_remember_speed"
+private const val PREF_NOTIFICATION_ACTION_PREVIOUS = "notification_action_previous"
+private const val PREF_NOTIFICATION_ACTION_NEXT = "notification_action_next"
+private const val PREF_NOTIFICATION_ACTION_STOP = "notification_action_stop"
+private const val PREF_NOTIFICATION_ACTION_FAVORITE = "notification_action_favorite"
+private const val PREF_NOTIFICATION_ACTION_SHUFFLE = "notification_action_shuffle"
+private const val PREF_NOTIFICATION_ACTION_REPEAT = "notification_action_repeat"
+private const val PREF_NOTIFICATION_ACTION_DOWNLOAD = "notification_action_download"
 private const val PREF_GAPLESS_PREBUFFER_ENABLED = "gapless_prebuffer_enabled"
 private const val PREF_CROSSFADE_ENABLED = "crossfade_enabled"
 private const val PREF_CROSSFADE_DURATION_SECONDS = "crossfade_duration_seconds"
@@ -400,16 +426,19 @@ private const val PREF_LIBRARY_SONGS_VIEW_MODE = "library_songs_view_mode"
 private const val PREF_LIBRARY_ALBUMS_VIEW_MODE = "library_albums_view_mode"
 private const val PREF_LIBRARY_ARTISTS_VIEW_MODE = "library_artists_view_mode"
 private const val PREF_LIBRARY_PLAYLISTS_VIEW_MODE = "library_playlists_view_mode"
+private const val PREF_LIBRARY_DEFAULT_TAB = "library_default_tab"
 private const val PREF_LIBRARY_ART_SIZE = "library_art_size"
 private const val PREF_LIBRARY_ALPHABET_RAIL_ENABLED = "library_alphabet_rail_enabled"
 private const val PREF_LIBRARY_DEFAULT_SORT = "library_default_sort"
 private const val PREF_HOME_SHOW_RECENTLY_PLAYED = "home_show_recently_played"
+private const val PREF_HOME_SHOW_TRENDING = "home_show_trending"
 private const val PREF_HOME_SHOW_FAVORITES = "home_show_favorites"
 private const val PREF_HOME_SHOW_PINNED_ALBUMS = "home_show_pinned_albums"
 private const val PREF_HOME_SHOW_NEW_ALBUMS = "home_show_new_albums"
 private const val PREF_HOME_SHOW_ARTISTS = "home_show_artists"
 private const val PREF_HOME_SHOW_SMART_MIXES = "home_show_smart_mixes"
 private const val PREF_HOME_HIDE_EMPTY_SECTIONS = "home_hide_empty_sections"
+private const val PREF_HOME_SECTION_ORDER = "home_section_order"
 private const val PREF_VISUALIZER_MODE = "visualizer_mode"
 private const val PREF_VISUALIZER_INTENSITY = "visualizer_intensity"
 private const val PREF_VISUALIZER_SPEED = "visualizer_speed"
@@ -424,6 +453,9 @@ private const val PREF_LOUDNESS_LIMIT_ENABLED = "loudness_limit_enabled"
 private const val LIBRARY_CACHE_VERSION = 2
 private const val OFFLINE_DOWNLOADS_VERSION = 1
 private const val LOCAL_PLAYLISTS_VERSION = 1
+private const val GENERATED_FAVORITES_PLAYLIST_ID = "generated_favorites_playlist"
+private const val GENERATED_FAVORITES_PLAYLIST_NAME = "Favorites"
+private const val GENERATED_FAVORITES_PLAYLIST_FOLDER = "Generated"
 private const val ALBUM_ART_CACHE_DIR = "album_art_cache"
 private const val OFFLINE_DOWNLOAD_DIR = "offline_audio"
 private const val MAX_ALBUM_ART_CACHE_FILES = 128
@@ -492,7 +524,8 @@ data class MusicTrack(
     fun streamUrl(
         session: JellyfinSession,
         transcoded: Boolean = false,
-        startPositionMs: Long = 0L
+        startPositionMs: Long = 0L,
+        maxBitrateKbps: Int = 192
     ): String {
         val encodedId = encode(id)
         val encodedToken = encode(session.token)
@@ -501,10 +534,14 @@ data class MusicTrack(
             ?.let { "&StartTimeTicks=${it * 10_000L}" }
             .orEmpty()
         if (transcoded) {
+            val bitrateParameter = maxBitrateKbps
+                .takeIf { it > 0 }
+                ?.let { "&MaxStreamingBitrate=${it * 1000}" }
+                .orEmpty()
             return "${session.serverUrl}/Audio/$encodedId/universal" +
                 "?UserId=${encode(session.userId)}" +
                 "&DeviceId=${encode("jellyfin-music-${stableCacheKey("${session.serverUrl}|${session.userId}").take(16)}")}" +
-                "&MaxStreamingBitrate=192000" +
+                bitrateParameter +
                 "&Container=mp3" +
                 "&TranscodingContainer=mp3" +
                 "&TranscodingProtocol=http" +
@@ -549,10 +586,24 @@ private data class OfflineDownloadProgress(
 
 private val OfflineStorageLimitOptionsMb = listOf(256, 512, 1024, 2048, 4096)
 
+private fun appVersionLabel(includeCode: Boolean = false): String =
+    if (includeCode) {
+        "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
+    } else {
+        BuildConfig.VERSION_NAME
+    }
+
+private fun appUserAgent(compact: Boolean = true): String =
+    if (compact) {
+        "JellyfinMusic/${BuildConfig.VERSION_NAME}"
+    } else {
+        "Jellyfin Music/${BuildConfig.VERSION_NAME} Android"
+    }
+
 private fun JellyfinSession.streamHeaders(): Map<String, String> =
     mapOf(
         "X-Emby-Token" to token,
-        "User-Agent" to "JellyfinMusic/0.1.0",
+        "User-Agent" to appUserAgent(),
         "Accept" to "audio/*,*/*"
     )
 
@@ -567,6 +618,10 @@ const val PLAYBACK_ACTION_TOGGLE = "dev.cholt.jellyfinmusic.action.TOGGLE"
 const val PLAYBACK_ACTION_PREVIOUS = "dev.cholt.jellyfinmusic.action.PREVIOUS"
 const val PLAYBACK_ACTION_NEXT = "dev.cholt.jellyfinmusic.action.NEXT"
 const val PLAYBACK_ACTION_STOP = "dev.cholt.jellyfinmusic.action.STOP"
+const val PLAYBACK_ACTION_FAVORITE = "dev.cholt.jellyfinmusic.action.FAVORITE"
+const val PLAYBACK_ACTION_SHUFFLE = "dev.cholt.jellyfinmusic.action.SHUFFLE"
+const val PLAYBACK_ACTION_REPEAT = "dev.cholt.jellyfinmusic.action.REPEAT"
+const val PLAYBACK_ACTION_DOWNLOAD = "dev.cholt.jellyfinmusic.action.DOWNLOAD"
 private const val PLAYBACK_SERVICE_ACTION_START = "dev.cholt.jellyfinmusic.service.START"
 private const val PLAYBACK_SERVICE_ACTION_STOP = "dev.cholt.jellyfinmusic.service.STOP"
 private const val AUTO_ROOT_ID = "auto:root"
@@ -585,7 +640,11 @@ private data class PlaybackActionHandlers(
     val onPrevious: () -> Unit,
     val onNext: () -> Unit,
     val onSeekToFraction: (Float) -> Unit,
-    val onStop: () -> Unit
+    val onStop: () -> Unit,
+    val onFavorite: () -> Unit,
+    val onShuffle: () -> Unit,
+    val onRepeat: () -> Unit,
+    val onDownload: () -> Unit
 )
 
 private object PlaybackNotificationActions {
@@ -609,6 +668,10 @@ private object PlaybackNotificationActions {
             PLAYBACK_ACTION_PREVIOUS -> activeHandlers.onPrevious()
             PLAYBACK_ACTION_NEXT -> activeHandlers.onNext()
             PLAYBACK_ACTION_STOP -> activeHandlers.onStop()
+            PLAYBACK_ACTION_FAVORITE -> activeHandlers.onFavorite()
+            PLAYBACK_ACTION_SHUFFLE -> activeHandlers.onShuffle()
+            PLAYBACK_ACTION_REPEAT -> activeHandlers.onRepeat()
+            PLAYBACK_ACTION_DOWNLOAD -> activeHandlers.onDownload()
         }
     }
 
@@ -1205,32 +1268,63 @@ private class PlaybackNotificationController(context: Context) {
 
         largeIcon?.takeIf { largeIconTrackId == track.id }?.let(builder::setLargeIcon)
 
-        builder.addAction(
-            Notification.Action.Builder(
-                android.R.drawable.ic_media_previous,
-                "Previous",
-                actionPendingIntent(PLAYBACK_ACTION_PREVIOUS, 1)
-            ).build()
+        val actionSettings = loadNotificationActionSettings(appContext)
+        val compactActionIndices = mutableListOf<Int>()
+        var actionIndex = 0
+
+        fun addNotificationAction(icon: Int, title: String, action: String, requestCode: Int): Int {
+            builder.addAction(
+                Notification.Action.Builder(
+                    icon,
+                    title,
+                    actionPendingIntent(action, requestCode)
+                ).build()
+            )
+            return actionIndex++
+        }
+
+        if (actionSettings.showPrevious) {
+            compactActionIndices += addNotificationAction(
+                icon = android.R.drawable.ic_media_previous,
+                title = "Previous",
+                action = PLAYBACK_ACTION_PREVIOUS,
+                requestCode = 1
+            )
+        }
+        compactActionIndices += addNotificationAction(
+            icon = if (snapshot.isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
+            title = if (snapshot.isPlaying) "Pause" else "Play",
+            action = if (snapshot.isPlaying) PLAYBACK_ACTION_PAUSE else PLAYBACK_ACTION_PLAY,
+            requestCode = 2
         )
-        builder.addAction(
-            Notification.Action.Builder(
-                if (snapshot.isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
-                if (snapshot.isPlaying) "Pause" else "Play",
-                actionPendingIntent(if (snapshot.isPlaying) PLAYBACK_ACTION_PAUSE else PLAYBACK_ACTION_PLAY, 2)
-            ).build()
-        )
-        builder.addAction(
-            Notification.Action.Builder(
-                android.R.drawable.ic_media_next,
-                "Next",
-                actionPendingIntent(PLAYBACK_ACTION_NEXT, 3)
-            ).build()
-        )
+        if (actionSettings.showNext) {
+            compactActionIndices += addNotificationAction(
+                icon = android.R.drawable.ic_media_next,
+                title = "Next",
+                action = PLAYBACK_ACTION_NEXT,
+                requestCode = 3
+            )
+        }
+        if (actionSettings.showFavorite) {
+            addNotificationAction(android.R.drawable.star_big_off, "Favorite", PLAYBACK_ACTION_FAVORITE, 6)
+        }
+        if (actionSettings.showShuffle) {
+            addNotificationAction(android.R.drawable.ic_menu_rotate, "Shuffle", PLAYBACK_ACTION_SHUFFLE, 7)
+        }
+        if (actionSettings.showRepeat) {
+            addNotificationAction(android.R.drawable.ic_menu_revert, "Repeat", PLAYBACK_ACTION_REPEAT, 8)
+        }
+        if (actionSettings.showDownload) {
+            addNotificationAction(android.R.drawable.stat_sys_download_done, "Download", PLAYBACK_ACTION_DOWNLOAD, 9)
+        }
+        if (actionSettings.showStop) {
+            addNotificationAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", PLAYBACK_ACTION_STOP, 10)
+        }
 
         builder.setStyle(
             Notification.MediaStyle()
                 .setMediaSession(mediaSession.sessionToken)
-                .setShowActionsInCompactView(0, 1, 2)
+                .setShowActionsInCompactView(*compactActionIndices.take(3).toIntArray())
         )
 
         return builder.build()
@@ -1402,12 +1496,17 @@ private enum class AppDestination(val label: String) {
 
 private enum class SettingsPage(val label: String, val subtitle: String) {
     Account("Account", "Server, user, and sign out"),
+    Streaming("Streaming quality", "Direct play, transcoding, and bitrate"),
+    Startup("Startup", "Open page, restore queue, and reconnect"),
+    Queue("Queue", "Tap behavior and queue flow"),
     Library("Library", "Sync, density, and browsing"),
     Home("Home page", "Sections and shelves"),
     Offline("Cache & offline", "Downloads, artwork, and storage"),
     Playback("Playback recovery", "Streams, seek, and buffering"),
+    Notifications("Notifications", "Lock screen and media buttons"),
     Audio("Audio", "Equalizer, crossfade, and output tone"),
     Appearance("Look and feel", "Theme, colors, and turntable"),
+    Backup("Backup & restore", "Export and import local app data"),
     About("About", "App version")
 }
 
@@ -1469,6 +1568,90 @@ private enum class LibraryViewMode(val label: String, val gridView: Boolean, val
     }
 }
 
+private enum class StreamingBitrateOption(val label: String, val kbps: Int) {
+    Auto("Auto", 0),
+    K96("96 kbps", 96),
+    K128("128 kbps", 128),
+    K192("192 kbps", 192),
+    K256("256 kbps", 256),
+    K320("320 kbps", 320)
+}
+
+private enum class StartupDestination(val label: String, val destination: AppDestination?) {
+    Home("Home", AppDestination.Home),
+    Library("Library", AppDestination.Library),
+    Search("Search", AppDestination.Search),
+    Favorites("Favorites", AppDestination.Liked),
+    Settings("Settings", AppDestination.Profile),
+    NowPlaying("Now Playing", AppDestination.Player)
+}
+
+private enum class TrackTapAction(val label: String, val description: String) {
+    VisibleList("Visible list", "Play from the list or shelf you tapped"),
+    Album("Album", "Build the queue from the song's album"),
+    Single("Single song", "Only queue the selected song"),
+    Ask("Ask", "Use the visible list for now and leave room for a picker")
+}
+
+private enum class HomeSection(val label: String) {
+    Trending("Trending"),
+    RecentlyPlayed("Recently played"),
+    Favorites("Favorites"),
+    OnHome("On Home"),
+    NewAlbums("New albums"),
+    Artists("Artists"),
+    SmartMixes("Smart mixes")
+}
+
+private val DefaultHomeSections = listOf(
+    HomeSection.Trending,
+    HomeSection.RecentlyPlayed,
+    HomeSection.Favorites,
+    HomeSection.OnHome,
+    HomeSection.NewAlbums,
+    HomeSection.Artists,
+    HomeSection.SmartMixes
+)
+
+private data class StreamingQualitySettings(
+    val tryDirectPlayFirst: Boolean = true,
+    val forceTranscoding: Boolean = false,
+    val wifiBitrateKbps: Int = 320,
+    val cellularBitrateKbps: Int = 192,
+    val preferredBitrateKbps: Int = 256
+) {
+    val startsTranscoded: Boolean
+        get() = forceTranscoding || !tryDirectPlayFirst
+}
+
+private data class StartupBehaviorSettings(
+    val defaultDestination: StartupDestination = StartupDestination.Home,
+    val resumeLastTab: Boolean = true,
+    val autoConnect: Boolean = true,
+    val restoreLastQueue: Boolean = true
+)
+
+private data class QueueBehaviorSettings(
+    val tapAction: TrackTapAction = TrackTapAction.VisibleList,
+    val shuffleAfterCurrent: Boolean = false
+)
+
+private data class PlaybackBehaviorSettings(
+    val stopAfterCurrent: Boolean = false,
+    val sleepTimerMinutes: Int = 0,
+    val rememberPlaybackSpeed: Boolean = false
+)
+
+private data class NotificationActionSettings(
+    val showPrevious: Boolean = true,
+    val showNext: Boolean = true,
+    val showStop: Boolean = true,
+    val showFavorite: Boolean = false,
+    val showShuffle: Boolean = false,
+    val showRepeat: Boolean = false,
+    val showDownload: Boolean = false
+)
+
 private enum class VisualizerMode(val label: String) {
     Wave("Wave"),
     Bars("Bars"),
@@ -1480,6 +1663,7 @@ private data class LibraryDensitySettings(
     val compactRows: Boolean = false,
     val gridView: Boolean = true,
     val gridColumns: Int = 2,
+    val defaultTab: LibraryTab = LibraryTab.Songs,
     val songsViewMode: LibraryViewMode = LibraryViewMode.Rows,
     val albumsViewMode: LibraryViewMode = LibraryViewMode.Grid3,
     val artistsViewMode: LibraryViewMode = LibraryViewMode.Grid3,
@@ -1510,13 +1694,18 @@ private data class LibraryDensitySettings(
 
 private data class HomePageSettings(
     val showRecentlyPlayed: Boolean = true,
+    val showTrending: Boolean = true,
     val showFavorites: Boolean = true,
     val showPinnedAlbums: Boolean = true,
     val showNewAlbums: Boolean = true,
     val showArtists: Boolean = true,
     val showSmartMixes: Boolean = true,
-    val hideEmptySections: Boolean = true
-)
+    val hideEmptySections: Boolean = true,
+    val sectionOrder: List<HomeSection> = DefaultHomeSections
+) {
+    fun orderedSections(): List<HomeSection> =
+        (sectionOrder + DefaultHomeSections).distinct()
+}
 
 private data class PlaybackRecoverySettings(
     val autoRetryEnabled: Boolean = true,
@@ -1671,6 +1860,9 @@ private fun formatDataSize(bytes: Long): String {
 
 private fun formatStorageLimit(limitMb: Int): String =
     formatDataSize(limitMb.toLong() * 1024L * 1024L)
+
+private fun Int.bitrateLabel(): String =
+    if (this <= 0) "Auto" else "${this} kbps"
 
 private fun OfflineDownloadProgress.percentLabel(): String =
     if (totalBytes > 0L) {
@@ -1917,10 +2109,14 @@ private fun JellyfinMusicApp() {
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val player = remember { PlaybackControllerHolder.get(context.applicationContext) }
     val mainListState = rememberLazyListState()
+    val launchStartupBehaviorSettings = remember { loadStartupBehaviorSettings(context) }
+    val launchSavedSession = remember { loadSavedSession(context) }
 
-    var session by remember { mutableStateOf(loadSavedSession(context)) }
-    var serverUrl by remember { mutableStateOf(session?.serverUrl.orEmpty()) }
-    var username by remember { mutableStateOf(session?.username.orEmpty()) }
+    var session by remember {
+        mutableStateOf(if (launchStartupBehaviorSettings.autoConnect) launchSavedSession else null)
+    }
+    var serverUrl by remember { mutableStateOf(launchSavedSession?.serverUrl.orEmpty()) }
+    var username by remember { mutableStateOf(launchSavedSession?.username.orEmpty()) }
     var password by remember { mutableStateOf("") }
     var tracks by remember { mutableStateOf(session?.let { loadCachedLibrary(context, it) } ?: emptyList()) }
     var lastLibrarySyncAt by remember(session?.serverUrl, session?.userId) {
@@ -1945,10 +2141,10 @@ private fun JellyfinMusicApp() {
         mutableStateOf(session?.let { loadOfflineDownloads(context, it) } ?: emptyMap())
     }
     var downloadProgressById by remember { mutableStateOf(emptyMap<String, OfflineDownloadProgress>()) }
-    var selectedTab by remember { mutableStateOf(LibraryTab.Songs) }
+    var libraryDensitySettings by remember { mutableStateOf(loadLibraryDensitySettings(context)) }
+    var selectedTab by remember { mutableStateOf(libraryDensitySettings.defaultTab) }
     var favoritesTab by remember { mutableStateOf(FavoritesTab.Tracks) }
     var librarySearchQuery by remember { mutableStateOf("") }
-    var libraryDensitySettings by remember { mutableStateOf(loadLibraryDensitySettings(context)) }
     var librarySortMode by remember { mutableStateOf(libraryDensitySettings.defaultSort) }
     val libraryViewMode = libraryDensitySettings.viewModeFor(selectedTab)
     val libraryGridView = libraryViewMode.gridView
@@ -1988,13 +2184,18 @@ private fun JellyfinMusicApp() {
     var gaplessPrebufferEnabled by remember { mutableStateOf(loadGaplessPrebufferEnabled(context)) }
     var crossfadeEnabled by remember { mutableStateOf(loadCrossfadeEnabled(context)) }
     var crossfadeDurationSeconds by remember { mutableStateOf(loadCrossfadeDurationSeconds(context)) }
-    var transcodedStreamingEnabled by remember { mutableStateOf(loadTranscodedStreamingEnabled(context)) }
+    var streamingQualitySettings by remember { mutableStateOf(loadStreamingQualitySettings(context)) }
+    var startupBehaviorSettings by remember { mutableStateOf(launchStartupBehaviorSettings) }
+    var queueBehaviorSettings by remember { mutableStateOf(loadQueueBehaviorSettings(context)) }
+    var playbackBehaviorSettings by remember { mutableStateOf(loadPlaybackBehaviorSettings(context)) }
+    var notificationActionSettings by remember { mutableStateOf(loadNotificationActionSettings(context)) }
+    var transcodedStreamingEnabled by remember { mutableStateOf(streamingQualitySettings.startsTranscoded) }
     var playbackReportingEnabled by remember { mutableStateOf(loadPlaybackReportingEnabled(context)) }
     var playbackRecoverySettings by remember { mutableStateOf(loadPlaybackRecoverySettings(context)) }
     var homePageSettings by remember { mutableStateOf(loadHomePageSettings(context)) }
     var audioOutputSettings by remember { mutableStateOf(loadAudioOutputSettings(context)) }
     var equalizerSettings by remember { mutableStateOf(loadEqualizerSettings(context)) }
-    var selectedDestination by remember { mutableStateOf(AppDestination.Home) }
+    var selectedDestination by remember { mutableStateOf(initialAppDestination(context, startupBehaviorSettings)) }
     var activeSettingsPage by remember { mutableStateOf<SettingsPage?>(null) }
     val systemDarkTheme = isSystemInDarkTheme()
     val darkTheme = when (themeMode) {
@@ -2009,6 +2210,58 @@ private fun JellyfinMusicApp() {
 
     LaunchedEffect(crossfadeEnabled, crossfadeDurationSeconds) {
         player.setCrossfadeSettings(crossfadeEnabled, crossfadeDurationSeconds)
+    }
+
+    LaunchedEffect(selectedDestination, startupBehaviorSettings.resumeLastTab) {
+        if (startupBehaviorSettings.resumeLastTab) {
+            saveLastDestination(context, selectedDestination)
+        }
+    }
+
+    LaunchedEffect(playbackBehaviorSettings.sleepTimerMinutes) {
+        val minutes = playbackBehaviorSettings.sleepTimerMinutes
+        if (minutes <= 0) return@LaunchedEffect
+        delay(minutes * 60_000L)
+        player.dispose()
+        PlaybackControllerHolder.clear(player)
+        showPlayer = false
+        val nextSettings = playbackBehaviorSettings.copy(sleepTimerMinutes = 0)
+        playbackBehaviorSettings = nextSettings
+        savePlaybackBehaviorSettings(context, nextSettings)
+        statusText = "Sleep timer stopped playback"
+    }
+
+    LaunchedEffect(session?.serverUrl, session?.userId, likedTrackIds) {
+        val activeSession = session ?: return@LaunchedEffect
+        val syncedPlaylists = localPlaylists.withGeneratedFavoritesPlaylist(likedTrackIds)
+        if (syncedPlaylists != localPlaylists) {
+            localPlaylists = syncedPlaylists
+            saveLocalPlaylists(context, activeSession, syncedPlaylists)
+        }
+    }
+
+    LaunchedEffect(
+        session?.serverUrl,
+        session?.userId,
+        tracks,
+        startupBehaviorSettings.restoreLastQueue
+    ) {
+        val activeSession = session ?: return@LaunchedEffect
+        if (!startupBehaviorSettings.restoreLastQueue || playQueue.isNotEmpty() || tracks.isEmpty()) return@LaunchedEffect
+        val tracksById = tracks.associateBy { it.id }
+        val restoredQueue = loadLastQueueIds(context, activeSession)
+            .mapNotNull { tracksById[it] }
+            .distinctBy { it.id }
+        if (restoredQueue.isNotEmpty()) {
+            playQueue = restoredQueue
+        }
+    }
+
+    LaunchedEffect(playQueue, session?.serverUrl, session?.userId, startupBehaviorSettings.restoreLastQueue) {
+        val activeSession = session ?: return@LaunchedEffect
+        if (startupBehaviorSettings.restoreLastQueue && playQueue.isNotEmpty()) {
+            saveLastQueueIds(context, activeSession, playQueue)
+        }
     }
 
     fun runTask(task: () -> Unit) {
@@ -2159,7 +2412,21 @@ private fun JellyfinMusicApp() {
 
     fun playTrack(track: MusicTrack, openPlayer: Boolean = false, source: List<MusicTrack> = tracks) {
         session?.let { activeSession ->
-            playQueue = source.queueStartingAt(track).ifEmpty { listOf(track) }
+            val queueSource = when (queueBehaviorSettings.tapAction) {
+                TrackTapAction.Single -> listOf(track)
+                TrackTapAction.Album -> tracks
+                    .filter { it.album.equals(track.album, ignoreCase = true) }
+                    .sortedWith(MusicTrackSort)
+                    .ifEmpty { source }
+                TrackTapAction.VisibleList,
+                TrackTapAction.Ask -> source
+            }
+            val baseQueue = queueSource.queueStartingAt(track).ifEmpty { listOf(track) }
+            playQueue = if (queueBehaviorSettings.shuffleAfterCurrent && baseQueue.size > 2) {
+                listOf(baseQueue.first()) + baseQueue.drop(1).randomizedPlaybackQueue()
+            } else {
+                baseQueue
+            }
             if (openPlayer) {
                 showNowPlayingPlayer()
             }
@@ -2247,6 +2514,11 @@ private fun JellyfinMusicApp() {
         likedTrackIds = nextLikedTrackIds
         session?.let { activeSession ->
             saveLikedTrackIds(context, activeSession, nextLikedTrackIds)
+            val nextPlaylists = localPlaylists.withGeneratedFavoritesPlaylist(nextLikedTrackIds)
+            if (nextPlaylists != localPlaylists) {
+                localPlaylists = nextPlaylists
+                saveLocalPlaylists(context, activeSession, nextPlaylists)
+            }
         }
     }
 
@@ -2321,6 +2593,20 @@ private fun JellyfinMusicApp() {
     }
 
     fun addTrackToPlaylist(playlist: LocalPlaylist, track: MusicTrack) {
+        if (playlist.id == GENERATED_FAVORITES_PLAYLIST_ID) {
+            if (track.id in likedTrackIds) {
+                statusText = "Already in Favorites"
+                return
+            }
+            val nextLikedTrackIds = likedTrackIds + track.id
+            likedTrackIds = nextLikedTrackIds
+            session?.let { activeSession ->
+                saveLikedTrackIds(context, activeSession, nextLikedTrackIds)
+                val nextPlaylists = localPlaylists.withGeneratedFavoritesPlaylist(nextLikedTrackIds)
+                saveLocalPlaylistsState(nextPlaylists, "Added to Favorites")
+            }
+            return
+        }
         val nextPlaylists = localPlaylists.map { item ->
             if (item.id != playlist.id || track.id in item.trackIds) {
                 item
@@ -2335,6 +2621,17 @@ private fun JellyfinMusicApp() {
     }
 
     fun removeTrackFromPlaylist(playlistId: String, track: MusicTrack) {
+        if (playlistId == GENERATED_FAVORITES_PLAYLIST_ID) {
+            if (track.id !in likedTrackIds) return
+            val nextLikedTrackIds = likedTrackIds - track.id
+            likedTrackIds = nextLikedTrackIds
+            session?.let { activeSession ->
+                saveLikedTrackIds(context, activeSession, nextLikedTrackIds)
+                val nextPlaylists = localPlaylists.withGeneratedFavoritesPlaylist(nextLikedTrackIds)
+                saveLocalPlaylistsState(nextPlaylists, "Removed from Favorites")
+            }
+            return
+        }
         val playlist = localPlaylists.firstOrNull { it.id == playlistId } ?: return
         val nextPlaylists = localPlaylists.map { item ->
             if (item.id == playlistId) {
@@ -2350,6 +2647,7 @@ private fun JellyfinMusicApp() {
     }
 
     fun togglePlaylistFavorite(playlistId: String) {
+        if (playlistId == GENERATED_FAVORITES_PLAYLIST_ID) return
         val nextPlaylists = localPlaylists.map { item ->
             if (item.id == playlistId) {
                 item.copy(isFavorite = !item.isFavorite, updatedAt = System.currentTimeMillis())
@@ -2361,6 +2659,10 @@ private fun JellyfinMusicApp() {
     }
 
     fun deletePlaylist(playlistId: String) {
+        if (playlistId == GENERATED_FAVORITES_PLAYLIST_ID) {
+            statusText = "Favorites is generated from liked songs"
+            return
+        }
         val playlist = localPlaylists.firstOrNull { it.id == playlistId } ?: return
         val nextPlaylists = localPlaylists.filterNot { it.id == playlistId }
         saveLocalPlaylistsState(nextPlaylists, "Deleted ${playlist.name}")
@@ -2484,6 +2786,23 @@ private fun JellyfinMusicApp() {
                     PlaybackControllerHolder.clear(player)
                     showPlayer = false
                     selectedDestination = AppDestination.Home
+                },
+                onFavorite = {
+                    player.currentTrack?.let { track -> toggleLiked(track) }
+                },
+                onShuffle = {
+                    shuffleEnabled = !shuffleEnabled
+                    if (shuffleEnabled) {
+                        reshuffleQueueAfterCurrent()
+                    }
+                    statusText = if (shuffleEnabled) "Shuffle on" else "Shuffle off"
+                },
+                onRepeat = {
+                    repeatEnabled = !repeatEnabled
+                    statusText = if (repeatEnabled) "Repeat on" else "Repeat off"
+                },
+                onDownload = {
+                    player.currentTrack?.let { track -> toggleOfflineDownload(track) }
                 }
             )
         )
@@ -2557,6 +2876,10 @@ private fun JellyfinMusicApp() {
             delay(450)
             if (repeatEnabled) {
                 player.play(activeTrack, activeSession)
+            } else if (playbackBehaviorSettings.stopAfterCurrent) {
+                player.release()
+                showPlayer = false
+                statusText = "Stopped after current track"
             } else {
                 playAdjacent(1)
             }
@@ -2802,6 +3125,7 @@ private fun JellyfinMusicApp() {
                                                 coroutineScope.launch { mainListState.animateScrollToItem(0) }
                                             }
                                         } else {
+                                            selectedTab = libraryDensitySettings.defaultTab
                                             coroutineScope.launch { mainListState.scrollToItem(0) }
                                         }
                                     }
@@ -2843,6 +3167,7 @@ private fun JellyfinMusicApp() {
                                     }
                                     AppDestination.Library -> {
                                         selectedDestination = AppDestination.Library
+                                        selectedTab = libraryDensitySettings.defaultTab
                                         showPlayer = false
                                         activeLibraryDetail = null
                                         activeSettingsPage = null
@@ -3103,6 +3428,11 @@ private fun JellyfinMusicApp() {
                                         downloadedTrackCount = offlineDownloads.size,
                                         downloadedBytes = offlineDownloadBytesOnDisk(context, connectedSession),
                                         activeDownloadCount = downloadProgressById.size,
+                                        streamingQualitySettings = streamingQualitySettings,
+                                        startupBehaviorSettings = startupBehaviorSettings,
+                                        queueBehaviorSettings = queueBehaviorSettings,
+                                        playbackBehaviorSettings = playbackBehaviorSettings,
+                                        notificationActionSettings = notificationActionSettings,
                                         gaplessPrebufferEnabled = gaplessPrebufferEnabled,
                                         crossfadeEnabled = crossfadeEnabled,
                                         crossfadeDurationSeconds = crossfadeDurationSeconds,
@@ -3126,6 +3456,37 @@ private fun JellyfinMusicApp() {
                                         AccountCard(
                                             session = connectedSession,
                                             onSignOut = ::signOut
+                                        )
+                                    }
+
+                                    SettingsPage.Streaming -> item {
+                                        StreamingQualityCard(
+                                            settings = streamingQualitySettings,
+                                            onSettingsChange = { settings ->
+                                                streamingQualitySettings = settings
+                                                transcodedStreamingEnabled = settings.startsTranscoded
+                                                saveStreamingQualitySettings(context, settings)
+                                            }
+                                        )
+                                    }
+
+                                    SettingsPage.Startup -> item {
+                                        StartupBehaviorCard(
+                                            settings = startupBehaviorSettings,
+                                            onSettingsChange = { settings ->
+                                                startupBehaviorSettings = settings
+                                                saveStartupBehaviorSettings(context, settings)
+                                            }
+                                        )
+                                    }
+
+                                    SettingsPage.Queue -> item {
+                                        QueueBehaviorCard(
+                                            settings = queueBehaviorSettings,
+                                            onSettingsChange = { settings ->
+                                                queueBehaviorSettings = settings
+                                                saveQueueBehaviorSettings(context, settings)
+                                            }
                                         )
                                     }
 
@@ -3204,9 +3565,9 @@ private fun JellyfinMusicApp() {
                                             gaplessPrebufferEnabled = gaplessPrebufferEnabled,
                                             crossfadeEnabled = crossfadeEnabled,
                                             crossfadeDurationSeconds = crossfadeDurationSeconds,
-                                            transcodedStreamingEnabled = transcodedStreamingEnabled,
                                             playbackReportingEnabled = playbackReportingEnabled,
                                             playbackRecoverySettings = playbackRecoverySettings,
+                                            playbackBehaviorSettings = playbackBehaviorSettings,
                                             onGaplessPrebufferChange = { enabled ->
                                                 gaplessPrebufferEnabled = enabled
                                                 saveGaplessPrebufferEnabled(context, enabled)
@@ -3222,10 +3583,6 @@ private fun JellyfinMusicApp() {
                                                 crossfadeDurationSeconds = seconds
                                                 saveCrossfadeDurationSeconds(context, seconds)
                                             },
-                                            onTranscodedStreamingChange = { enabled ->
-                                                transcodedStreamingEnabled = enabled
-                                                saveTranscodedStreamingEnabled(context, enabled)
-                                            },
                                             onPlaybackReportingChange = { enabled ->
                                                 playbackReportingEnabled = enabled
                                                 savePlaybackReportingEnabled(context, enabled)
@@ -3233,6 +3590,21 @@ private fun JellyfinMusicApp() {
                                             onPlaybackRecoverySettingsChange = { settings ->
                                                 playbackRecoverySettings = settings
                                                 savePlaybackRecoverySettings(context, settings)
+                                            },
+                                            onPlaybackBehaviorSettingsChange = { settings ->
+                                                playbackBehaviorSettings = settings
+                                                savePlaybackBehaviorSettings(context, settings)
+                                            }
+                                        )
+                                    }
+
+                                    SettingsPage.Notifications -> item {
+                                        NotificationActionsCard(
+                                            settings = notificationActionSettings,
+                                            onSettingsChange = { settings ->
+                                                notificationActionSettings = settings
+                                                saveNotificationActionSettings(context, settings)
+                                                player.syncProgress()
                                             }
                                         )
                                     }
@@ -3289,6 +3661,17 @@ private fun JellyfinMusicApp() {
                                         )
                                     }
 
+                                    SettingsPage.Backup -> item {
+                                        BackupRestoreCard(
+                                            onExport = {
+                                                statusText = exportSettingsBackup(context)
+                                            },
+                                            onImport = {
+                                                statusText = importSettingsBackup(context)
+                                            }
+                                        )
+                                    }
+
                                     SettingsPage.About -> item {
                                         AboutCard()
                                     }
@@ -3311,13 +3694,20 @@ private fun JellyfinMusicApp() {
                                     .distinctBy { it.id }
                                     .groupByArtist()
                                     .sortedGroupsForLibrary(LibrarySortMode.Artist)
+                                val favoriteShuffleTracks = when (favoritesTab) {
+                                    FavoritesTab.Tracks -> likedTracks
+                                    FavoritesTab.Albums -> favoriteAlbumGroups.flatMap { it.tracks }.distinctBy { it.id }
+                                    FavoritesTab.Artists -> favoriteArtistGroups.flatMap { it.tracks }.distinctBy { it.id }
+                                }
                                 item {
                                     FavoritesHeader(
                                         selectedTab = favoritesTab,
                                         trackCount = likedTracks.size,
                                         albumCount = favoriteAlbumGroups.size,
                                         artistCount = favoriteArtistGroups.size,
-                                        onTabSelected = { favoritesTab = it }
+                                        onTabSelected = { favoritesTab = it },
+                                        canShuffle = favoriteShuffleTracks.isNotEmpty(),
+                                        onShuffle = { playRandom(favoriteShuffleTracks) }
                                     )
                                 }
                                 when (favoritesTab) {
@@ -3455,6 +3845,11 @@ private fun JellyfinMusicApp() {
                                     currentTrack = activeTrack
                                 )
                                 val homeMix = visibleTracks.homeMix(seed = todayHomeSeed()).take(14)
+                                val trendingTracks = visibleTracks.trendingTracks(
+                                    likedTrackIds = likedTrackIds,
+                                    recentTrackIds = recentTrackIds,
+                                    activeTrack = activeTrack
+                                ).take(12)
                                 val newHomeAlbumGroups = displayedAlbumGroups
                                     .sortedByDescending { group -> group.tracks.maxOfOrNull { it.dateAddedMs } ?: 0L }
                                     .take(12)
@@ -3502,169 +3897,150 @@ private fun JellyfinMusicApp() {
                                             onAddToPlaylist = { playlist, track -> addTrackToPlaylist(playlist, track) }
                                         )
                                     }
-                                    if (homePageSettings.showRecentlyPlayed && recentTracks.isNotEmpty()) {
-                                        item {
-                                            HomeTrackShelf(
-                                                title = "Recently played",
-                                                tracks = recentTracks.take(12),
-                                                session = connectedSession,
-                                                onTrackClick = { track ->
-                                                    playTrack(track, openPlayer = true, source = recentTracks)
-                                                },
-                                                isTrackLiked = { track -> track.id in likedTrackIds },
-                                                isTrackDownloaded = { track -> track.id in offlineDownloads },
-                                                downloadProgressForTrack = { track -> downloadProgressById[track.id] },
-                                                onToggleLiked = { track -> toggleLiked(track) },
-                                                onToggleDownload = { track -> toggleOfflineDownload(track) },
-                                                onGoToAlbum = { track ->
-                                                    openLibraryDetail(LibraryDetail(LibraryCollectionType.Album, track.album))
-                                                },
-                                                onGoToArtist = { track ->
-                                                    openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, track.artist))
-                                                },
-                                                onPlayNext = { track -> playTrackNext(track) },
-                                                onStartRadio = { track -> startRadioFrom(recentTracks, track) },
-                                                playlists = localPlaylists,
-                                                onAddToPlaylist = { playlist, track -> addTrackToPlaylist(playlist, track) }
-                                            )
-                                        }
-                                    }
-                                    if (homePageSettings.showFavorites && likedHomeTracks.isNotEmpty()) {
-                                        item {
-                                            HomeTrackShelf(
-                                                title = "Favorites",
-                                                tracks = likedHomeTracks.take(12),
-                                                session = connectedSession,
-                                                onTrackClick = { track ->
-                                                    playTrack(track, openPlayer = true, source = likedHomeTracks)
-                                                },
-                                                isTrackLiked = { track -> track.id in likedTrackIds },
-                                                isTrackDownloaded = { track -> track.id in offlineDownloads },
-                                                downloadProgressForTrack = { track -> downloadProgressById[track.id] },
-                                                onToggleLiked = { track -> toggleLiked(track) },
-                                                onToggleDownload = { track -> toggleOfflineDownload(track) },
-                                                onGoToAlbum = { track ->
-                                                    openLibraryDetail(LibraryDetail(LibraryCollectionType.Album, track.album))
-                                                },
-                                                onGoToArtist = { track ->
-                                                    openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, track.artist))
-                                                },
-                                                onPlayNext = { track -> playTrackNext(track) },
-                                                onStartRadio = { track -> startRadioFrom(likedHomeTracks, track) },
-                                                playlists = localPlaylists,
-                                                onAddToPlaylist = { playlist, track -> addTrackToPlaylist(playlist, track) }
-                                            )
-                                        }
-                                    }
-                                    if (homePageSettings.showPinnedAlbums && pinnedLibraryItems.isNotEmpty()) {
-                                        item {
-                                            PinnedLibraryShelf(
-                                                title = "On Home",
-                                                pinnedItems = pinnedLibraryItems,
-                                                tracks = visibleTracks,
-                                                downloadedTrackIds = offlineDownloads.keys,
-                                                playlists = localPlaylists,
-                                                session = connectedSession,
-                                                onOpenDetail = ::openLibraryDetail,
-                                                onUnpin = ::togglePinnedLibraryItem
-                                            )
-                                        }
-                                    }
-                                    if (homePageSettings.showNewAlbums && newHomeAlbumGroups.isNotEmpty()) {
-                                        item {
-                                            HomeGroupShelf(
-                                                title = "New albums",
-                                                groups = newHomeAlbumGroups,
-                                                session = connectedSession,
-                                                artworkShape = RoundedCornerShape(8.dp),
-                                                onGroupClick = { group ->
-                                                    openLibraryDetail(
-                                                        LibraryDetail(LibraryCollectionType.Album, group.key)
+                                    homePageSettings.orderedSections().forEach { section ->
+                                        when (section) {
+                                            HomeSection.Trending -> if (homePageSettings.showTrending && trendingTracks.isNotEmpty()) {
+                                                item {
+                                                    HomeTrackShelf(
+                                                        title = "Trending in your library",
+                                                        tracks = trendingTracks,
+                                                        session = connectedSession,
+                                                        onTrackClick = { track -> playTrack(track, openPlayer = true, source = trendingTracks) },
+                                                        isTrackLiked = { track -> track.id in likedTrackIds },
+                                                        isTrackDownloaded = { track -> track.id in offlineDownloads },
+                                                        downloadProgressForTrack = { track -> downloadProgressById[track.id] },
+                                                        onToggleLiked = { track -> toggleLiked(track) },
+                                                        onToggleDownload = { track -> toggleOfflineDownload(track) },
+                                                        onGoToAlbum = { track -> openLibraryDetail(LibraryDetail(LibraryCollectionType.Album, track.album)) },
+                                                        onGoToArtist = { track -> openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, track.artist)) },
+                                                        onPlayNext = { track -> playTrackNext(track) },
+                                                        onStartRadio = { track -> startRadioFrom(trendingTracks, track) },
+                                                        playlists = localPlaylists,
+                                                        onAddToPlaylist = { playlist, track -> addTrackToPlaylist(playlist, track) }
                                                     )
-                                                },
-                                                openLabel = "Go to album",
-                                                playLabel = "Play album",
-                                                shuffleLabel = "Shuffle album",
-                                                isPinned = { group ->
-                                                    pinnedLibraryItems.any {
-                                                        it == PinnedLibraryItem(LibraryCollectionType.Album, group.key)
-                                                    }
-                                                },
-                                                onTogglePin = { group ->
-                                                    togglePinnedLibraryItem(
-                                                        PinnedLibraryItem(LibraryCollectionType.Album, group.key)
-                                                    )
-                                                },
-                                                isFavorite = { group -> group.key in favoriteAlbumKeys },
-                                                onToggleFavorite = { group -> toggleFavoriteAlbum(group.key) },
-                                                onPlay = { group ->
-                                                    group.tracks.firstOrNull()?.let {
-                                                        playTrack(it, openPlayer = true, source = group.tracks)
-                                                    }
-                                                },
-                                                onShuffle = { group -> playRandom(group.tracks) }
-                                            )
-                                        }
-                                    }
-                                    if (homePageSettings.showArtists && displayedArtistGroups.isNotEmpty()) {
-                                        item {
-                                            HomeGroupShelf(
-                                                title = "Artists you listen to",
-                                                groups = displayedArtistGroups.take(12),
-                                            session = connectedSession,
-                                            artworkShape = CircleShape,
-                                            onGroupClick = { group ->
-                                                    openLibraryDetail(
-                                                        LibraryDetail(LibraryCollectionType.Artist, group.title)
-                                                    )
-                                            },
-                                            openLabel = "Go to artist",
-                                            playLabel = "Play artist",
-                                            shuffleLabel = "Shuffle artist",
-                                            isPinned = { group ->
-                                                pinnedLibraryItems.any {
-                                                    it == PinnedLibraryItem(LibraryCollectionType.Artist, group.title)
                                                 }
-                                            },
-                                            onTogglePin = { group ->
-                                                togglePinnedLibraryItem(
-                                                    PinnedLibraryItem(LibraryCollectionType.Artist, group.title)
-                                                )
-                                            },
-                                            onPlay = { group ->
-                                                group.tracks.firstOrNull()?.let {
-                                                    playTrack(it, openPlayer = true, source = group.tracks)
+                                            }
+
+                                            HomeSection.RecentlyPlayed -> if (homePageSettings.showRecentlyPlayed && recentTracks.isNotEmpty()) {
+                                                item {
+                                                    HomeTrackShelf(
+                                                        title = "Recently played",
+                                                        tracks = recentTracks.take(12),
+                                                        session = connectedSession,
+                                                        onTrackClick = { track -> playTrack(track, openPlayer = true, source = recentTracks) },
+                                                        isTrackLiked = { track -> track.id in likedTrackIds },
+                                                        isTrackDownloaded = { track -> track.id in offlineDownloads },
+                                                        downloadProgressForTrack = { track -> downloadProgressById[track.id] },
+                                                        onToggleLiked = { track -> toggleLiked(track) },
+                                                        onToggleDownload = { track -> toggleOfflineDownload(track) },
+                                                        onGoToAlbum = { track -> openLibraryDetail(LibraryDetail(LibraryCollectionType.Album, track.album)) },
+                                                        onGoToArtist = { track -> openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, track.artist)) },
+                                                        onPlayNext = { track -> playTrackNext(track) },
+                                                        onStartRadio = { track -> startRadioFrom(recentTracks, track) },
+                                                        playlists = localPlaylists,
+                                                        onAddToPlaylist = { playlist, track -> addTrackToPlaylist(playlist, track) }
+                                                    )
                                                 }
-                                            },
-                                            onShuffle = { group -> playRandom(group.tracks) }
-                                        )
-                                    }
-                                    }
-                                    if (homePageSettings.showSmartMixes && homeMix.isNotEmpty()) {
-                                        item {
-                                            HomeTrackShelf(
-                                                title = "Made from your library",
-                                                tracks = homeMix,
-                                                session = connectedSession,
-                                                onTrackClick = { track ->
-                                                    playTrack(track, openPlayer = true, source = homeMix)
-                                                },
-                                                isTrackLiked = { track -> track.id in likedTrackIds },
-                                                isTrackDownloaded = { track -> track.id in offlineDownloads },
-                                                downloadProgressForTrack = { track -> downloadProgressById[track.id] },
-                                                onToggleLiked = { track -> toggleLiked(track) },
-                                                onToggleDownload = { track -> toggleOfflineDownload(track) },
-                                                onGoToAlbum = { track ->
-                                                    openLibraryDetail(LibraryDetail(LibraryCollectionType.Album, track.album))
-                                                },
-                                                onGoToArtist = { track ->
-                                                    openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, track.artist))
-                                                },
-                                                onPlayNext = { track -> playTrackNext(track) },
-                                                onStartRadio = { track -> startRadioFrom(homeMix, track) },
-                                                playlists = localPlaylists,
-                                                onAddToPlaylist = { playlist, track -> addTrackToPlaylist(playlist, track) }
-                                            )
+                                            }
+
+                                            HomeSection.Favorites -> if (homePageSettings.showFavorites && likedHomeTracks.isNotEmpty()) {
+                                                item {
+                                                    HomeTrackShelf(
+                                                        title = "Favorites",
+                                                        tracks = likedHomeTracks.take(12),
+                                                        session = connectedSession,
+                                                        onTrackClick = { track -> playTrack(track, openPlayer = true, source = likedHomeTracks) },
+                                                        isTrackLiked = { track -> track.id in likedTrackIds },
+                                                        isTrackDownloaded = { track -> track.id in offlineDownloads },
+                                                        downloadProgressForTrack = { track -> downloadProgressById[track.id] },
+                                                        onToggleLiked = { track -> toggleLiked(track) },
+                                                        onToggleDownload = { track -> toggleOfflineDownload(track) },
+                                                        onGoToAlbum = { track -> openLibraryDetail(LibraryDetail(LibraryCollectionType.Album, track.album)) },
+                                                        onGoToArtist = { track -> openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, track.artist)) },
+                                                        onPlayNext = { track -> playTrackNext(track) },
+                                                        onStartRadio = { track -> startRadioFrom(likedHomeTracks, track) },
+                                                        playlists = localPlaylists,
+                                                        onAddToPlaylist = { playlist, track -> addTrackToPlaylist(playlist, track) }
+                                                    )
+                                                }
+                                            }
+
+                                            HomeSection.OnHome -> if (homePageSettings.showPinnedAlbums && pinnedLibraryItems.isNotEmpty()) {
+                                                item {
+                                                    PinnedLibraryShelf(
+                                                        title = "On Home",
+                                                        pinnedItems = pinnedLibraryItems,
+                                                        tracks = visibleTracks,
+                                                        downloadedTrackIds = offlineDownloads.keys,
+                                                        playlists = localPlaylists,
+                                                        session = connectedSession,
+                                                        onOpenDetail = ::openLibraryDetail,
+                                                        onUnpin = ::togglePinnedLibraryItem
+                                                    )
+                                                }
+                                            }
+
+                                            HomeSection.NewAlbums -> if (homePageSettings.showNewAlbums && newHomeAlbumGroups.isNotEmpty()) {
+                                                item {
+                                                    HomeGroupShelf(
+                                                        title = "New albums",
+                                                        groups = newHomeAlbumGroups,
+                                                        session = connectedSession,
+                                                        artworkShape = RoundedCornerShape(8.dp),
+                                                        onGroupClick = { group -> openLibraryDetail(LibraryDetail(LibraryCollectionType.Album, group.key)) },
+                                                        openLabel = "Go to album",
+                                                        playLabel = "Play album",
+                                                        shuffleLabel = "Shuffle album",
+                                                        isPinned = { group -> pinnedLibraryItems.any { it == PinnedLibraryItem(LibraryCollectionType.Album, group.key) } },
+                                                        onTogglePin = { group -> togglePinnedLibraryItem(PinnedLibraryItem(LibraryCollectionType.Album, group.key)) },
+                                                        isFavorite = { group -> group.key in favoriteAlbumKeys },
+                                                        onToggleFavorite = { group -> toggleFavoriteAlbum(group.key) },
+                                                        onPlay = { group -> group.tracks.firstOrNull()?.let { playTrack(it, openPlayer = true, source = group.tracks) } },
+                                                        onShuffle = { group -> playRandom(group.tracks) }
+                                                    )
+                                                }
+                                            }
+
+                                            HomeSection.Artists -> if (homePageSettings.showArtists && displayedArtistGroups.isNotEmpty()) {
+                                                item {
+                                                    HomeGroupShelf(
+                                                        title = "Artists you listen to",
+                                                        groups = displayedArtistGroups.take(12),
+                                                        session = connectedSession,
+                                                        artworkShape = CircleShape,
+                                                        onGroupClick = { group -> openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, group.title)) },
+                                                        openLabel = "Go to artist",
+                                                        playLabel = "Play artist",
+                                                        shuffleLabel = "Shuffle artist",
+                                                        isPinned = { group -> pinnedLibraryItems.any { it == PinnedLibraryItem(LibraryCollectionType.Artist, group.title) } },
+                                                        onTogglePin = { group -> togglePinnedLibraryItem(PinnedLibraryItem(LibraryCollectionType.Artist, group.title)) },
+                                                        onPlay = { group -> group.tracks.firstOrNull()?.let { playTrack(it, openPlayer = true, source = group.tracks) } },
+                                                        onShuffle = { group -> playRandom(group.tracks) }
+                                                    )
+                                                }
+                                            }
+
+                                            HomeSection.SmartMixes -> if (homePageSettings.showSmartMixes && homeMix.isNotEmpty()) {
+                                                item {
+                                                    HomeTrackShelf(
+                                                        title = "Made from your library",
+                                                        tracks = homeMix,
+                                                        session = connectedSession,
+                                                        onTrackClick = { track -> playTrack(track, openPlayer = true, source = homeMix) },
+                                                        isTrackLiked = { track -> track.id in likedTrackIds },
+                                                        isTrackDownloaded = { track -> track.id in offlineDownloads },
+                                                        downloadProgressForTrack = { track -> downloadProgressById[track.id] },
+                                                        onToggleLiked = { track -> toggleLiked(track) },
+                                                        onToggleDownload = { track -> toggleOfflineDownload(track) },
+                                                        onGoToAlbum = { track -> openLibraryDetail(LibraryDetail(LibraryCollectionType.Album, track.album)) },
+                                                        onGoToArtist = { track -> openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, track.artist)) },
+                                                        onPlayNext = { track -> playTrackNext(track) },
+                                                        onStartRadio = { track -> startRadioFrom(homeMix, track) },
+                                                        playlists = localPlaylists,
+                                                        onAddToPlaylist = { playlist, track -> addTrackToPlaylist(playlist, track) }
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -3704,6 +4080,7 @@ private fun JellyfinMusicApp() {
                                             item {
                                                 PlaylistDetailControls(
                                                     playlist = playlist,
+                                                    isGenerated = playlist.id == GENERATED_FAVORITES_PLAYLIST_ID,
                                                     onToggleFavorite = { togglePlaylistFavorite(playlist.id) },
                                                     onDelete = { deletePlaylist(playlist.id) }
                                                 )
@@ -4646,6 +5023,11 @@ private fun SettingsCategoryListCard(
     downloadedTrackCount: Int,
     downloadedBytes: Long,
     activeDownloadCount: Int,
+    streamingQualitySettings: StreamingQualitySettings,
+    startupBehaviorSettings: StartupBehaviorSettings,
+    queueBehaviorSettings: QueueBehaviorSettings,
+    playbackBehaviorSettings: PlaybackBehaviorSettings,
+    notificationActionSettings: NotificationActionSettings,
     gaplessPrebufferEnabled: Boolean,
     crossfadeEnabled: Boolean,
     crossfadeDurationSeconds: Int,
@@ -4679,6 +5061,11 @@ private fun SettingsCategoryListCard(
                         downloadedTrackCount = downloadedTrackCount,
                         downloadedBytes = downloadedBytes,
                         activeDownloadCount = activeDownloadCount,
+                        streamingQualitySettings = streamingQualitySettings,
+                        startupBehaviorSettings = startupBehaviorSettings,
+                        queueBehaviorSettings = queueBehaviorSettings,
+                        playbackBehaviorSettings = playbackBehaviorSettings,
+                        notificationActionSettings = notificationActionSettings,
                         gaplessPrebufferEnabled = gaplessPrebufferEnabled,
                         crossfadeEnabled = crossfadeEnabled,
                         crossfadeDurationSeconds = crossfadeDurationSeconds,
@@ -4780,6 +5167,11 @@ private fun settingsCategoryDetail(
     downloadedTrackCount: Int,
     downloadedBytes: Long,
     activeDownloadCount: Int,
+    streamingQualitySettings: StreamingQualitySettings,
+    startupBehaviorSettings: StartupBehaviorSettings,
+    queueBehaviorSettings: QueueBehaviorSettings,
+    playbackBehaviorSettings: PlaybackBehaviorSettings,
+    notificationActionSettings: NotificationActionSettings,
     gaplessPrebufferEnabled: Boolean,
     crossfadeEnabled: Boolean,
     crossfadeDurationSeconds: Int,
@@ -4797,9 +5189,24 @@ private fun settingsCategoryDetail(
 ): String =
     when (page) {
         SettingsPage.Account -> "${session.username} - ${session.serverUrl.toHostLabel()}"
+        SettingsPage.Streaming -> listOf(
+            if (streamingQualitySettings.forceTranscoding) "Force transcode" else if (streamingQualitySettings.tryDirectPlayFirst) "Direct first" else "Transcode first",
+            "Wi-Fi ${streamingQualitySettings.wifiBitrateKbps.bitrateLabel()}",
+            "Cell ${streamingQualitySettings.cellularBitrateKbps.bitrateLabel()}"
+        ).joinToString(" - ")
+        SettingsPage.Startup -> listOf(
+            startupBehaviorSettings.defaultDestination.label,
+            if (startupBehaviorSettings.restoreLastQueue) "Restore queue" else null,
+            if (startupBehaviorSettings.autoConnect) "Auto-connect" else "Manual connect"
+        ).filterNotNull().joinToString(" - ")
+        SettingsPage.Queue -> listOf(
+            queueBehaviorSettings.tapAction.label,
+            if (queueBehaviorSettings.shuffleAfterCurrent) "Shuffle rest" else null
+        ).filterNotNull().joinToString(" - ")
         SettingsPage.Library -> "${syncedTrackCount.countLabel("song")} - Songs ${libraryDensitySettings.songsViewMode.label} - Collections ${libraryDensitySettings.albumsViewMode.label}"
         SettingsPage.Home -> listOf(
             if (homePageSettings.showRecentlyPlayed) "Recent" else null,
+            if (homePageSettings.showTrending) "Trending" else null,
             if (homePageSettings.showFavorites) "Favorites" else null,
             if (homePageSettings.showSmartMixes) "Smart mixes" else null
         ).filterNotNull().ifEmpty { listOf("Quick grid only") }.joinToString(" - ")
@@ -4811,26 +5218,39 @@ private fun settingsCategoryDetail(
         SettingsPage.Playback -> listOf(
             if (playbackRecoverySettings.autoRetryEnabled) "Retry on" else "Retry off",
             if (playbackRecoverySettings.resumeAfterSeekEnabled) "Resume seek" else "Manual seek",
-            "${playbackRecoverySettings.bufferingTimeoutSeconds}s timeout"
-        ).joinToString(" - ")
+            "${playbackRecoverySettings.bufferingTimeoutSeconds}s timeout",
+            if (playbackBehaviorSettings.stopAfterCurrent) "Stop after current" else null
+        ).filterNotNull().joinToString(" - ")
+        SettingsPage.Notifications -> listOf(
+            if (notificationActionSettings.showPrevious) "Previous" else null,
+            "Play",
+            if (notificationActionSettings.showNext) "Next" else null,
+            if (notificationActionSettings.showStop) "Stop" else null
+        ).filterNotNull().joinToString(" - ")
         SettingsPage.Audio -> listOf(
             if (equalizerSettings.enabled) "${equalizerSettings.presetName} EQ" else "EQ off",
             if (crossfadeEnabled) "Crossfade ${crossfadeDurationSeconds}s" else "Crossfade off",
             if (audioOutputSettings.normalizationEnabled) "Normalize" else null
         ).filterNotNull().joinToString(" - ")
         SettingsPage.Appearance -> "${themeMode.label} - ${if (useAlbumArtColors) "Artwork colors" else "Static colors"} - ${if (backgroundGradientEnabled) "Gradient on" else "Gradient off"} - ${if (alternativeTonearmEnabled) "Alt arm" else "Classic arm"}"
-        SettingsPage.About -> "Version 0.1.0"
+        SettingsPage.Backup -> "Export or restore settings"
+        SettingsPage.About -> "Version ${appVersionLabel()}"
     }
 
 private fun settingsCategoryIcon(page: SettingsPage): ImageVector =
     when (page) {
         SettingsPage.Account -> PlayerIconVectors.SettingsFilled
+        SettingsPage.Streaming -> PlayerIconVectors.MusicNote
+        SettingsPage.Startup -> PlayerIconVectors.Home
+        SettingsPage.Queue -> PlayerIconVectors.Library
         SettingsPage.Library -> PlayerIconVectors.Library
         SettingsPage.Home -> PlayerIconVectors.HomeFilled
         SettingsPage.Offline -> PlayerIconVectors.Download
         SettingsPage.Playback -> PlayerIconVectors.Pause
+        SettingsPage.Notifications -> PlayerIconVectors.MusicNote
         SettingsPage.Audio -> PlayerIconVectors.Equalizer
         SettingsPage.Appearance -> PlayerIconVectors.HomeFilled
+        SettingsPage.Backup -> PlayerIconVectors.Download
         SettingsPage.About -> PlayerIconVectors.MoreVertical
     }
 
@@ -4941,7 +5361,7 @@ private fun AboutCard() {
             )
             SettingsInfoRow(
                 title = "Version",
-                value = "0.1.0"
+                value = appVersionLabel(includeCode = true)
             )
         }
     }
@@ -5082,6 +5502,168 @@ private fun AccountCard(
 }
 
 @Composable
+private fun StreamingQualityCard(
+    settings: StreamingQualitySettings,
+    onSettingsChange: (StreamingQualitySettings) -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Text("Streaming quality", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            SettingsSwitchRow(
+                title = "Try direct play first",
+                description = if (settings.tryDirectPlayFirst) "Original file first, transcoded retry if needed" else "Start with a transcoded stream",
+                checked = settings.tryDirectPlayFirst,
+                onCheckedChange = { enabled ->
+                    onSettingsChange(settings.copy(tryDirectPlayFirst = enabled, forceTranscoding = if (enabled) false else settings.forceTranscoding))
+                }
+            )
+            SettingsSwitchRow(
+                title = "Force transcoding",
+                description = if (settings.forceTranscoding) "Always asks Jellyfin for a bitrate-limited stream" else "Only transcodes when requested or needed",
+                checked = settings.forceTranscoding,
+                onCheckedChange = { enabled ->
+                    onSettingsChange(settings.copy(forceTranscoding = enabled, tryDirectPlayFirst = if (enabled) false else settings.tryDirectPlayFirst))
+                }
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+            BitrateSettingRow("Wi-Fi quality", settings.wifiBitrateKbps) {
+                onSettingsChange(settings.copy(wifiBitrateKbps = it))
+            }
+            BitrateSettingRow("Cellular quality", settings.cellularBitrateKbps) {
+                onSettingsChange(settings.copy(cellularBitrateKbps = it))
+            }
+            BitrateSettingRow("Preferred bitrate", settings.preferredBitrateKbps) {
+                onSettingsChange(settings.copy(preferredBitrateKbps = it))
+            }
+        }
+    }
+}
+
+@Composable
+private fun BitrateSettingRow(
+    title: String,
+    selectedKbps: Int,
+    onSelected: (Int) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(StreamingBitrateOption.entries) { option ->
+                FilterChip(
+                    selected = selectedKbps == option.kbps,
+                    onClick = { onSelected(option.kbps) },
+                    label = { Text(option.label) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StartupBehaviorCard(
+    settings: StartupBehaviorSettings,
+    onSettingsChange: (StartupBehaviorSettings) -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Text("Startup", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Text(
+                text = "Choose where the app lands and what it restores.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text("Open to", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(StartupDestination.entries) { destination ->
+                    FilterChip(
+                        selected = settings.defaultDestination == destination,
+                        onClick = { onSettingsChange(settings.copy(defaultDestination = destination)) },
+                        label = { Text(destination.label) }
+                    )
+                }
+            }
+            SettingsSwitchRow(
+                title = "Resume last tab",
+                description = if (settings.resumeLastTab) "Opens the last tab you used" else "Always uses the default page above",
+                checked = settings.resumeLastTab,
+                onCheckedChange = { onSettingsChange(settings.copy(resumeLastTab = it)) }
+            )
+            SettingsSwitchRow(
+                title = "Auto-connect",
+                description = if (settings.autoConnect) "Uses your saved Jellyfin session on launch" else "Shows sign-in first",
+                checked = settings.autoConnect,
+                onCheckedChange = { onSettingsChange(settings.copy(autoConnect = it)) }
+            )
+            SettingsSwitchRow(
+                title = "Restore last queue",
+                description = if (settings.restoreLastQueue) "Keeps your previous queue available" else "Starts with an empty queue",
+                checked = settings.restoreLastQueue,
+                onCheckedChange = { onSettingsChange(settings.copy(restoreLastQueue = it)) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun QueueBehaviorCard(
+    settings: QueueBehaviorSettings,
+    onSettingsChange: (QueueBehaviorSettings) -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Text("Queue behavior", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Text("After tapping a song", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                TrackTapAction.entries.forEach { action ->
+                    FilterChip(
+                        selected = settings.tapAction == action,
+                        onClick = { onSettingsChange(settings.copy(tapAction = action)) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = {
+                            Column {
+                                Text(action.label)
+                                Text(
+                                    text = action.description,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    )
+                }
+            }
+            SettingsSwitchRow(
+                title = "Shuffle after current",
+                description = if (settings.shuffleAfterCurrent) "Keeps the tapped song first and shuffles the rest" else "Keeps the source order",
+                checked = settings.shuffleAfterCurrent,
+                onCheckedChange = { onSettingsChange(settings.copy(shuffleAfterCurrent = it)) }
+            )
+        }
+    }
+}
+
+@Composable
 private fun LibrarySyncCard(
     isBusy: Boolean,
     syncedTrackCount: Int,
@@ -5134,6 +5716,22 @@ private fun LibrarySyncCard(
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold
                 )
+                Text(
+                    text = "Default tab",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(LibraryTab.entries) { tab ->
+                        FilterChip(
+                            selected = libraryDensitySettings.defaultTab == tab,
+                            onClick = {
+                                onLibraryDensitySettingsChange(libraryDensitySettings.copy(defaultTab = tab))
+                            },
+                            label = { Text(tab.label) }
+                        )
+                    }
+                }
                 Text(
                     text = "Songs",
                     style = MaterialTheme.typography.labelLarge,
@@ -5270,6 +5868,17 @@ private fun HomePageSettingsCard(
     settings: HomePageSettings,
     onSettingsChange: (HomePageSettings) -> Unit
 ) {
+    fun moveSection(section: HomeSection, delta: Int) {
+        val current = settings.orderedSections().toMutableList()
+        val fromIndex = current.indexOf(section)
+        if (fromIndex < 0) return
+        val toIndex = (fromIndex + delta).coerceIn(0, current.lastIndex)
+        if (fromIndex == toIndex) return
+        current.removeAt(fromIndex)
+        current.add(toIndex, section)
+        onSettingsChange(settings.copy(sectionOrder = current))
+    }
+
     Card(
         shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
@@ -5295,6 +5904,12 @@ private fun HomePageSettingsCard(
                 description = if (settings.showRecentlyPlayed) "Shows your recent tracks" else "Hides recent listening",
                 checked = settings.showRecentlyPlayed,
                 onCheckedChange = { enabled -> onSettingsChange(settings.copy(showRecentlyPlayed = enabled)) }
+            )
+            SettingsSwitchRow(
+                title = "Trending",
+                description = if (settings.showTrending) "Shows a ranked shelf from recent plays, likes, and fresh adds" else "Hides trending picks",
+                checked = settings.showTrending,
+                onCheckedChange = { enabled -> onSettingsChange(settings.copy(showTrending = enabled)) }
             )
             SettingsSwitchRow(
                 title = "Favorites",
@@ -5326,6 +5941,54 @@ private fun HomePageSettingsCard(
                 checked = settings.showSmartMixes,
                 onCheckedChange = { enabled -> onSettingsChange(settings.copy(showSmartMixes = enabled)) }
             )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+            Text(
+                text = "Section order",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            settings.orderedSections().forEachIndexed { index, section ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.5f))
+                        .padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = section.label,
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    IconButton(
+                        onClick = { moveSection(section, -1) },
+                        enabled = index > 0,
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Icon(
+                            imageVector = PlayerIconVectors.MoveUp,
+                            contentDescription = "Move up",
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    IconButton(
+                        onClick = { moveSection(section, 1) },
+                        enabled = index < settings.orderedSections().lastIndex,
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Icon(
+                            imageVector = PlayerIconVectors.MoveDown,
+                            contentDescription = "Move down",
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
             SettingsSwitchRow(
                 title = "Hide empty sections",
@@ -5503,15 +6166,15 @@ private fun PlaybackSettingsCard(
     gaplessPrebufferEnabled: Boolean,
     crossfadeEnabled: Boolean,
     crossfadeDurationSeconds: Int,
-    transcodedStreamingEnabled: Boolean,
     playbackReportingEnabled: Boolean,
     playbackRecoverySettings: PlaybackRecoverySettings,
+    playbackBehaviorSettings: PlaybackBehaviorSettings,
     onGaplessPrebufferChange: (Boolean) -> Unit,
     onCrossfadeEnabledChange: (Boolean) -> Unit,
     onCrossfadeDurationChange: (Int) -> Unit,
-    onTranscodedStreamingChange: (Boolean) -> Unit,
     onPlaybackReportingChange: (Boolean) -> Unit,
-    onPlaybackRecoverySettingsChange: (PlaybackRecoverySettings) -> Unit
+    onPlaybackRecoverySettingsChange: (PlaybackRecoverySettings) -> Unit,
+    onPlaybackBehaviorSettingsChange: (PlaybackBehaviorSettings) -> Unit
 ) {
     Card(
         shape = RoundedCornerShape(22.dp),
@@ -5645,10 +6308,40 @@ private fun PlaybackSettingsCard(
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
             SettingsSwitchRow(
-                title = "Prefer transcoded streaming",
-                description = if (transcodedStreamingEnabled) "Uses a smaller mobile-friendly stream" else "Streams original files when possible",
-                checked = transcodedStreamingEnabled,
-                onCheckedChange = onTranscodedStreamingChange
+                title = "Stop after current",
+                description = if (playbackBehaviorSettings.stopAfterCurrent) "Playback stops when this song ends" else "Queue continues normally",
+                checked = playbackBehaviorSettings.stopAfterCurrent,
+                onCheckedChange = { enabled ->
+                    onPlaybackBehaviorSettingsChange(playbackBehaviorSettings.copy(stopAfterCurrent = enabled))
+                }
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Sleep timer",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(listOf(0, 15, 30, 45, 60, 90, 120)) { minutes ->
+                        FilterChip(
+                            selected = playbackBehaviorSettings.sleepTimerMinutes == minutes,
+                            onClick = {
+                                onPlaybackBehaviorSettingsChange(
+                                    playbackBehaviorSettings.copy(sleepTimerMinutes = minutes)
+                                )
+                            },
+                            label = { Text(if (minutes == 0) "Off" else "${minutes}m") }
+                        )
+                    }
+                }
+            }
+            SettingsSwitchRow(
+                title = "Remember playback speed",
+                description = if (playbackBehaviorSettings.rememberPlaybackSpeed) "Prepared for speed controls" else "Speed resets to normal",
+                checked = playbackBehaviorSettings.rememberPlaybackSpeed,
+                onCheckedChange = { enabled ->
+                    onPlaybackBehaviorSettingsChange(playbackBehaviorSettings.copy(rememberPlaybackSpeed = enabled))
+                }
             )
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
             SettingsSwitchRow(
@@ -5657,6 +6350,109 @@ private fun PlaybackSettingsCard(
                 checked = playbackReportingEnabled,
                 onCheckedChange = onPlaybackReportingChange
             )
+        }
+    }
+}
+
+@Composable
+private fun NotificationActionsCard(
+    settings: NotificationActionSettings,
+    onSettingsChange: (NotificationActionSettings) -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Text("Notification actions", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Text(
+                text = "Choose which buttons appear in the media notification and lock screen.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            SettingsSwitchRow(
+                title = "Previous",
+                description = "Show previous-track control",
+                checked = settings.showPrevious,
+                onCheckedChange = { onSettingsChange(settings.copy(showPrevious = it)) }
+            )
+            SettingsSwitchRow(
+                title = "Next",
+                description = "Show next-track control",
+                checked = settings.showNext,
+                onCheckedChange = { onSettingsChange(settings.copy(showNext = it)) }
+            )
+            SettingsSwitchRow(
+                title = "Stop",
+                description = "Show stop and dismiss playback",
+                checked = settings.showStop,
+                onCheckedChange = { onSettingsChange(settings.copy(showStop = it)) }
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+            SettingsSwitchRow(
+                title = "Favorite",
+                description = "Toggle the current song in Favorites",
+                checked = settings.showFavorite,
+                onCheckedChange = { onSettingsChange(settings.copy(showFavorite = it)) }
+            )
+            SettingsSwitchRow(
+                title = "Shuffle",
+                description = "Toggle queue shuffle from the notification",
+                checked = settings.showShuffle,
+                onCheckedChange = { onSettingsChange(settings.copy(showShuffle = it)) }
+            )
+            SettingsSwitchRow(
+                title = "Repeat",
+                description = "Toggle repeat for the current track",
+                checked = settings.showRepeat,
+                onCheckedChange = { onSettingsChange(settings.copy(showRepeat = it)) }
+            )
+            SettingsSwitchRow(
+                title = "Download",
+                description = "Toggle offline download for the current song",
+                checked = settings.showDownload,
+                onCheckedChange = { onSettingsChange(settings.copy(showDownload = it)) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun BackupRestoreCard(
+    onExport: () -> Unit,
+    onImport: () -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Text("Backup & restore", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Text(
+                text = "Exports settings, playlists, favorites, home pins, theme choices, and offline rules.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onImport, shape = RoundedCornerShape(16.dp)) {
+                    Text("Import")
+                }
+                FilledTonalButton(onClick = onExport, shape = RoundedCornerShape(16.dp)) {
+                    Text("Export")
+                }
+            }
         }
     }
 }
@@ -6890,8 +7686,15 @@ private fun FavoritesHeader(
     trackCount: Int,
     albumCount: Int,
     artistCount: Int,
-    onTabSelected: (FavoritesTab) -> Unit
+    onTabSelected: (FavoritesTab) -> Unit,
+    canShuffle: Boolean,
+    onShuffle: () -> Unit
 ) {
+    val countText = when (selectedTab) {
+        FavoritesTab.Tracks -> trackCount.countLabel("track")
+        FavoritesTab.Albums -> albumCount.countLabel("album")
+        FavoritesTab.Artists -> artistCount.countLabel("artist")
+    }
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -6909,17 +7712,34 @@ private fun FavoritesHeader(
                 )
             }
         }
-        Text(
-            text = when (selectedTab) {
-                FavoritesTab.Tracks -> trackCount.countLabel("track")
-                FavoritesTab.Albums -> albumCount.countLabel("album")
-                FavoritesTab.Artists -> artistCount.countLabel("artist")
-            },
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = countText,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            FilledTonalButton(
+                onClick = onShuffle,
+                enabled = canShuffle,
+                shape = RoundedCornerShape(16.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+            ) {
+                Icon(
+                    imageVector = PlayerGlyph.Shuffle.imageVector(),
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Shuffle")
+            }
+        }
     }
 }
 
@@ -7010,6 +7830,7 @@ private fun PlaylistCreateCard(
 @Composable
 private fun PlaylistDetailControls(
     playlist: LocalPlaylist,
+    isGenerated: Boolean = false,
     onToggleFavorite: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -7025,30 +7846,40 @@ private fun PlaylistDetailControls(
         ) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    text = if (playlist.isFavorite) "Favorite playlist" else "Playlist",
+                    text = when {
+                        isGenerated -> "Generated playlist"
+                        playlist.isFavorite -> "Favorite playlist"
+                        else -> "Playlist"
+                    },
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    text = playlist.folder.takeIf { it.isNotBlank() } ?: playlist.trackIds.size.countLabel("song"),
+                    text = if (isGenerated) {
+                        "Synced from favorite songs"
+                    } else {
+                        playlist.folder.takeIf { it.isNotBlank() } ?: playlist.trackIds.size.countLabel("song")
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            IconButton(onClick = onToggleFavorite) {
-                Icon(
-                    imageVector = if (playlist.isFavorite) Icons.Filled.Favorite else PlayerIconVectors.FavoriteOutline,
-                    contentDescription = if (playlist.isFavorite) "Unfavorite playlist" else "Favorite playlist",
-                    tint = if (playlist.isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            TextButton(
-                onClick = onDelete,
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Text("Delete")
+            if (!isGenerated) {
+                IconButton(onClick = onToggleFavorite) {
+                    Icon(
+                        imageVector = if (playlist.isFavorite) Icons.Filled.Favorite else PlayerIconVectors.FavoriteOutline,
+                        contentDescription = if (playlist.isFavorite) "Unfavorite playlist" else "Favorite playlist",
+                        tint = if (playlist.isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                TextButton(
+                    onClick = onDelete,
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Text("Delete")
+                }
             }
         }
     }
@@ -12867,11 +13698,12 @@ private class JellyfinPlayer(private val context: Context) {
     }
 
     fun play(track: MusicTrack, session: JellyfinSession) {
+        val streamingSettings = loadStreamingQualitySettings(context)
         startPlayback(
             track = track,
             session = session,
-            transcoded = loadTranscodedStreamingEnabled(context),
-            allowTranscodedFallback = true,
+            transcoded = streamingSettings.startsTranscoded,
+            allowTranscodedFallback = streamingSettings.tryDirectPlayFirst && !streamingSettings.forceTranscoding,
             bypassOfflineFile = false,
             reportStopped = true,
             startPositionMs = queuedSeekPositionFor(track)
@@ -12977,8 +13809,8 @@ private class JellyfinPlayer(private val context: Context) {
             startPlayback(
                 track = track,
                 session = session,
-                transcoded = loadTranscodedStreamingEnabled(context),
-                allowTranscodedFallback = true,
+                transcoded = loadStreamingQualitySettings(context).startsTranscoded,
+                allowTranscodedFallback = loadStreamingQualitySettings(context).tryDirectPlayFirst,
                 bypassOfflineFile = false,
                 reportStopped = false,
                 startPositionMs = queuedSeekPositionFor(track)
@@ -12993,8 +13825,8 @@ private class JellyfinPlayer(private val context: Context) {
                 startPlayback(
                     track = track,
                     session = session,
-                    transcoded = loadTranscodedStreamingEnabled(context),
-                    allowTranscodedFallback = true,
+                    transcoded = loadStreamingQualitySettings(context).startsTranscoded,
+                    allowTranscodedFallback = loadStreamingQualitySettings(context).tryDirectPlayFirst,
                     bypassOfflineFile = false,
                     reportStopped = false,
                     startPositionMs = queuedSeekPositionFor(track)
@@ -13020,8 +13852,8 @@ private class JellyfinPlayer(private val context: Context) {
                     startPlayback(
                         track = track,
                         session = session,
-                        transcoded = loadTranscodedStreamingEnabled(context),
-                        allowTranscodedFallback = true,
+                        transcoded = loadStreamingQualitySettings(context).startsTranscoded,
+                        allowTranscodedFallback = loadStreamingQualitySettings(context).tryDirectPlayFirst,
                         bypassOfflineFile = false,
                         reportStopped = false,
                         startPositionMs = queuedPositionMs
@@ -13240,20 +14072,23 @@ private class JellyfinPlayer(private val context: Context) {
         startPositionMs: Long?
     ): ProgressiveMediaSource {
         val offlineFile = offlinePlayableFileFor(context, session, track).takeUnless { bypassOfflineFile }
+        val streamingSettings = loadStreamingQualitySettings(context)
+        val maxBitrateKbps = effectiveStreamingBitrateKbps(context, streamingSettings)
         val mediaUri = offlineFile
             ?.let { Uri.fromFile(it) }
             ?: Uri.parse(
                 track.streamUrl(
                     session = session,
                     transcoded = transcoded,
-                    startPositionMs = startPositionMs ?: 0L
+                    startPositionMs = startPositionMs ?: 0L,
+                    maxBitrateKbps = maxBitrateKbps
                 )
             )
         val dataSourceFactory = if (offlineFile != null) {
             DefaultDataSource.Factory(context)
         } else {
             val httpFactory = DefaultHttpDataSource.Factory()
-                .setUserAgent("JellyfinMusic/0.1.0")
+                .setUserAgent(appUserAgent())
                 .setConnectTimeoutMs(DEFAULT_CONNECT_TIMEOUT_MS)
                 .setReadTimeoutMs(loadPlaybackRecoverySettings(context).bufferingTimeoutSeconds * 1_000)
                 .setDefaultRequestProperties(session.streamHeaders())
@@ -13482,11 +14317,12 @@ private class JellyfinPlayer(private val context: Context) {
                 ) {
                     return
                 }
+                val streamingSettings = loadStreamingQualitySettings(context)
                 startPlayback(
                     track = track,
                     session = session,
-                    transcoded = loadTranscodedStreamingEnabled(context),
-                    allowTranscodedFallback = true,
+                    transcoded = streamingSettings.startsTranscoded,
+                    allowTranscodedFallback = streamingSettings.tryDirectPlayFirst && !streamingSettings.forceTranscoding,
                     bypassOfflineFile = false,
                     reportStopped = false,
                     startPositionMs = positionMs
@@ -13979,7 +14815,7 @@ private class JellyfinRepository(private val context: Context) {
             setRequestProperty("Accept", "application/json")
             setRequestProperty("Authorization", authHeader)
             setRequestProperty("X-Emby-Authorization", authHeader)
-            setRequestProperty("User-Agent", "Jellyfin Music/0.1.0 Android")
+            setRequestProperty("User-Agent", appUserAgent(compact = false))
             session?.token?.let { setRequestProperty("X-Emby-Token", it) }
             if (body != null) {
                 doOutput = true
@@ -14007,7 +14843,7 @@ private class JellyfinRepository(private val context: Context) {
     }
 
     private fun authorizationHeader(session: JellyfinSession?): String {
-        val base = "MediaBrowser Client=\"Jellyfin Music\", Device=\"Android\", DeviceId=\"$deviceId\", Version=\"0.1.0\""
+        val base = "MediaBrowser Client=\"Jellyfin Music\", Device=\"Android\", DeviceId=\"$deviceId\", Version=\"${BuildConfig.VERSION_NAME}\""
         return session?.let { "$base, Token=\"${it.token}\"" } ?: base
     }
 }
@@ -14462,6 +15298,247 @@ private fun saveVisualizerSettings(context: Context, settings: VisualizerSetting
         .apply()
 }
 
+private fun loadStreamingQualitySettings(context: Context): StreamingQualitySettings {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val legacyTranscoded = prefs.getBoolean(PREF_TRANSCODED_STREAMING_ENABLED, false)
+    return StreamingQualitySettings(
+        tryDirectPlayFirst = prefs.getBoolean(PREF_STREAMING_TRY_DIRECT_FIRST, !legacyTranscoded),
+        forceTranscoding = prefs.getBoolean(PREF_STREAMING_FORCE_TRANSCODING, legacyTranscoded),
+        wifiBitrateKbps = prefs.getInt(PREF_STREAMING_WIFI_BITRATE_KBPS, 320).coerceIn(0, 1_000),
+        cellularBitrateKbps = prefs.getInt(PREF_STREAMING_CELLULAR_BITRATE_KBPS, 192).coerceIn(0, 1_000),
+        preferredBitrateKbps = prefs.getInt(PREF_STREAMING_PREFERRED_BITRATE_KBPS, 256).coerceIn(0, 1_000)
+    )
+}
+
+private fun saveStreamingQualitySettings(context: Context, settings: StreamingQualitySettings) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(PREF_STREAMING_TRY_DIRECT_FIRST, settings.tryDirectPlayFirst)
+        .putBoolean(PREF_STREAMING_FORCE_TRANSCODING, settings.forceTranscoding)
+        .putInt(PREF_STREAMING_WIFI_BITRATE_KBPS, settings.wifiBitrateKbps.coerceIn(0, 1_000))
+        .putInt(PREF_STREAMING_CELLULAR_BITRATE_KBPS, settings.cellularBitrateKbps.coerceIn(0, 1_000))
+        .putInt(PREF_STREAMING_PREFERRED_BITRATE_KBPS, settings.preferredBitrateKbps.coerceIn(0, 1_000))
+        .putBoolean(PREF_TRANSCODED_STREAMING_ENABLED, settings.forceTranscoding)
+        .apply()
+}
+
+private fun effectiveStreamingBitrateKbps(context: Context, settings: StreamingQualitySettings): Int =
+    when {
+        isWifiConnected(context) -> settings.wifiBitrateKbps
+        (context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)
+            ?.activeNetwork
+            ?.let { network -> (context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).getNetworkCapabilities(network) }
+            ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true -> settings.cellularBitrateKbps
+        else -> settings.preferredBitrateKbps
+    }.coerceIn(0, 1_000)
+
+private fun loadStartupBehaviorSettings(context: Context): StartupBehaviorSettings {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val destination = runCatching {
+        StartupDestination.valueOf(
+            prefs.getString(PREF_STARTUP_DEFAULT_DESTINATION, StartupDestination.Home.name)
+                ?: StartupDestination.Home.name
+        )
+    }.getOrDefault(StartupDestination.Home)
+    return StartupBehaviorSettings(
+        defaultDestination = destination,
+        resumeLastTab = prefs.getBoolean(PREF_STARTUP_RESUME_LAST_TAB, true),
+        autoConnect = prefs.getBoolean(PREF_STARTUP_AUTO_CONNECT, true),
+        restoreLastQueue = prefs.getBoolean(PREF_STARTUP_RESTORE_LAST_QUEUE, true)
+    )
+}
+
+private fun saveStartupBehaviorSettings(context: Context, settings: StartupBehaviorSettings) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(PREF_STARTUP_DEFAULT_DESTINATION, settings.defaultDestination.name)
+        .putBoolean(PREF_STARTUP_RESUME_LAST_TAB, settings.resumeLastTab)
+        .putBoolean(PREF_STARTUP_AUTO_CONNECT, settings.autoConnect)
+        .putBoolean(PREF_STARTUP_RESTORE_LAST_QUEUE, settings.restoreLastQueue)
+        .apply()
+}
+
+private fun initialAppDestination(context: Context, startupSettings: StartupBehaviorSettings): AppDestination {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val savedDestination = if (startupSettings.resumeLastTab) {
+        runCatching {
+            AppDestination.valueOf(prefs.getString(PREF_LAST_DESTINATION, AppDestination.Home.name) ?: AppDestination.Home.name)
+        }.getOrNull()
+    } else {
+        null
+    }
+    return (savedDestination ?: startupSettings.defaultDestination.destination ?: AppDestination.Home)
+        .takeUnless { it == AppDestination.Player }
+        ?: AppDestination.Home
+}
+
+private fun saveLastDestination(context: Context, destination: AppDestination) {
+    if (destination == AppDestination.Player) return
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(PREF_LAST_DESTINATION, destination.name)
+        .apply()
+}
+
+private fun loadQueueBehaviorSettings(context: Context): QueueBehaviorSettings {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val tapAction = runCatching {
+        TrackTapAction.valueOf(prefs.getString(PREF_QUEUE_TAP_ACTION, TrackTapAction.VisibleList.name) ?: TrackTapAction.VisibleList.name)
+    }.getOrDefault(TrackTapAction.VisibleList)
+    return QueueBehaviorSettings(
+        tapAction = tapAction,
+        shuffleAfterCurrent = prefs.getBoolean(PREF_QUEUE_SHUFFLE_AFTER_CURRENT, false)
+    )
+}
+
+private fun saveQueueBehaviorSettings(context: Context, settings: QueueBehaviorSettings) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(PREF_QUEUE_TAP_ACTION, settings.tapAction.name)
+        .putBoolean(PREF_QUEUE_SHUFFLE_AFTER_CURRENT, settings.shuffleAfterCurrent)
+        .apply()
+}
+
+private fun loadPlaybackBehaviorSettings(context: Context): PlaybackBehaviorSettings {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    return PlaybackBehaviorSettings(
+        stopAfterCurrent = prefs.getBoolean(PREF_PLAYBACK_STOP_AFTER_CURRENT, false),
+        sleepTimerMinutes = prefs.getInt(PREF_PLAYBACK_SLEEP_TIMER_MINUTES, 0).coerceIn(0, 180),
+        rememberPlaybackSpeed = prefs.getBoolean(PREF_PLAYBACK_REMEMBER_SPEED, false)
+    )
+}
+
+private fun savePlaybackBehaviorSettings(context: Context, settings: PlaybackBehaviorSettings) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(PREF_PLAYBACK_STOP_AFTER_CURRENT, settings.stopAfterCurrent)
+        .putInt(PREF_PLAYBACK_SLEEP_TIMER_MINUTES, settings.sleepTimerMinutes.coerceIn(0, 180))
+        .putBoolean(PREF_PLAYBACK_REMEMBER_SPEED, settings.rememberPlaybackSpeed)
+        .apply()
+}
+
+private fun loadNotificationActionSettings(context: Context): NotificationActionSettings {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    return NotificationActionSettings(
+        showPrevious = prefs.getBoolean(PREF_NOTIFICATION_ACTION_PREVIOUS, true),
+        showNext = prefs.getBoolean(PREF_NOTIFICATION_ACTION_NEXT, true),
+        showStop = prefs.getBoolean(PREF_NOTIFICATION_ACTION_STOP, true),
+        showFavorite = prefs.getBoolean(PREF_NOTIFICATION_ACTION_FAVORITE, false),
+        showShuffle = prefs.getBoolean(PREF_NOTIFICATION_ACTION_SHUFFLE, false),
+        showRepeat = prefs.getBoolean(PREF_NOTIFICATION_ACTION_REPEAT, false),
+        showDownload = prefs.getBoolean(PREF_NOTIFICATION_ACTION_DOWNLOAD, false)
+    )
+}
+
+private fun saveNotificationActionSettings(context: Context, settings: NotificationActionSettings) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(PREF_NOTIFICATION_ACTION_PREVIOUS, settings.showPrevious)
+        .putBoolean(PREF_NOTIFICATION_ACTION_NEXT, settings.showNext)
+        .putBoolean(PREF_NOTIFICATION_ACTION_STOP, settings.showStop)
+        .putBoolean(PREF_NOTIFICATION_ACTION_FAVORITE, settings.showFavorite)
+        .putBoolean(PREF_NOTIFICATION_ACTION_SHUFFLE, settings.showShuffle)
+        .putBoolean(PREF_NOTIFICATION_ACTION_REPEAT, settings.showRepeat)
+        .putBoolean(PREF_NOTIFICATION_ACTION_DOWNLOAD, settings.showDownload)
+        .apply()
+}
+
+private fun backupMirrorFile(context: Context): File =
+    File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir, "jellyfin-music-backup-latest.json")
+
+private fun exportSettingsBackup(context: Context): String =
+    runCatching {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val preferenceItems = JSONObject()
+        prefs.all.toSortedMap().forEach { (key, value) ->
+            val encodedValue = when (value) {
+                is Boolean -> JSONObject().put("type", "boolean").put("value", value)
+                is Int -> JSONObject().put("type", "int").put("value", value)
+                is Long -> JSONObject().put("type", "long").put("value", value)
+                is Float -> JSONObject().put("type", "float").put("value", value)
+                is String -> JSONObject().put("type", "string").put("value", value)
+                is Set<*> -> JSONObject()
+                    .put("type", "stringSet")
+                    .put("value", JSONArray().also { array ->
+                        value.filterIsInstance<String>().sorted().forEach(array::put)
+                    })
+                else -> null
+            }
+            if (encodedValue != null) {
+                preferenceItems.put(key, encodedValue)
+            }
+        }
+        val root = JSONObject()
+            .put("version", 1)
+            .put("appVersion", BuildConfig.VERSION_NAME)
+            .put("exportedAt", System.currentTimeMillis())
+            .put("preferences", preferenceItems)
+        val json = root.toString(2)
+        val fileName = "jellyfin-music-backup-${SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(java.util.Date())}.json"
+
+        backupMirrorFile(context).apply {
+            parentFile?.mkdirs()
+            writeText(json)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                put(MediaStore.MediaColumns.MIME_TYPE, "application/json")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+            }
+            val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: throw IOException("Could not create backup in Downloads")
+            context.contentResolver.openOutputStream(uri)?.use { output ->
+                output.write(json.toByteArray(Charsets.UTF_8))
+            } ?: throw IOException("Could not write backup")
+        } else {
+            @Suppress("DEPRECATION")
+            val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            downloads.mkdirs()
+            File(downloads, fileName).writeText(json)
+        }
+        "Backup exported to Downloads/$fileName"
+    }.getOrElse { error ->
+        "Backup failed: ${error.readableMessage()}"
+    }
+
+private fun importSettingsBackup(context: Context): String =
+    runCatching {
+        val backupFile = backupMirrorFile(context)
+        if (!backupFile.isFile) {
+            return@runCatching "No exported backup found"
+        }
+        val root = JSONObject(backupFile.readText())
+        val preferences = root.optJSONObject("preferences") ?: throw IOException("Backup is missing preferences")
+        val editor = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+        val keys = preferences.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val item = preferences.optJSONObject(key) ?: continue
+            when (item.optString("type")) {
+                "boolean" -> editor.putBoolean(key, item.optBoolean("value"))
+                "int" -> editor.putInt(key, item.optInt("value"))
+                "long" -> editor.putLong(key, item.optLong("value"))
+                "float" -> editor.putFloat(key, item.optDouble("value").toFloat())
+                "string" -> editor.putString(key, item.optString("value"))
+                "stringSet" -> {
+                    val array = item.optJSONArray("value") ?: JSONArray()
+                    val values = buildSet {
+                        for (index in 0 until array.length()) {
+                            array.optString(index).takeIf { it.isNotBlank() }?.let(::add)
+                        }
+                    }
+                    editor.putStringSet(key, values)
+                }
+            }
+        }
+        editor.apply()
+        "Backup imported. Restart the app to reload everything."
+    }.getOrElse { error ->
+        "Import failed: ${error.readableMessage()}"
+    }
+
 private fun loadLibraryDensitySettings(context: Context): LibraryDensitySettings {
     val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     val artSize = runCatching {
@@ -14470,12 +15547,16 @@ private fun loadLibraryDensitySettings(context: Context): LibraryDensitySettings
     val sortMode = runCatching {
         LibrarySortMode.valueOf(prefs.getString(PREF_LIBRARY_DEFAULT_SORT, LibrarySortMode.Title.name) ?: LibrarySortMode.Title.name)
     }.getOrDefault(LibrarySortMode.Title)
+    val defaultTab = runCatching {
+        LibraryTab.valueOf(prefs.getString(PREF_LIBRARY_DEFAULT_TAB, LibraryTab.Songs.name) ?: LibraryTab.Songs.name)
+    }.getOrDefault(LibraryTab.Songs)
     val legacyGridView = prefs.getBoolean(PREF_LIBRARY_GRID_VIEW, true)
     val legacyGridColumns = prefs.getInt(PREF_LIBRARY_GRID_COLUMNS, 2).coerceIn(2, 3)
     return LibraryDensitySettings(
         compactRows = prefs.getBoolean(PREF_LIBRARY_COMPACT_ROWS, false),
         gridView = legacyGridView,
         gridColumns = legacyGridColumns,
+        defaultTab = defaultTab,
         songsViewMode = loadLibraryViewModePreference(
             prefs = prefs,
             key = PREF_LIBRARY_SONGS_VIEW_MODE,
@@ -14521,6 +15602,7 @@ private fun saveLibraryDensitySettings(context: Context, settings: LibraryDensit
         .putString(PREF_LIBRARY_ALBUMS_VIEW_MODE, settings.albumsViewMode.name)
         .putString(PREF_LIBRARY_ARTISTS_VIEW_MODE, settings.artistsViewMode.name)
         .putString(PREF_LIBRARY_PLAYLISTS_VIEW_MODE, settings.playlistsViewMode.name)
+        .putString(PREF_LIBRARY_DEFAULT_TAB, settings.defaultTab.name)
         .putString(PREF_LIBRARY_ART_SIZE, settings.artSize.name)
         .putBoolean(PREF_LIBRARY_ALPHABET_RAIL_ENABLED, settings.alphabetRailEnabled)
         .putString(PREF_LIBRARY_DEFAULT_SORT, settings.defaultSort.name)
@@ -14529,14 +15611,21 @@ private fun saveLibraryDensitySettings(context: Context, settings: LibraryDensit
 
 private fun loadHomePageSettings(context: Context): HomePageSettings {
     val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val sectionOrder = prefs.getString(PREF_HOME_SECTION_ORDER, null)
+        ?.split(',')
+        ?.mapNotNull { name -> runCatching { HomeSection.valueOf(name) }.getOrNull() }
+        ?.takeIf { it.isNotEmpty() }
+        ?: DefaultHomeSections
     return HomePageSettings(
         showRecentlyPlayed = prefs.getBoolean(PREF_HOME_SHOW_RECENTLY_PLAYED, true),
+        showTrending = prefs.getBoolean(PREF_HOME_SHOW_TRENDING, true),
         showFavorites = prefs.getBoolean(PREF_HOME_SHOW_FAVORITES, true),
         showPinnedAlbums = prefs.getBoolean(PREF_HOME_SHOW_PINNED_ALBUMS, true),
         showNewAlbums = prefs.getBoolean(PREF_HOME_SHOW_NEW_ALBUMS, true),
         showArtists = prefs.getBoolean(PREF_HOME_SHOW_ARTISTS, true),
         showSmartMixes = prefs.getBoolean(PREF_HOME_SHOW_SMART_MIXES, true),
-        hideEmptySections = prefs.getBoolean(PREF_HOME_HIDE_EMPTY_SECTIONS, true)
+        hideEmptySections = prefs.getBoolean(PREF_HOME_HIDE_EMPTY_SECTIONS, true),
+        sectionOrder = sectionOrder
     )
 }
 
@@ -14544,12 +15633,14 @@ private fun saveHomePageSettings(context: Context, settings: HomePageSettings) {
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
         .putBoolean(PREF_HOME_SHOW_RECENTLY_PLAYED, settings.showRecentlyPlayed)
+        .putBoolean(PREF_HOME_SHOW_TRENDING, settings.showTrending)
         .putBoolean(PREF_HOME_SHOW_FAVORITES, settings.showFavorites)
         .putBoolean(PREF_HOME_SHOW_PINNED_ALBUMS, settings.showPinnedAlbums)
         .putBoolean(PREF_HOME_SHOW_NEW_ALBUMS, settings.showNewAlbums)
         .putBoolean(PREF_HOME_SHOW_ARTISTS, settings.showArtists)
         .putBoolean(PREF_HOME_SHOW_SMART_MIXES, settings.showSmartMixes)
         .putBoolean(PREF_HOME_HIDE_EMPTY_SECTIONS, settings.hideEmptySections)
+        .putString(PREF_HOME_SECTION_ORDER, settings.orderedSections().joinToString(separator = ",") { it.name })
         .apply()
 }
 
@@ -14733,14 +15824,17 @@ private fun saveCrossfadeDurationSeconds(context: Context, seconds: Int) {
 }
 
 private fun loadTranscodedStreamingEnabled(context: Context): Boolean =
-    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        .getBoolean(PREF_TRANSCODED_STREAMING_ENABLED, false)
+    loadStreamingQualitySettings(context).startsTranscoded
 
 private fun saveTranscodedStreamingEnabled(context: Context, enabled: Boolean) {
-    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        .edit()
-        .putBoolean(PREF_TRANSCODED_STREAMING_ENABLED, enabled)
-        .apply()
+    val current = loadStreamingQualitySettings(context)
+    saveStreamingQualitySettings(
+        context,
+        current.copy(
+            forceTranscoding = enabled,
+            tryDirectPlayFirst = !enabled
+        )
+    )
 }
 
 private fun loadPlaybackReportingEnabled(context: Context): Boolean =
@@ -14866,6 +15960,38 @@ private fun localPlaylistsPreferenceKey(session: JellyfinSession): String =
 private fun newLocalPlaylistId(name: String): String =
     stableCacheKey("$name|${System.currentTimeMillis()}|${Random.nextLong()}").take(24)
 
+private fun generatedFavoritesPlaylist(trackIds: Collection<String>, updatedAt: Long = System.currentTimeMillis()): LocalPlaylist =
+    LocalPlaylist(
+        id = GENERATED_FAVORITES_PLAYLIST_ID,
+        name = GENERATED_FAVORITES_PLAYLIST_NAME,
+        folder = GENERATED_FAVORITES_PLAYLIST_FOLDER,
+        trackIds = trackIds.distinct(),
+        isFavorite = true,
+        updatedAt = updatedAt
+    )
+
+private fun List<LocalPlaylist>.withGeneratedFavoritesPlaylist(likedTrackIds: Collection<String>): List<LocalPlaylist> {
+    val distinctLikedTrackIds = likedTrackIds.distinct()
+    val existingFavoritesPlaylist = firstOrNull { it.id == GENERATED_FAVORITES_PLAYLIST_ID }
+    val editablePlaylists = filterNot { it.id == GENERATED_FAVORITES_PLAYLIST_ID }
+    if (distinctLikedTrackIds.isEmpty()) {
+        return editablePlaylists.sortedWith(LocalPlaylistSort)
+    }
+    val updatedAt = if (
+        existingFavoritesPlaylist?.trackIds == distinctLikedTrackIds &&
+        existingFavoritesPlaylist.name == GENERATED_FAVORITES_PLAYLIST_NAME &&
+        existingFavoritesPlaylist.folder == GENERATED_FAVORITES_PLAYLIST_FOLDER &&
+        existingFavoritesPlaylist.isFavorite
+    ) {
+        existingFavoritesPlaylist.updatedAt
+    } else {
+        System.currentTimeMillis()
+    }
+    return (editablePlaylists + generatedFavoritesPlaylist(distinctLikedTrackIds, updatedAt))
+        .distinctBy { it.id }
+        .sortedWith(LocalPlaylistSort)
+}
+
 private fun loadLocalPlaylists(context: Context, session: JellyfinSession): List<LocalPlaylist> {
     val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .getString(localPlaylistsPreferenceKey(session), null)
@@ -14955,6 +16081,32 @@ private fun saveRecentTrackIds(
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
         .putString(recentTrackIdsPreferenceKey(session), items.toString())
+        .apply()
+}
+
+private fun lastQueueIdsPreferenceKey(session: JellyfinSession): String =
+    "$PREF_LAST_QUEUE_IDS_PREFIX${stableCacheKey("${session.serverUrl}|${session.userId}")}"
+
+private fun loadLastQueueIds(context: Context, session: JellyfinSession): List<String> {
+    val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getString(lastQueueIdsPreferenceKey(session), null)
+        ?: return emptyList()
+    return runCatching {
+        val items = JSONArray(raw)
+        buildList {
+            for (index in 0 until items.length()) {
+                items.optString(index).takeIf { it.isNotBlank() }?.let(::add)
+            }
+        }.distinct().take(500)
+    }.getOrDefault(emptyList())
+}
+
+private fun saveLastQueueIds(context: Context, session: JellyfinSession, queue: List<MusicTrack>) {
+    val items = JSONArray()
+    queue.map { it.id }.distinct().take(500).forEach(items::put)
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(lastQueueIdsPreferenceKey(session), items.toString())
         .apply()
 }
 
@@ -15186,6 +16338,52 @@ private fun List<MusicTrack>.homeMix(seed: Long): List<MusicTrack> {
     if (queue.size <= 1) return queue
     Collections.shuffle(queue, java.util.Random(seed + queue.size * 97L))
     return queue
+}
+
+private fun List<MusicTrack>.trendingTracks(
+    likedTrackIds: Set<String>,
+    recentTrackIds: List<String>,
+    activeTrack: MusicTrack?
+): List<MusicTrack> {
+    val libraryTracks = distinctBy { it.id }
+    if (libraryTracks.size <= 1) return libraryTracks
+    val recentRank = recentTrackIds.distinct().take(80).withIndex().associate { it.value to it.index }
+    val now = System.currentTimeMillis()
+    val scoredTracks = libraryTracks.map { track ->
+        var score = 0f
+        if (track.id == activeTrack?.id) {
+            score += 42f
+        }
+        recentRank[track.id]?.let { index ->
+            score += (58f - index * 1.35f).coerceAtLeast(6f)
+        }
+        if (track.id in likedTrackIds) {
+            score += 30f
+        }
+        if (track.dateAddedMs > 0L) {
+            val ageDays = ((now - track.dateAddedMs).coerceAtLeast(0L) / 86_400_000L).toInt()
+            score += when {
+                ageDays <= 3 -> 28f
+                ageDays <= 14 -> 20f
+                ageDays <= 45 -> 13f
+                ageDays <= 180 -> 5f
+                else -> 0f
+            }
+        }
+        track to score
+    }
+    val hasTrendSignals = scoredTracks.any { it.second > 0f }
+    return if (hasTrendSignals) {
+        scoredTracks
+            .sortedWith(
+                compareByDescending<Pair<MusicTrack, Float>> { it.second }
+                    .thenByDescending { it.first.dateAddedMs }
+                    .thenBy { it.first.title.lowercase(Locale.getDefault()) }
+            )
+            .map { it.first }
+    } else {
+        libraryTracks.homeMix(seed = todayHomeSeed() + 771L)
+    }
 }
 
 private fun List<MusicTrack>.randomizedPlaybackQueue(): List<MusicTrack> {
