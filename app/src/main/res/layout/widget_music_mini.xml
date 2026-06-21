@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_pill_background"
+    android:paddingStart="10dp"
+    android:paddingTop="7dp"
+    android:paddingEnd="10dp"
+    android:paddingBottom="7dp">
+
+    <ImageView
+        android:id="@+id/widget_album"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_alignParentStart="true"
+        android:layout_centerVertical="true"
+        android:contentDescription="@string/widget_music_compact_description"
+        android:scaleType="fitCenter"
+        android:src="@drawable/widget_vinyl" />
+
+    <ImageView
+        android:id="@+id/widget_play"
+        android:layout_width="38dp"
+        android:layout_height="38dp"
+        android:layout_alignParentEnd="true"
+        android:layout_centerVertical="true"
+        android:background="@drawable/widget_play_button"
+        android:contentDescription="Play or pause"
+        android:padding="11dp"
+        android:scaleType="center"
+        android:src="@drawable/widget_icon_play" />
+
+    <TextView
+        android:id="@+id/widget_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_alignTop="@id/widget_album"
+        android:layout_marginStart="10dp"
+        android:layout_marginTop="1dp"
+        android:layout_marginEnd="10dp"
+        android:layout_toEndOf="@id/widget_album"
+        android:layout_toStartOf="@id/widget_play"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:text="Jellyfin Music"
+        android:textColor="@color/widget_on_surface"
+        android:textSize="13sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/widget_artist"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_below="@id/widget_title"
+        android:layout_marginStart="10dp"
+        android:layout_marginEnd="10dp"
+        android:layout_toEndOf="@id/widget_album"
+        android:layout_toStartOf="@id/widget_play"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:text="Tap to open"
+        android:textColor="@color/widget_on_surface_variant"
+        android:textSize="10sp" />
+
+    <ProgressBar
+        android:id="@+id/widget_progress"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="4dp"
+        android:layout_alignBottom="@id/widget_album"
+        android:layout_marginStart="10dp"
+        android:layout_marginEnd="10dp"
+        android:layout_toEndOf="@id/widget_album"
+        android:layout_toStartOf="@id/widget_play"
+        android:indeterminate="false"
+        android:max="1000"
+        android:progress="180"
+        android:progressDrawable="@drawable/widget_progress" />
+
+    <ImageView
+        android:id="@+id/widget_previous"
+        android:layout_width="1dp"
+        android:layout_height="1dp"
+        android:visibility="invisible" />
+
+    <ImageView
+        android:id="@+id/widget_next"
+        android:layout_width="1dp"
+        android:layout_height="1dp"
+        android:visibility="invisible" />
+
+    <TextView
+        android:id="@+id/widget_status"
+        android:layout_width="1dp"
+        android:layout_height="1dp"
+        android:visibility="invisible" />
+</RelativeLayout>

@@ -16,6 +16,7 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Shader
 import android.os.Build
+import android.os.Bundle
 import android.os.SystemClock
 import android.view.View
 import android.widget.RemoteViews
@@ -27,56 +28,51 @@ import java.util.Collections
 import kotlin.concurrent.thread
 import kotlin.math.max
 
-class MusicWidgetProvider : AppWidgetProvider() {
+enum class WidgetLayoutPreference {
+    Card,
+    Compact,
+    Pill
+}
+
+open class AdaptiveMusicWidgetProvider(
+    private val preference: WidgetLayoutPreference
+) : AppWidgetProvider() {
     override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
         ids.forEach { id ->
-            manager.updateAppWidget(id, buildRemoteViews(context, R.layout.widget_music_card))
+            updateAdaptiveWidget(context, manager, id, preference)
         }
     }
 
+    override fun onAppWidgetOptionsChanged(
+        context: Context,
+        manager: AppWidgetManager,
+        appWidgetId: Int,
+        newOptions: Bundle
+    ) {
+        updateAdaptiveWidget(context, manager, appWidgetId, preference, newOptions)
+    }
+}
+
+class MusicWidgetProvider : AdaptiveMusicWidgetProvider(WidgetLayoutPreference.Card) {
     companion object {
         fun updateAll(context: Context) {
-            val manager = AppWidgetManager.getInstance(context)
-            val component = ComponentName(context, MusicWidgetProvider::class.java)
-            manager.getAppWidgetIds(component).forEach { id ->
-                manager.updateAppWidget(id, buildRemoteViews(context, R.layout.widget_music_card))
-            }
+            updateProviderWidgets(context, MusicWidgetProvider::class.java, WidgetLayoutPreference.Card)
         }
     }
 }
 
-class CompactMusicWidgetProvider : AppWidgetProvider() {
-    override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
-        ids.forEach { id ->
-            manager.updateAppWidget(id, buildRemoteViews(context, R.layout.widget_music_compact))
-        }
-    }
-
+class CompactMusicWidgetProvider : AdaptiveMusicWidgetProvider(WidgetLayoutPreference.Compact) {
     companion object {
         fun updateAll(context: Context) {
-            val manager = AppWidgetManager.getInstance(context)
-            val component = ComponentName(context, CompactMusicWidgetProvider::class.java)
-            manager.getAppWidgetIds(component).forEach { id ->
-                manager.updateAppWidget(id, buildRemoteViews(context, R.layout.widget_music_compact))
-            }
+            updateProviderWidgets(context, CompactMusicWidgetProvider::class.java, WidgetLayoutPreference.Compact)
         }
     }
 }
 
-class PillMusicWidgetProvider : AppWidgetProvider() {
-    override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
-        ids.forEach { id ->
-            manager.updateAppWidget(id, buildRemoteViews(context, R.layout.widget_music_pill))
-        }
-    }
-
+class PillMusicWidgetProvider : AdaptiveMusicWidgetProvider(WidgetLayoutPreference.Pill) {
     companion object {
         fun updateAll(context: Context) {
-            val manager = AppWidgetManager.getInstance(context)
-            val component = ComponentName(context, PillMusicWidgetProvider::class.java)
-            manager.getAppWidgetIds(component).forEach { id ->
-                manager.updateAppWidget(id, buildRemoteViews(context, R.layout.widget_music_pill))
-            }
+            updateProviderWidgets(context, PillMusicWidgetProvider::class.java, WidgetLayoutPreference.Pill)
         }
     }
 }
@@ -87,6 +83,67 @@ fun updateMusicWidgets(context: Context) {
     PillMusicWidgetProvider.updateAll(context)
 }
 
+private fun updateProviderWidgets(
+    context: Context,
+    providerClass: Class<out AppWidgetProvider>,
+    preference: WidgetLayoutPreference
+) {
+    val manager = AppWidgetManager.getInstance(context)
+    val component = ComponentName(context, providerClass)
+    manager.getAppWidgetIds(component).forEach { id ->
+        updateAdaptiveWidget(context, manager, id, preference)
+    }
+}
+
+private fun updateAdaptiveWidget(
+    context: Context,
+    manager: AppWidgetManager,
+    id: Int,
+    preference: WidgetLayoutPreference,
+    options: Bundle = manager.getAppWidgetOptions(id)
+) {
+    manager.updateAppWidget(id, buildRemoteViews(context, layoutForWidgetSize(options, preference)))
+}
+
+private fun layoutForWidgetSize(options: Bundle, preference: WidgetLayoutPreference): Int {
+    val fallbackWidth = when (preference) {
+        WidgetLayoutPreference.Card -> 320
+        WidgetLayoutPreference.Compact -> 220
+        WidgetLayoutPreference.Pill -> 300
+    }
+    val fallbackHeight = when (preference) {
+        WidgetLayoutPreference.Card -> 150
+        WidgetLayoutPreference.Compact -> 92
+        WidgetLayoutPreference.Pill -> 76
+    }
+    val widthDp = widgetBoundDp(
+        options = options,
+        minKey = AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH,
+        maxKey = AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH,
+        fallback = fallbackWidth
+    )
+    val heightDp = widgetBoundDp(
+        options = options,
+        minKey = AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT,
+        maxKey = AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT,
+        fallback = fallbackHeight
+    )
+
+    return when {
+        heightDp < 82 || widthDp < 190 -> R.layout.widget_music_mini
+        heightDp >= 132 && widthDp >= 286 -> R.layout.widget_music_card
+        heightDp < 112 && widthDp >= 248 -> R.layout.widget_music_pill
+        preference == WidgetLayoutPreference.Pill && widthDp >= 224 -> R.layout.widget_music_pill
+        else -> R.layout.widget_music_compact
+    }
+}
+
+private fun widgetBoundDp(options: Bundle, minKey: String, maxKey: String, fallback: Int): Int {
+    val min = options.getInt(minKey, 0).takeIf { it > 0 }
+    val max = options.getInt(maxKey, 0).takeIf { it > 0 }
+    return listOfNotNull(min, max).maxOrNull() ?: fallback
+}
+
 private fun buildRemoteViews(context: Context, layoutId: Int): RemoteViews {
     val state = loadWidgetState(context)
     return RemoteViews(context.packageName, layoutId).apply {
@@ -94,10 +151,18 @@ private fun buildRemoteViews(context: Context, layoutId: Int): RemoteViews {
         setTextViewText(R.id.widget_artist, state.artist)
         setTextViewText(R.id.widget_status, state.status)
         val playbackVisibility = if (state.hasTrack) View.VISIBLE else View.INVISIBLE
+        val adjacentVisibility = if (
+            state.hasTrack &&
+            (layoutId == R.layout.widget_music_card || layoutId == R.layout.widget_music_pill)
+        ) {
+            View.VISIBLE
+        } else {
+            View.INVISIBLE
+        }
         setViewVisibility(R.id.widget_progress, playbackVisibility)
         setViewVisibility(R.id.widget_play, playbackVisibility)
-        setViewVisibility(R.id.widget_previous, playbackVisibility)
-        setViewVisibility(R.id.widget_next, playbackVisibility)
+        setViewVisibility(R.id.widget_previous, adjacentVisibility)
+        setViewVisibility(R.id.widget_next, adjacentVisibility)
         setImageViewResource(
             R.id.widget_play,
             if (state.isPlaying) R.drawable.widget_icon_pause else R.drawable.widget_icon_play
