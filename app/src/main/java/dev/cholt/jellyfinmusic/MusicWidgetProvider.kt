@@ -16,6 +16,7 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Shader
 import android.os.Build
+import android.os.SystemClock
 import android.view.View
 import android.widget.RemoteViews
 import java.io.File
@@ -139,17 +140,31 @@ private data class WidgetState(
     val title: String,
     val artist: String,
     val status: String,
-    val progress: Float,
+    val storedProgress: Float,
+    val isPlaying: Boolean,
+    val positionMs: Long,
+    val durationMs: Long,
+    val updatedAtMs: Long,
     val imageUrl: String?,
     val hasTrack: Boolean
 ) {
-    val isPlaying: Boolean
-        get() = hasTrack && status.equals("Playing", ignoreCase = true)
+    val progress: Float
+        get() {
+            if (!hasTrack || durationMs <= 0L) return storedProgress.coerceIn(0f, 1f)
+            val elapsedMs = if (isPlaying) {
+                (SystemClock.elapsedRealtime() - updatedAtMs).coerceAtLeast(0L)
+            } else {
+                0L
+            }
+            return ((positionMs + elapsedMs).coerceIn(0L, durationMs).toFloat() / durationMs.toFloat())
+                .coerceIn(0f, 1f)
+        }
 }
 
 private fun loadWidgetState(context: Context): WidgetState {
     val prefs = context.getSharedPreferences("jellyfin_music_widget", Context.MODE_PRIVATE)
     val hasTrack = prefs.getBoolean("hasTrack", false)
+    val status = prefs.getString("status", null)?.takeIf { it.isNotBlank() } ?: "Ready"
     return WidgetState(
         title = if (hasTrack) {
             prefs.getString("title", null)?.takeIf { it.isNotBlank() } ?: "Unknown song"
@@ -161,22 +176,36 @@ private fun loadWidgetState(context: Context): WidgetState {
         } else {
             "Tap to open"
         },
-        status = prefs.getString("status", null)?.takeIf { it.isNotBlank() } ?: "Ready",
-        progress = prefs.getFloat("progress", 0f),
+        status = status,
+        storedProgress = prefs.getFloat("progress", 0f),
+        isPlaying = hasTrack && prefs.getBoolean("isPlaying", status.equals("Playing", ignoreCase = true)),
+        positionMs = prefs.getLong("positionMs", 0L),
+        durationMs = prefs.getLong("durationMs", 0L),
+        updatedAtMs = prefs.getLong("updatedAtMs", 0L),
         imageUrl = prefs.getString("imageUrl", null)?.takeIf { hasTrack && it.isNotBlank() },
         hasTrack = hasTrack
     )
 }
 
-fun saveWidgetState(context: Context, track: MusicTrack?, session: JellyfinSession?, status: String, progress: Float) {
+fun saveWidgetState(context: Context, snapshot: PlaybackSnapshot) {
     val prefs = context.getSharedPreferences("jellyfin_music_widget", Context.MODE_PRIVATE)
-    val imageUrl = track?.imageUrl(session, size = 320, quality = 84)
+    val track = snapshot.track
+    val session = snapshot.session
+    val imageUrl = if (track != null && session != null) {
+        track.imageUrl(session, size = 320, quality = 84)
+    } else {
+        null
+    }
     val previousImageUrl = prefs.getString("imageUrl", null)
     val editor = prefs.edit()
         .putString("title", track?.title ?: "Jellyfin Music")
         .putString("artist", track?.artist ?: "Tap to open")
-        .putString("status", status)
-        .putFloat("progress", progress.coerceIn(0f, 1f))
+        .putString("status", if (track == null) "Ready" else snapshot.status)
+        .putFloat("progress", snapshot.displayProgress)
+        .putBoolean("isPlaying", snapshot.isPlaying)
+        .putLong("positionMs", snapshot.positionMs.coerceAtLeast(0L))
+        .putLong("durationMs", snapshot.durationMs.coerceAtLeast(0L))
+        .putLong("updatedAtMs", snapshot.updatedAtMs)
         .putBoolean("hasTrack", track != null)
     if (imageUrl != null) {
         editor.putString("imageUrl", imageUrl)

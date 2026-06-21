@@ -93,6 +93,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -246,7 +247,6 @@ class MainActivity : ComponentActivity() {
         setTheme(R.style.AppTheme)
         applySystemBarStyle(isSystemDarkMode())
         super.onCreate(savedInstanceState)
-        saveWidgetState(this, null, null, "Ready", 0f)
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 42)
         }
@@ -401,7 +401,7 @@ private const val USER_SEEK_PROGRESS_HOLD_MS = 2_000L
 private const val VISUALIZER_BAR_COUNT = 32
 private const val VISUALIZER_CAPTURE_STALE_MS = 420L
 private const val VISUALIZER_FALLBACK_FRAME_MS = 48L
-private const val WIDGET_PROGRESS_UPDATE_MS = 2_000L
+private const val WIDGET_PROGRESS_UPDATE_MS = 1_000L
 private const val EQUALIZER_BAND_COUNT = 5
 private const val EQUALIZER_MIN_DB = -12f
 private const val EQUALIZER_MAX_DB = 12f
@@ -558,6 +558,14 @@ private object PlaybackNotificationActions {
         handlers?.onSeekToFraction?.invoke(fraction.coerceIn(0f, 1f))
     }
 }
+
+private fun PlaybackSnapshot.androidPlaybackState(): Int =
+    when {
+        isBuffering -> PlaybackState.STATE_BUFFERING
+        isPlaying -> PlaybackState.STATE_PLAYING
+        isEnded -> PlaybackState.STATE_STOPPED
+        else -> PlaybackState.STATE_PAUSED
+    }
 
 class PlaybackNotificationReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -921,7 +929,8 @@ class AutoMediaBrowserService : MediaBrowserService() {
     private fun publishAutoSessionState() {
         val player = autoPlayer()
         player.syncProgress()
-        val track = player.currentTrack
+        val snapshot = player.playbackSnapshot
+        val track = snapshot.track
         if (track != null) {
             autoSession.setMetadata(
                 MediaMetadata.Builder()
@@ -933,15 +942,7 @@ class AutoMediaBrowserService : MediaBrowserService() {
                     .build()
             )
         }
-        val state = when {
-            player.status == "Buffering" -> PlaybackState.STATE_BUFFERING
-            player.isPlaying -> PlaybackState.STATE_PLAYING
-            player.status == "Ended" -> PlaybackState.STATE_STOPPED
-            else -> PlaybackState.STATE_PAUSED
-        }
-        val position = track
-            ?.let { (it.durationMs * player.progress).toLong().coerceAtLeast(0L) }
-            ?: PlaybackState.PLAYBACK_POSITION_UNKNOWN
+        val position = track?.let { snapshot.livePositionMs } ?: PlaybackState.PLAYBACK_POSITION_UNKNOWN
         autoSession.setPlaybackState(
             PlaybackState.Builder()
                 .setActions(
@@ -955,7 +956,7 @@ class AutoMediaBrowserService : MediaBrowserService() {
                         PlaybackState.ACTION_PLAY_FROM_MEDIA_ID or
                         PlaybackState.ACTION_PLAY_FROM_SEARCH
                 )
-                .setState(state, position, if (player.isPlaying) 1f else 0f, SystemClock.elapsedRealtime())
+                .setState(snapshot.androidPlaybackState(), position, if (snapshot.isPlaying) 1f else 0f, snapshot.updatedAtMs)
                 .build()
         )
         autoSession.isActive = true
@@ -979,13 +980,12 @@ private class PlaybackNotificationController(context: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var currentTrack: MusicTrack? = null
     private var currentSession: JellyfinSession? = null
-    private var currentIsPlaying = false
-    private var currentStatus = "Ready"
-    private var currentProgress = 0f
+    private var currentSnapshot = PlaybackSnapshot.empty()
     private var largeIconTrackId: String? = null
     private var largeIcon: Bitmap? = null
     private var loadingLargeIconTrackId: String? = null
     private var lastPlaybackStateUpdateAt = 0L
+    private var lastNotificationProgressUpdateAt = 0L
 
     private val mediaSession = MediaSession(appContext, "Jellyfin Music").apply {
         setCallback(object : MediaSession.Callback() {
@@ -1006,8 +1006,8 @@ private class PlaybackNotificationController(context: Context) {
             }
 
             override fun onSeekTo(pos: Long) {
-                currentTrack?.durationMs
-                    ?.takeIf { it > 0L }
+                currentSnapshot.durationMs
+                    .takeIf { it > 0L }
                     ?.let { duration -> PlaybackNotificationActions.seekToFraction(pos.toFloat() / duration.toFloat()) }
             }
 
@@ -1043,24 +1043,18 @@ private class PlaybackNotificationController(context: Context) {
         createPlaybackChannel()
     }
 
-    fun update(
-        track: MusicTrack?,
-        session: JellyfinSession?,
-        isPlaying: Boolean,
-        status: String,
-        progress: Float
-    ) {
+    fun update(snapshot: PlaybackSnapshot) {
+        val track = snapshot.track
+        val session = snapshot.session
         if (track == null || session == null) {
             cancel()
             return
         }
 
         val trackChanged = currentTrack?.id != track.id
+        currentSnapshot = snapshot
         currentTrack = track
         currentSession = session
-        currentIsPlaying = isPlaying
-        currentStatus = status
-        currentProgress = progress.coerceIn(0f, 1f)
 
         if (trackChanged) {
             largeIcon = null
@@ -1069,29 +1063,35 @@ private class PlaybackNotificationController(context: Context) {
         }
 
         publishMediaSessionState(force = true)
-        val notification = buildNotification(track, isPlaying, status)
+        val notification = buildNotification(snapshot)
+        lastNotificationProgressUpdateAt = SystemClock.elapsedRealtime()
         PlaybackForegroundService.publish(
             context = appContext,
             notification = notification,
-            keepForeground = isPlaying || status == "Buffering"
+            keepForeground = snapshot.isPlaying || snapshot.isBuffering
         )
         notificationManager.notify(PLAYBACK_NOTIFICATION_ID, notification)
         loadLargeIconIfNeeded(track, session)
     }
 
-    fun syncPlaybackState(isPlaying: Boolean, status: String, progress: Float) {
-        currentIsPlaying = isPlaying
-        currentStatus = status
-        currentProgress = progress.coerceIn(0f, 1f)
+    fun syncPlaybackState(snapshot: PlaybackSnapshot) {
+        if (snapshot.track == null || snapshot.session == null) return
+        currentSnapshot = snapshot
+        currentTrack = snapshot.track
+        currentSession = snapshot.session
         publishMediaSessionState(force = false)
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastNotificationProgressUpdateAt >= 1_500L) {
+            lastNotificationProgressUpdateAt = now
+            notificationManager.notify(PLAYBACK_NOTIFICATION_ID, buildNotification(snapshot))
+        }
     }
 
     fun cancel() {
+        currentSnapshot = PlaybackSnapshot.empty()
         currentTrack = null
         currentSession = null
-        currentIsPlaying = false
-        currentStatus = "Ready"
-        currentProgress = 0f
+        lastNotificationProgressUpdateAt = 0L
         mediaSession.isActive = false
         PlaybackForegroundService.stop(appContext)
         notificationManager.cancel(PLAYBACK_NOTIFICATION_ID)
@@ -1117,7 +1117,8 @@ private class PlaybackNotificationController(context: Context) {
         notificationManager.createNotificationChannel(channel)
     }
 
-    private fun buildNotification(track: MusicTrack, isPlaying: Boolean, status: String): Notification {
+    private fun buildNotification(snapshot: PlaybackSnapshot): Notification {
+        val track = snapshot.track ?: error("Notification requires an active track")
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(appContext, PLAYBACK_NOTIFICATION_CHANNEL_ID)
         } else {
@@ -1129,19 +1130,19 @@ private class PlaybackNotificationController(context: Context) {
             .setSmallIcon(R.drawable.ic_notification_music)
             .setContentTitle(track.title)
             .setContentText(track.notificationSubtitle())
-            .setSubText(status.takeUnless { it == "Playing" || it == "Paused" })
+            .setSubText(snapshot.status.takeUnless { it == "Playing" || it == "Paused" })
             .setContentIntent(openAppPendingIntent())
             .setDeleteIntent(actionPendingIntent(PLAYBACK_ACTION_STOP, 5))
             .setCategory(Notification.CATEGORY_TRANSPORT)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
-            .setOngoing(isPlaying || status == "Buffering")
+            .setOngoing(snapshot.isPlaying || snapshot.isBuffering)
             .setColor(track.tint.toArgb())
             .setProgress(
-                track.durationMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
-                (track.durationMs * currentProgress).toLong().coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
-                status == "Buffering"
+                snapshot.durationMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                snapshot.livePositionMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                snapshot.isBuffering
             )
 
         largeIcon?.takeIf { largeIconTrackId == track.id }?.let(builder::setLargeIcon)
@@ -1155,9 +1156,9 @@ private class PlaybackNotificationController(context: Context) {
         )
         builder.addAction(
             Notification.Action.Builder(
-                if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
-                if (isPlaying) "Pause" else "Play",
-                actionPendingIntent(if (isPlaying) PLAYBACK_ACTION_PAUSE else PLAYBACK_ACTION_PLAY, 2)
+                if (snapshot.isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
+                if (snapshot.isPlaying) "Pause" else "Play",
+                actionPendingIntent(if (snapshot.isPlaying) PLAYBACK_ACTION_PAUSE else PLAYBACK_ACTION_PLAY, 2)
             ).build()
         )
         builder.addAction(
@@ -1178,7 +1179,8 @@ private class PlaybackNotificationController(context: Context) {
     }
 
     private fun publishMediaSessionState(force: Boolean) {
-        val track = currentTrack ?: return
+        val snapshot = currentSnapshot
+        val track = snapshot.track ?: return
         val now = SystemClock.elapsedRealtime()
         if (!force && now - lastPlaybackStateUpdateAt < 1_500L) return
         lastPlaybackStateUpdateAt = now
@@ -1205,25 +1207,18 @@ private class PlaybackNotificationController(context: Context) {
                         PlaybackState.ACTION_PLAY_PAUSE or
                         PlaybackState.ACTION_SKIP_TO_PREVIOUS or
                         PlaybackState.ACTION_SKIP_TO_NEXT or
-                        PlaybackState.ACTION_STOP
+                        PlaybackState.ACTION_STOP or
+                        PlaybackState.ACTION_SEEK_TO
                 )
                 .setState(
-                    playbackStateFor(currentStatus, currentIsPlaying),
-                    (track.durationMs * currentProgress).toLong().coerceAtLeast(0L),
-                    if (currentIsPlaying) 1f else 0f,
-                    now
+                    snapshot.androidPlaybackState(),
+                    snapshot.livePositionMs,
+                    if (snapshot.isPlaying) 1f else 0f,
+                    snapshot.updatedAtMs
                 )
                 .build()
         )
     }
-
-    private fun playbackStateFor(status: String, isPlaying: Boolean): Int =
-        when {
-            status == "Buffering" -> PlaybackState.STATE_BUFFERING
-            isPlaying -> PlaybackState.STATE_PLAYING
-            status == "Ended" -> PlaybackState.STATE_STOPPED
-            else -> PlaybackState.STATE_PAUSED
-        }
 
     private fun loadLargeIconIfNeeded(track: MusicTrack, session: JellyfinSession) {
         if (largeIconTrackId == track.id || loadingLargeIconTrackId == track.id) return
@@ -1233,15 +1228,16 @@ private class PlaybackNotificationController(context: Context) {
             val bitmap = loadAlbumBitmapBlocking(appContext, imageUrl, session.token)
             mainHandler.post {
                 loadingLargeIconTrackId = null
-                if (currentTrack?.id == track.id && bitmap != null) {
+                val snapshot = currentSnapshot
+                if (snapshot.track?.id == track.id && bitmap != null) {
                     largeIcon = bitmap
                     largeIconTrackId = track.id
                     publishMediaSessionState(force = true)
-                    val notification = buildNotification(track, currentIsPlaying, currentStatus)
+                    val notification = buildNotification(snapshot)
                     PlaybackForegroundService.publish(
                         context = appContext,
                         notification = notification,
-                        keepForeground = currentIsPlaying || currentStatus == "Buffering"
+                        keepForeground = snapshot.isPlaying || snapshot.isBuffering
                     )
                     notificationManager.notify(
                         PLAYBACK_NOTIFICATION_ID,
@@ -7768,8 +7764,31 @@ private fun FullPlayerScreen(
                     }
                 }
             } else {
-                val mobileTopInset = if (maxHeight >= 840.dp) 54.dp else 34.dp
-                val mobileControlGap = if (maxHeight >= 840.dp) 42.dp else 22.dp
+                val shortMobile = maxHeight < 760.dp
+                val tallMobile = maxHeight >= 900.dp
+                val mobileTopInset = when {
+                    shortMobile -> 22.dp
+                    tallMobile -> 58.dp
+                    else -> 38.dp
+                }
+                val mobileStageFraction = when {
+                    shortMobile -> 0.76f
+                    tallMobile -> 0.9f
+                    else -> 0.84f
+                }
+                val mobileStageMax = when {
+                    shortMobile -> 320.dp
+                    tallMobile -> 392.dp
+                    else -> 360.dp
+                }
+                val mobileTitleGap = if (shortMobile) 8.dp else 12.dp
+                val mobileProgressGap = if (shortMobile) 0.dp else 2.dp
+                val mobileControlGap = when {
+                    shortMobile -> 16.dp
+                    tallMobile -> 44.dp
+                    else -> 26.dp
+                }
+                val mobileBottomReserve = if (shortMobile) 54.dp else 72.dp
 
                 Column(
                     modifier = Modifier
@@ -7782,9 +7801,12 @@ private fun FullPlayerScreen(
                         isPlaying = isPlaying,
                         progress = progress,
                         session = session,
-                        onSeek = onSeek
+                        onSeek = onSeek,
+                        modifier = Modifier
+                            .fillMaxWidth(mobileStageFraction)
+                            .widthIn(max = mobileStageMax)
                     )
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(mobileTitleGap))
                     PlayerTitleActionsRow(
                         track = track,
                         isFavorite = isFavorite,
@@ -7794,7 +7816,7 @@ private fun FullPlayerScreen(
                             actionsExpanded = true
                         }
                     )
-                    Spacer(Modifier.height(2.dp))
+                    Spacer(Modifier.height(mobileProgressGap))
                     PlayerProgressSection(
                         track = track,
                         progress = progress,
@@ -7819,7 +7841,7 @@ private fun FullPlayerScreen(
                             .fillMaxWidth()
                     )
                     Spacer(Modifier.weight(1f))
-                    Spacer(Modifier.height(72.dp))
+                    Spacer(Modifier.height(mobileBottomReserve))
                 }
             }
         }
@@ -10790,6 +10812,8 @@ private class JellyfinPlayer(private val context: Context) {
         private set
     var progress by mutableFloatStateOf(0f)
         private set
+    var playbackSnapshot by mutableStateOf(PlaybackSnapshot.empty())
+        private set
     var visualizerLevels by mutableStateOf(FloatArray(VISUALIZER_BAR_COUNT))
         private set
 
@@ -11042,15 +11066,13 @@ private class JellyfinPlayer(private val context: Context) {
                 val seekTimedOut = SystemClock.elapsedRealtime() - pendingSeekStartedAt > USER_SEEK_PROGRESS_HOLD_MS
                 if (!seekIsSettled && !seekTimedOut) {
                     progress = (pendingTarget.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
-                    notificationController.syncPlaybackState(isPlaying, status, progress)
-                    publishWidgetProgress(activeTrack)
+                    publishContinuousPlaybackState(activeTrack)
                     return@runCatching
                 }
                 pendingSeekTargetMs = null
             }
             progress = (currentPosition.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
-            notificationController.syncPlaybackState(isPlaying, status, progress)
-            publishWidgetProgress(activeTrack)
+            publishContinuousPlaybackState(activeTrack)
             reportCurrentPlaybackProgress()
         }
     }
@@ -11351,6 +11373,9 @@ private class JellyfinPlayer(private val context: Context) {
     ): Boolean {
         val session = currentSession ?: return false
         if (transcoded || !allowTranscodedFallback || !player.isActivePlayback(generation)) return false
+        status = "Retrying transcoded stream"
+        isPlaying = false
+        publishPlaybackState(track)
         pendingSeekTargetMs = null
         pendingSeekStartedAt = 0L
         val retryStartPositionMs = currentPlaybackPositionMs(track)
@@ -11426,23 +11451,57 @@ private class JellyfinPlayer(private val context: Context) {
             ?: track.durationMs.takeIf { it > 0L }?.let { (it * progress.coerceIn(0f, 1f)).toLong() }
     }
 
-    private fun publishPlaybackState(track: MusicTrack? = currentTrack) {
-        lastWidgetProgressUpdateAt = SystemClock.elapsedRealtime()
-        saveWidgetState(context, track, currentSession, status, progress)
-        notificationController.update(
-            track = track,
+    private fun createPlaybackSnapshot(track: MusicTrack? = currentTrack): PlaybackSnapshot {
+        val activeTrack = track
+        if (activeTrack == null) {
+            return PlaybackSnapshot.empty(status = status)
+        }
+        val durationMs = activeTrack.durationMs.coerceAtLeast(0L)
+        val rawPositionMs = currentPlaybackPositionMs(activeTrack)
+            ?: durationMs.takeIf { it > 0L }?.let { (it * progress.coerceIn(0f, 1f)).toLong() }
+            ?: 0L
+        val positionMs = if (durationMs > 0L) {
+            rawPositionMs.coerceIn(0L, durationMs)
+        } else {
+            rawPositionMs.coerceAtLeast(0L)
+        }
+        val normalizedProgress = if (durationMs > 0L) {
+            positionMs.toFloat() / durationMs.toFloat()
+        } else {
+            progress
+        }.coerceIn(0f, 1f)
+        progress = normalizedProgress
+        return PlaybackSnapshot(
+            track = activeTrack,
             session = currentSession,
             isPlaying = isPlaying,
             status = status,
-            progress = progress
+            progress = normalizedProgress,
+            positionMs = positionMs,
+            durationMs = durationMs
         )
     }
 
-    private fun publishWidgetProgress(track: MusicTrack) {
+    private fun publishPlaybackState(track: MusicTrack? = currentTrack) {
+        val snapshot = createPlaybackSnapshot(track)
+        playbackSnapshot = snapshot
+        lastWidgetProgressUpdateAt = snapshot.updatedAtMs
+        saveWidgetState(context, snapshot)
+        notificationController.update(snapshot)
+    }
+
+    private fun publishContinuousPlaybackState(track: MusicTrack) {
+        val snapshot = createPlaybackSnapshot(track)
+        playbackSnapshot = snapshot
+        notificationController.syncPlaybackState(snapshot)
+        publishWidgetProgress(snapshot)
+    }
+
+    private fun publishWidgetProgress(snapshot: PlaybackSnapshot) {
         val now = SystemClock.elapsedRealtime()
         if (now - lastWidgetProgressUpdateAt < WIDGET_PROGRESS_UPDATE_MS) return
         lastWidgetProgressUpdateAt = now
-        saveWidgetState(context, track, currentSession, status, progress)
+        saveWidgetState(context, snapshot)
     }
 
     private fun playbackAudioAttributes(): AudioAttributes =
