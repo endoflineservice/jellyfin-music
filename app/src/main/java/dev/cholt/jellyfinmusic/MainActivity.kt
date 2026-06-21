@@ -11724,7 +11724,7 @@ private fun TurntableArmOverlay(
         val lift = (offRecord / 0.46f).coerceIn(0f, 1f)
         fun mix(start: Float, end: Float, amount: Float): Float = start + (end - start) * amount
 
-        val onRecordStartAngle = if (alternativeTonearmEnabled) 1.78f else 1.68f
+        val onRecordStartAngle = if (alternativeTonearmEnabled) 1.84f else 1.68f
         val onRecordEndAngle = if (alternativeTonearmEnabled) 2.06f else 2.03f
         val offRecordAngle = if (alternativeTonearmEnabled) 1.42f else 1.48f
         val armAngle = mix(
@@ -11734,11 +11734,12 @@ private fun TurntableArmOverlay(
         )
         val armRotationDegrees = armAngle * 180f / PI.toFloat() - 90f
         val pivotXFraction = if (alternativeTonearmEnabled) 0.987f else 0.966f
-        val pivotYFraction = if (alternativeTonearmEnabled) 0.024f else 0.052f
+        val pivotYFraction = if (alternativeTonearmEnabled) 0.203f else 0.052f
         val armHeightFraction = if (alternativeTonearmEnabled) 0.762f else 0.78f
         val armAspectRatio = if (alternativeTonearmEnabled) 156f / 511f else 172f / 565f
-        val armPivotY = if (alternativeTonearmEnabled) 0.07f else 0.125f
-        val stylusYFraction = if (alternativeTonearmEnabled) 0.875f else 0.84f
+        val armPivotX = 0.5f
+        val armPivotY = if (alternativeTonearmEnabled) 0.305f else 0.125f
+        val stylusYFraction = if (alternativeTonearmEnabled) 0.94f else 0.84f
         val shadowAlphaScale = if (alternativeTonearmEnabled) 0.34f else 1f
         val shadowOffsetX = if (alternativeTonearmEnabled) 0.8.dp + (lift * 2.2f).dp else 2.dp + (lift * 7f).dp
         val shadowOffsetY = if (alternativeTonearmEnabled) 1.4.dp + (lift * 2.6f).dp else 3.dp + (lift * 6f).dp
@@ -11832,12 +11833,12 @@ private fun TurntableArmOverlay(
             modifier = Modifier
                 .size(width = armWidth, height = armHeight)
                 .offset(
-                    x = pivotX - armWidth * 0.5f + shadowOffsetX,
+                    x = pivotX - armWidth * armPivotX + shadowOffsetX,
                     y = pivotY - armHeight * armPivotY + shadowOffsetY
                 )
                 .graphicsLayer {
                     rotationZ = armRotationDegrees
-                    transformOrigin = TransformOrigin(0.5f, armPivotY)
+                    transformOrigin = TransformOrigin(armPivotX, armPivotY)
                     alpha = armShadowAlpha
                 }
                 .blur(armShadowBlur),
@@ -11851,12 +11852,12 @@ private fun TurntableArmOverlay(
             modifier = Modifier
                 .size(width = armWidth, height = armHeight)
                 .offset(
-                    x = pivotX - armWidth * 0.5f,
+                    x = pivotX - armWidth * armPivotX,
                     y = pivotY - armHeight * armPivotY
                 )
                 .graphicsLayer {
                     rotationZ = armRotationDegrees
-                    transformOrigin = TransformOrigin(0.5f, armPivotY)
+                    transformOrigin = TransformOrigin(armPivotX, armPivotY)
                     alpha = 0.98f
                 },
             contentScale = ContentScale.Fit
