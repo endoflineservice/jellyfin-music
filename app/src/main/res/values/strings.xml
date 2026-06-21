@@ -2,4 +2,5 @@
 <resources>
     <string name="widget_music_card_description">Jellyfin Music player widget</string>
     <string name="widget_music_compact_description">Compact Jellyfin Music widget</string>
+    <string name="widget_music_pill_description">Jellyfin Music pill widget</string>
 </resources>

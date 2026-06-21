@@ -23,8 +23,8 @@ import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaDescription
 import android.media.MediaMetadata
-import android.media.MediaPlayer
 import android.media.browse.MediaBrowser
+import android.media.audiofx.Equalizer
 import android.media.audiofx.Visualizer
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
@@ -125,6 +125,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -203,6 +204,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.common.AudioAttributes as Media3AudioAttributes
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -217,7 +227,6 @@ import java.util.Collections
 import java.util.LinkedHashMap
 import java.util.Locale
 import java.util.TimeZone
-import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 import kotlin.math.PI
 import kotlin.math.abs
@@ -237,6 +246,7 @@ class MainActivity : ComponentActivity() {
         setTheme(R.style.AppTheme)
         applySystemBarStyle(isSystemDarkMode())
         super.onCreate(savedInstanceState)
+        saveWidgetState(this, null, null, "Ready", 0f)
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 42)
         }
@@ -375,6 +385,9 @@ private const val PREF_AUTO_SYNC_ON_LAUNCH = "auto_sync_on_launch"
 private const val PREF_GAPLESS_PREBUFFER_ENABLED = "gapless_prebuffer_enabled"
 private const val PREF_TRANSCODED_STREAMING_ENABLED = "transcoded_streaming_enabled"
 private const val PREF_PLAYBACK_REPORTING_ENABLED = "playback_reporting_enabled"
+private const val PREF_EQUALIZER_ENABLED = "equalizer_enabled"
+private const val PREF_EQUALIZER_PRESET = "equalizer_preset"
+private const val PREF_EQUALIZER_LEVELS = "equalizer_levels"
 private const val LIBRARY_CACHE_VERSION = 2
 private const val OFFLINE_DOWNLOADS_VERSION = 1
 private const val LOCAL_PLAYLISTS_VERSION = 1
@@ -385,9 +398,13 @@ private const val DEFAULT_OFFLINE_STORAGE_LIMIT_MB = 1024
 private const val DISC_SCRATCH_SEEK_SCALE = 0.55f
 private const val DISC_SCRATCH_DEAD_ZONE = 0.22f
 private const val USER_SEEK_PROGRESS_HOLD_MS = 2_000L
-private const val VISUALIZER_BAR_COUNT = 28
-private const val VISUALIZER_CAPTURE_STALE_MS = 320L
-private const val VISUALIZER_FALLBACK_FRAME_MS = 64L
+private const val VISUALIZER_BAR_COUNT = 32
+private const val VISUALIZER_CAPTURE_STALE_MS = 420L
+private const val VISUALIZER_FALLBACK_FRAME_MS = 48L
+private const val WIDGET_PROGRESS_UPDATE_MS = 2_000L
+private const val EQUALIZER_BAND_COUNT = 5
+private const val EQUALIZER_MIN_DB = -12f
+private const val EQUALIZER_MAX_DB = 12f
 
 private val AlbumArtCache = Collections.synchronizedMap(
     object : LinkedHashMap<String, Bitmap>(96, 0.75f, true) {
@@ -486,12 +503,12 @@ private fun JellyfinSession.playbackKey(): String =
 
 private const val PLAYBACK_NOTIFICATION_CHANNEL_ID = "playback"
 private const val PLAYBACK_NOTIFICATION_ID = 1001
-private const val PLAYBACK_ACTION_PLAY = "dev.cholt.jellyfinmusic.action.PLAY"
-private const val PLAYBACK_ACTION_PAUSE = "dev.cholt.jellyfinmusic.action.PAUSE"
-private const val PLAYBACK_ACTION_TOGGLE = "dev.cholt.jellyfinmusic.action.TOGGLE"
-private const val PLAYBACK_ACTION_PREVIOUS = "dev.cholt.jellyfinmusic.action.PREVIOUS"
-private const val PLAYBACK_ACTION_NEXT = "dev.cholt.jellyfinmusic.action.NEXT"
-private const val PLAYBACK_ACTION_STOP = "dev.cholt.jellyfinmusic.action.STOP"
+const val PLAYBACK_ACTION_PLAY = "dev.cholt.jellyfinmusic.action.PLAY"
+const val PLAYBACK_ACTION_PAUSE = "dev.cholt.jellyfinmusic.action.PAUSE"
+const val PLAYBACK_ACTION_TOGGLE = "dev.cholt.jellyfinmusic.action.TOGGLE"
+const val PLAYBACK_ACTION_PREVIOUS = "dev.cholt.jellyfinmusic.action.PREVIOUS"
+const val PLAYBACK_ACTION_NEXT = "dev.cholt.jellyfinmusic.action.NEXT"
+const val PLAYBACK_ACTION_STOP = "dev.cholt.jellyfinmusic.action.STOP"
 private const val PLAYBACK_SERVICE_ACTION_START = "dev.cholt.jellyfinmusic.service.START"
 private const val PLAYBACK_SERVICE_ACTION_STOP = "dev.cholt.jellyfinmusic.service.STOP"
 private const val AUTO_ROOT_ID = "auto:root"
@@ -1329,6 +1346,45 @@ private enum class AppDestination(val label: String) {
     Profile("Settings")
 }
 
+private enum class SettingsPage(val label: String, val subtitle: String) {
+    Account("Account", "Server, user, and sign out"),
+    Library("Library & cache", "Sync, metadata, and artwork"),
+    Offline("Offline", "Downloads and storage"),
+    Playback("Playback", "Streaming and reporting"),
+    Audio("Equalizer", "Presets, bands, and output tone"),
+    Appearance("Look and feel", "Theme, colors, and visualizer"),
+    About("About", "App version")
+}
+
+private data class EqualizerPreset(
+    val name: String,
+    val levelsDb: List<Float>
+)
+
+private val EqualizerFlatPreset = EqualizerPreset("Flat", listOf(0f, 0f, 0f, 0f, 0f))
+
+private data class EqualizerSettings(
+    val enabled: Boolean = false,
+    val presetName: String = EqualizerFlatPreset.name,
+    val levelsDb: List<Float> = EqualizerFlatPreset.levelsDb
+) {
+    fun normalizedLevels(): List<Float> =
+        (0 until EQUALIZER_BAND_COUNT).map { index ->
+            levelsDb.getOrNull(index)?.coerceIn(EQUALIZER_MIN_DB, EQUALIZER_MAX_DB) ?: 0f
+    }
+}
+
+private val EqualizerPresets = listOf(
+    EqualizerFlatPreset,
+    EqualizerPreset("Warm", listOf(3.5f, 2f, 0f, -1f, -1.5f)),
+    EqualizerPreset("Bass lift", listOf(6f, 4f, 1f, -1f, -2f)),
+    EqualizerPreset("Vocal", listOf(-2f, -0.5f, 3.5f, 2.5f, -1f)),
+    EqualizerPreset("Sparkle", listOf(-1f, 0f, 1.5f, 4f, 5.5f)),
+    EqualizerPreset("Night drive", listOf(4f, 1.5f, -1f, 2f, 3f))
+)
+
+private val EqualizerBandLabels = listOf("60", "230", "910", "3.6k", "14k")
+
 private enum class AppThemeMode(val label: String) {
     System("System"),
     Light("Light"),
@@ -1769,7 +1825,9 @@ private fun JellyfinMusicApp() {
     var gaplessPrebufferEnabled by remember { mutableStateOf(loadGaplessPrebufferEnabled(context)) }
     var transcodedStreamingEnabled by remember { mutableStateOf(loadTranscodedStreamingEnabled(context)) }
     var playbackReportingEnabled by remember { mutableStateOf(loadPlaybackReportingEnabled(context)) }
+    var equalizerSettings by remember { mutableStateOf(loadEqualizerSettings(context)) }
     var selectedDestination by remember { mutableStateOf(AppDestination.Home) }
+    var activeSettingsPage by remember { mutableStateOf<SettingsPage?>(null) }
     val systemDarkTheme = isSystemInDarkTheme()
     val darkTheme = when (themeMode) {
         AppThemeMode.System -> systemDarkTheme
@@ -2412,9 +2470,17 @@ private fun JellyfinMusicApp() {
                             when {
                                 showPlayer -> IconButton(onClick = closePlayer) {
                                         Icon(
-                                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                            imageVector = PlayerIconVectors.ChevronDown,
                                             contentDescription = "Close player"
                                         )
+                                }
+                                selectedDestination == AppDestination.Profile && activeSettingsPage != null -> IconButton(
+                                    onClick = { activeSettingsPage = null }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                        contentDescription = "Back to Settings"
+                                    )
                                 }
                                 activeLibraryDetail != null -> IconButton(onClick = { activeLibraryDetail = null }) {
                                     Icon(
@@ -2429,7 +2495,7 @@ private fun JellyfinMusicApp() {
                                 val title = when {
                                     session == null -> "Not connected"
                                     activeLibraryDetail != null -> activeLibraryDetail?.type?.label
-                                    selectedDestination == AppDestination.Profile -> "Settings"
+                                    selectedDestination == AppDestination.Profile -> activeSettingsPage?.label ?: "Settings"
                                     else -> null
                                 }
                                 if (title != null) {
@@ -2503,6 +2569,7 @@ private fun JellyfinMusicApp() {
                                     AppDestination.Home -> {
                                         selectedTab = LibraryTab.Songs
                                         activeLibraryDetail = null
+                                        activeSettingsPage = null
                                         showPlayer = false
                                         if (reselected) {
                                             coroutineScope.launch { mainListState.animateScrollToItem(0) }
@@ -2511,6 +2578,7 @@ private fun JellyfinMusicApp() {
 
                                     AppDestination.Search -> {
                                         activeLibraryDetail = null
+                                        activeSettingsPage = null
                                         showPlayer = false
                                         if (reselectedSearch) {
                                             searchFocusRequests += 1
@@ -2525,6 +2593,7 @@ private fun JellyfinMusicApp() {
 
                                     AppDestination.Library -> {
                                         activeLibraryDetail = null
+                                        activeSettingsPage = null
                                         showPlayer = false
                                         if (reselected) {
                                             if (
@@ -2543,6 +2612,7 @@ private fun JellyfinMusicApp() {
 
                                     AppDestination.Liked -> {
                                         activeLibraryDetail = null
+                                        activeSettingsPage = null
                                         showPlayer = false
                                         if (reselected) {
                                             coroutineScope.launch { mainListState.animateScrollToItem(0) }
@@ -2551,6 +2621,9 @@ private fun JellyfinMusicApp() {
 
                                     AppDestination.Profile -> {
                                         activeLibraryDetail = null
+                                        if (reselected && activeSettingsPage != null) {
+                                            activeSettingsPage = null
+                                        }
                                         showPlayer = false
                                     }
                                 }
@@ -2562,18 +2635,21 @@ private fun JellyfinMusicApp() {
                                         selectedDestination = AppDestination.Home
                                         showPlayer = false
                                         activeLibraryDetail = null
+                                        activeSettingsPage = null
                                         coroutineScope.launch { mainListState.animateScrollToItem(0) }
                                     }
                                     AppDestination.Search -> {
                                         selectedDestination = AppDestination.Search
                                         showPlayer = false
                                         activeLibraryDetail = null
+                                        activeSettingsPage = null
                                         searchFocusRequests += 1
                                     }
                                     AppDestination.Library -> {
                                         selectedDestination = AppDestination.Library
                                         showPlayer = false
                                         activeLibraryDetail = null
+                                        activeSettingsPage = null
                                         coroutineScope.launch { mainListState.animateScrollToItem(0) }
                                     }
                                     AppDestination.Liked -> {
@@ -2586,6 +2662,7 @@ private fun JellyfinMusicApp() {
                                         selectedDestination = AppDestination.Profile
                                         showPlayer = false
                                         activeLibraryDetail = null
+                                        activeSettingsPage = null
                                         session?.let { loadLibrary(it) }
                                     }
                                     AppDestination.Player -> {
@@ -2799,119 +2876,143 @@ private fun JellyfinMusicApp() {
                 } else {
                     when (selectedDestination) {
                         AppDestination.Profile -> {
-                            item {
-                                SettingsSummaryCard(
-                                    session = connectedSession,
-                                    syncedTrackCount = tracks.size,
-                                    lastLibrarySyncAt = lastLibrarySyncAt,
-                                    downloadedTrackCount = offlineDownloads.size,
-                                    activeDownloadCount = downloadProgressById.size
-                                )
-                            }
-                            item {
-                                SettingsSectionHeader("Account")
-                            }
-                            item {
-                                AccountCard(
-                                    session = connectedSession,
-                                    onSignOut = ::signOut
-                                )
-                            }
-                            item {
-                                SettingsSectionHeader("Library & cache")
-                            }
-                            item {
-                                LibrarySyncCard(
-                                    isBusy = isBusy,
-                                    syncedTrackCount = tracks.size,
-                                    lastLibrarySyncAt = lastLibrarySyncAt,
-                                    autoSyncOnLaunch = autoSyncOnLaunch,
-                                    onAutoSyncOnLaunchChange = { enabled ->
-                                        autoSyncOnLaunch = enabled
-                                        saveAutoSyncOnLaunch(context, enabled)
-                                    },
-                                    onRefresh = { loadLibrary(connectedSession) },
-                                    onClearLibraryCache = ::clearLibraryCache,
-                                    onClearArtworkCache = ::clearArtworkCache
-                                )
-                            }
-                            item {
-                                SettingsSectionHeader("Offline")
-                            }
-                            item {
-                                OfflineDownloadsCard(
-                                    downloadedTrackCount = offlineDownloads.size,
-                                    downloadedBytes = offlineDownloadBytesOnDisk(context, connectedSession),
-                                    activeDownloadCount = downloadProgressById.size,
-                                    wifiOnly = offlineWifiOnly,
-                                    storageLimitMb = offlineStorageLimitMb,
-                                    downloadedOnlyMode = downloadedOnlyMode,
-                                    onWifiOnlyChange = { enabled ->
-                                        offlineWifiOnly = enabled
-                                        saveOfflineWifiOnly(context, enabled)
-                                    },
-                                    onStorageLimitChange = { limitMb ->
-                                        offlineStorageLimitMb = limitMb
-                                        saveOfflineStorageLimitMb(context, limitMb)
-                                    },
-                                    onDownloadedOnlyChange = ::setDownloadedOnlyMode,
-                                    onClearDownloads = ::clearOfflineDownloads
-                                )
-                            }
-                            item {
-                                SettingsSectionHeader("Playback")
-                            }
-                            item {
-                                PlaybackSettingsCard(
-                                    gaplessPrebufferEnabled = gaplessPrebufferEnabled,
-                                    transcodedStreamingEnabled = transcodedStreamingEnabled,
-                                    playbackReportingEnabled = playbackReportingEnabled,
-                                    onGaplessPrebufferChange = { enabled ->
-                                        gaplessPrebufferEnabled = enabled
-                                        saveGaplessPrebufferEnabled(context, enabled)
-                                        if (!enabled) {
-                                            player.prepareNext(null, null)
-                                        }
-                                    },
-                                    onTranscodedStreamingChange = { enabled ->
-                                        transcodedStreamingEnabled = enabled
-                                        saveTranscodedStreamingEnabled(context, enabled)
-                                    },
-                                    onPlaybackReportingChange = { enabled ->
-                                        playbackReportingEnabled = enabled
-                                        savePlaybackReportingEnabled(context, enabled)
+                            val settingsPage = activeSettingsPage
+                            if (settingsPage == null) {
+                                item {
+                                    SettingsSummaryCard(
+                                        session = connectedSession,
+                                        syncedTrackCount = tracks.size,
+                                        lastLibrarySyncAt = lastLibrarySyncAt,
+                                        downloadedTrackCount = offlineDownloads.size,
+                                        activeDownloadCount = downloadProgressById.size
+                                    )
+                                }
+                                item {
+                                    SettingsSectionHeader("Categories")
+                                }
+                                item {
+                                    SettingsCategoryListCard(
+                                        session = connectedSession,
+                                        syncedTrackCount = tracks.size,
+                                        lastLibrarySyncAt = lastLibrarySyncAt,
+                                        downloadedTrackCount = offlineDownloads.size,
+                                        downloadedBytes = offlineDownloadBytesOnDisk(context, connectedSession),
+                                        activeDownloadCount = downloadProgressById.size,
+                                        gaplessPrebufferEnabled = gaplessPrebufferEnabled,
+                                        transcodedStreamingEnabled = transcodedStreamingEnabled,
+                                        playbackReportingEnabled = playbackReportingEnabled,
+                                        equalizerSettings = equalizerSettings,
+                                        themeMode = themeMode,
+                                        useAlbumArtColors = useAlbumArtColors,
+                                        visualizerEnabled = visualizerEnabled,
+                                        onPageSelected = { activeSettingsPage = it }
+                                    )
+                                }
+                            } else {
+                                when (settingsPage) {
+                                    SettingsPage.Account -> item {
+                                        AccountCard(
+                                            session = connectedSession,
+                                            onSignOut = ::signOut
+                                        )
                                     }
-                                )
-                            }
-                            item {
-                                SettingsSectionHeader("Look and feel")
-                            }
-                            item {
-                                AppearanceCard(
-                                    themeMode = themeMode,
-                                    useAlbumArtColors = useAlbumArtColors,
-                                    visualizerEnabled = visualizerEnabled,
-                                    currentTrack = player.currentTrack,
-                                    albumAccentColor = albumAccentColor,
-                                    onThemeModeChange = { mode ->
-                                        themeMode = mode
-                                        saveThemeMode(context, mode)
-                                    },
-                                    onUseAlbumArtColorsChange = { enabled ->
-                                        useAlbumArtColors = enabled
-                                        saveUseAlbumArtColors(context, enabled)
-                                    },
-                                    onVisualizerEnabledChange = { enabled ->
-                                        visualizerEnabled = enabled
-                                        saveVisualizerEnabled(context, enabled)
+
+                                    SettingsPage.Library -> item {
+                                        LibrarySyncCard(
+                                            isBusy = isBusy,
+                                            syncedTrackCount = tracks.size,
+                                            lastLibrarySyncAt = lastLibrarySyncAt,
+                                            autoSyncOnLaunch = autoSyncOnLaunch,
+                                            onAutoSyncOnLaunchChange = { enabled ->
+                                                autoSyncOnLaunch = enabled
+                                                saveAutoSyncOnLaunch(context, enabled)
+                                            },
+                                            onRefresh = { loadLibrary(connectedSession) },
+                                            onClearLibraryCache = ::clearLibraryCache,
+                                            onClearArtworkCache = ::clearArtworkCache
+                                        )
                                     }
-                                )
-                            }
-                            item {
-                                SettingsSectionHeader("About")
-                            }
-                            item {
-                                AboutCard()
+
+                                    SettingsPage.Offline -> item {
+                                        OfflineDownloadsCard(
+                                            downloadedTrackCount = offlineDownloads.size,
+                                            downloadedBytes = offlineDownloadBytesOnDisk(context, connectedSession),
+                                            activeDownloadCount = downloadProgressById.size,
+                                            wifiOnly = offlineWifiOnly,
+                                            storageLimitMb = offlineStorageLimitMb,
+                                            downloadedOnlyMode = downloadedOnlyMode,
+                                            onWifiOnlyChange = { enabled ->
+                                                offlineWifiOnly = enabled
+                                                saveOfflineWifiOnly(context, enabled)
+                                            },
+                                            onStorageLimitChange = { limitMb ->
+                                                offlineStorageLimitMb = limitMb
+                                                saveOfflineStorageLimitMb(context, limitMb)
+                                            },
+                                            onDownloadedOnlyChange = ::setDownloadedOnlyMode,
+                                            onClearDownloads = ::clearOfflineDownloads
+                                        )
+                                    }
+
+                                    SettingsPage.Playback -> item {
+                                        PlaybackSettingsCard(
+                                            gaplessPrebufferEnabled = gaplessPrebufferEnabled,
+                                            transcodedStreamingEnabled = transcodedStreamingEnabled,
+                                            playbackReportingEnabled = playbackReportingEnabled,
+                                            onGaplessPrebufferChange = { enabled ->
+                                                gaplessPrebufferEnabled = enabled
+                                                saveGaplessPrebufferEnabled(context, enabled)
+                                                if (!enabled) {
+                                                    player.prepareNext(null, null)
+                                                }
+                                            },
+                                            onTranscodedStreamingChange = { enabled ->
+                                                transcodedStreamingEnabled = enabled
+                                                saveTranscodedStreamingEnabled(context, enabled)
+                                            },
+                                            onPlaybackReportingChange = { enabled ->
+                                                playbackReportingEnabled = enabled
+                                                savePlaybackReportingEnabled(context, enabled)
+                                            }
+                                        )
+                                    }
+
+                                    SettingsPage.Audio -> item {
+                                        EqualizerSettingsCard(
+                                            settings = equalizerSettings,
+                                            onSettingsChange = { settings ->
+                                                equalizerSettings = settings
+                                                player.setEqualizerSettings(settings)
+                                            }
+                                        )
+                                    }
+
+                                    SettingsPage.Appearance -> item {
+                                        AppearanceCard(
+                                            themeMode = themeMode,
+                                            useAlbumArtColors = useAlbumArtColors,
+                                            visualizerEnabled = visualizerEnabled,
+                                            currentTrack = player.currentTrack,
+                                            albumAccentColor = albumAccentColor,
+                                            onThemeModeChange = { mode ->
+                                                themeMode = mode
+                                                saveThemeMode(context, mode)
+                                            },
+                                            onUseAlbumArtColorsChange = { enabled ->
+                                                useAlbumArtColors = enabled
+                                                saveUseAlbumArtColors(context, enabled)
+                                            },
+                                            onVisualizerEnabledChange = { enabled ->
+                                                visualizerEnabled = enabled
+                                                saveVisualizerEnabled(context, enabled)
+                                            }
+                                        )
+                                    }
+
+                                    SettingsPage.About -> item {
+                                        AboutCard()
+                                    }
+                                }
                             }
                         }
 
@@ -4106,6 +4207,171 @@ private fun JellyfinMusicApp() {
 }
 
 @Composable
+private fun SettingsCategoryListCard(
+    session: JellyfinSession,
+    syncedTrackCount: Int,
+    lastLibrarySyncAt: Long?,
+    downloadedTrackCount: Int,
+    downloadedBytes: Long,
+    activeDownloadCount: Int,
+    gaplessPrebufferEnabled: Boolean,
+    transcodedStreamingEnabled: Boolean,
+    playbackReportingEnabled: Boolean,
+    equalizerSettings: EqualizerSettings,
+    themeMode: AppThemeMode,
+    useAlbumArtColors: Boolean,
+    visualizerEnabled: Boolean,
+    onPageSelected: (SettingsPage) -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(8.dp)) {
+            SettingsPage.entries.forEachIndexed { index, page ->
+                SettingsCategoryRow(
+                    page = page,
+                    detail = settingsCategoryDetail(
+                        page = page,
+                        session = session,
+                        syncedTrackCount = syncedTrackCount,
+                        lastLibrarySyncAt = lastLibrarySyncAt,
+                        downloadedTrackCount = downloadedTrackCount,
+                        downloadedBytes = downloadedBytes,
+                        activeDownloadCount = activeDownloadCount,
+                        gaplessPrebufferEnabled = gaplessPrebufferEnabled,
+                        transcodedStreamingEnabled = transcodedStreamingEnabled,
+                        playbackReportingEnabled = playbackReportingEnabled,
+                        equalizerSettings = equalizerSettings,
+                        themeMode = themeMode,
+                        useAlbumArtColors = useAlbumArtColors,
+                        visualizerEnabled = visualizerEnabled
+                    ),
+                    onClick = { onPageSelected(page) }
+                )
+                if (index != SettingsPage.entries.lastIndex) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsCategoryRow(
+    page: SettingsPage,
+    detail: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Surface(
+            modifier = Modifier.size(44.dp),
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f)
+        ) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                Icon(
+                    imageVector = settingsCategoryIcon(page),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+        }
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            Text(
+                text = page.label,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = page.subtitle,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = detail,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Icon(
+            imageVector = PlayerIconVectors.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(22.dp)
+        )
+    }
+}
+
+private fun settingsCategoryDetail(
+    page: SettingsPage,
+    session: JellyfinSession,
+    syncedTrackCount: Int,
+    lastLibrarySyncAt: Long?,
+    downloadedTrackCount: Int,
+    downloadedBytes: Long,
+    activeDownloadCount: Int,
+    gaplessPrebufferEnabled: Boolean,
+    transcodedStreamingEnabled: Boolean,
+    playbackReportingEnabled: Boolean,
+    equalizerSettings: EqualizerSettings,
+    themeMode: AppThemeMode,
+    useAlbumArtColors: Boolean,
+    visualizerEnabled: Boolean
+): String =
+    when (page) {
+        SettingsPage.Account -> "${session.username} - ${session.serverUrl.toHostLabel()}"
+        SettingsPage.Library -> "${syncedTrackCount.countLabel("song")} - ${formatLastLibrarySync(lastLibrarySyncAt)}"
+        SettingsPage.Offline -> if (activeDownloadCount > 0) {
+            "${downloadedTrackCount.countLabel("song")} - ${activeDownloadCount.countLabel("download")} running"
+        } else {
+            "${downloadedTrackCount.countLabel("song")} - ${formatDataSize(downloadedBytes)}"
+        }
+        SettingsPage.Playback -> "${if (gaplessPrebufferEnabled) "Pre-buffer on" else "Pre-buffer off"} - ${if (transcodedStreamingEnabled) "Transcoding on" else "Transcoding off"} - ${if (playbackReportingEnabled) "Reporting on" else "Reporting off"}"
+        SettingsPage.Audio -> if (equalizerSettings.enabled) {
+            "${equalizerSettings.presetName} - EQ on"
+        } else {
+            "Off - tap to shape playback"
+        }
+        SettingsPage.Appearance -> "${themeMode.label} - ${if (useAlbumArtColors) "Artwork colors" else "Static colors"} - ${if (visualizerEnabled) "Visualizer on" else "Visualizer off"}"
+        SettingsPage.About -> "Version 0.1.0"
+    }
+
+private fun settingsCategoryIcon(page: SettingsPage): ImageVector =
+    when (page) {
+        SettingsPage.Account -> PlayerIconVectors.SettingsFilled
+        SettingsPage.Library -> PlayerIconVectors.Library
+        SettingsPage.Offline -> PlayerIconVectors.Download
+        SettingsPage.Playback -> PlayerIconVectors.Pause
+        SettingsPage.Audio -> PlayerIconVectors.Equalizer
+        SettingsPage.Appearance -> PlayerIconVectors.HomeFilled
+        SettingsPage.About -> PlayerIconVectors.MoreVertical
+    }
+
+@Composable
 private fun SettingsSectionHeader(title: String) {
     Text(
         text = title,
@@ -4517,6 +4783,242 @@ private fun PlaybackSettingsCard(
         }
     }
 }
+
+@Composable
+private fun EqualizerSettingsCard(
+    settings: EqualizerSettings,
+    onSettingsChange: (EqualizerSettings) -> Unit
+) {
+    val levels = settings.normalizedLevels()
+    fun updateLevels(nextLevels: List<Float>, presetName: String = "Custom") {
+        onSettingsChange(
+            settings.copy(
+                enabled = true,
+                presetName = presetName,
+                levelsDb = nextLevels
+            )
+        )
+    }
+
+    Card(
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    modifier = Modifier.size(50.dp),
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    tonalElevation = 2.dp
+                ) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                        EqualizerMiniIcon(levels = levels, enabled = settings.enabled)
+                    }
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = "Equalizer",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = if (settings.enabled) "${settings.presetName} tone shaping is active" else "Enable to shape playback output",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Switch(
+                    checked = settings.enabled,
+                    onCheckedChange = { enabled ->
+                        onSettingsChange(settings.copy(enabled = enabled))
+                    }
+                )
+            }
+
+            EqualizerPreview(levels = levels, enabled = settings.enabled)
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Presets",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(EqualizerPresets, key = { it.name }) { preset ->
+                        FilterChip(
+                            selected = settings.presetName == preset.name,
+                            onClick = {
+                                onSettingsChange(
+                                    settings.copy(
+                                        enabled = true,
+                                        presetName = preset.name,
+                                        levelsDb = preset.levelsDb
+                                    )
+                                )
+                            },
+                            label = { Text(preset.name) }
+                        )
+                    }
+                }
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+
+            EqualizerBandLabels.forEachIndexed { index, label ->
+                val level = levels[index]
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "$label Hz",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = formatEqualizerDb(level),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    Slider(
+                        value = level,
+                        onValueChange = { value ->
+                            updateLevels(
+                                levels.toMutableList().also {
+                                    it[index] = (value * 2f).roundToInt() / 2f
+                                }
+                            )
+                        },
+                        valueRange = EQUALIZER_MIN_DB..EQUALIZER_MAX_DB,
+                        steps = 47,
+                        colors = SliderDefaults.colors(
+                            activeTrackColor = MaterialTheme.colorScheme.primary,
+                            inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                            thumbColor = MaterialTheme.colorScheme.primary
+                        )
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(
+                    onClick = { onSettingsChange(settings.copy(presetName = EqualizerFlatPreset.name, levelsDb = EqualizerFlatPreset.levelsDb)) },
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Text("Reset")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EqualizerPreview(
+    levels: List<Float>,
+    enabled: Boolean
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        color = if (enabled) colorScheme.primaryContainer.copy(alpha = 0.76f) else colorScheme.surfaceContainerHigh,
+        tonalElevation = 1.dp
+    ) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(106.dp)
+                .padding(horizontal = 18.dp, vertical = 16.dp)
+        ) {
+            val baseline = size.height * 0.5f
+            val spacing = size.width / EQUALIZER_BAND_COUNT
+            val maxBar = size.height * 0.44f
+            levels.forEachIndexed { index, level ->
+                val normalized = (level / EQUALIZER_MAX_DB).coerceIn(-1f, 1f)
+                val x = spacing * index + spacing / 2f
+                val y = baseline - normalized * maxBar
+                drawLine(
+                    color = colorScheme.onPrimaryContainer.copy(alpha = if (enabled) 0.22f else 0.12f),
+                    start = Offset(x, baseline - maxBar),
+                    end = Offset(x, baseline + maxBar),
+                    strokeWidth = 8.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+                drawLine(
+                    color = if (enabled) colorScheme.primary else colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    start = Offset(x, baseline),
+                    end = Offset(x, y),
+                    strokeWidth = 10.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+                drawCircle(
+                    color = if (enabled) colorScheme.onPrimaryContainer else colorScheme.onSurfaceVariant,
+                    radius = 4.dp.toPx(),
+                    center = Offset(x, y)
+                )
+            }
+            drawLine(
+                color = colorScheme.onPrimaryContainer.copy(alpha = if (enabled) 0.2f else 0.08f),
+                start = Offset(0f, baseline),
+                end = Offset(size.width, baseline),
+                strokeWidth = 1.dp.toPx()
+            )
+        }
+    }
+}
+
+@Composable
+private fun EqualizerMiniIcon(
+    levels: List<Float>,
+    enabled: Boolean
+) {
+    val color = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.58f)
+    Canvas(modifier = Modifier.size(28.dp, 22.dp)) {
+        val spacing = size.width / EQUALIZER_BAND_COUNT
+        levels.forEachIndexed { index, level ->
+            val normalized = ((level - EQUALIZER_MIN_DB) / (EQUALIZER_MAX_DB - EQUALIZER_MIN_DB)).coerceIn(0f, 1f)
+            val height = size.height * (0.25f + normalized * 0.72f)
+            val x = spacing * index + spacing / 2f
+            drawLine(
+                color = color,
+                start = Offset(x, size.height),
+                end = Offset(x, size.height - height),
+                strokeWidth = 2.6.dp.toPx(),
+                cap = StrokeCap.Round
+            )
+        }
+    }
+}
+
+private fun formatEqualizerDb(level: Float): String {
+    val rounded = (level * 2f).roundToInt() / 2f
+    return when {
+        rounded > 0f -> "+${rounded.formatOneDecimal()} dB"
+        rounded < 0f -> "${rounded.formatOneDecimal()} dB"
+        else -> "0 dB"
+    }
+}
+
+private fun Float.formatOneDecimal(): String =
+    if (this % 1f == 0f) roundToInt().toString() else String.format(Locale.US, "%.1f", this)
 
 @Composable
 private fun SettingsSwitchRow(
@@ -4974,7 +5476,7 @@ private fun destinationIcon(destination: AppDestination, selected: Boolean): Ima
         AppDestination.Player -> Icons.Filled.PlayArrow
         AppDestination.Library -> if (selected) PlayerIconVectors.LibraryFilled else PlayerIconVectors.Library
         AppDestination.Liked -> if (selected) PlayerIconVectors.FavoriteFilled else PlayerIconVectors.FavoriteOutline
-        AppDestination.Profile -> PlayerIconVectors.Settings
+        AppDestination.Profile -> if (selected) PlayerIconVectors.SettingsFilled else PlayerIconVectors.Settings
     }
 
 @Composable
@@ -7266,8 +7768,8 @@ private fun FullPlayerScreen(
                     }
                 }
             } else {
-                val mobileTopInset = if (maxHeight >= 840.dp) 22.dp else 12.dp
-                val mobileControlGap = if (maxHeight >= 840.dp) 62.dp else 28.dp
+                val mobileTopInset = if (maxHeight >= 840.dp) 54.dp else 34.dp
+                val mobileControlGap = if (maxHeight >= 840.dp) 42.dp else 22.dp
 
                 Column(
                     modifier = Modifier
@@ -7332,7 +7834,7 @@ private fun FullPlayerScreen(
                 .background(colorScheme.surface.copy(alpha = 0.68f), CircleShape)
         ) {
             Icon(
-                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                imageVector = PlayerIconVectors.ChevronDown,
                 contentDescription = "Close player",
                 tint = colorScheme.onSurface
             )
@@ -7517,12 +8019,12 @@ private fun PlayerProgressSection(
             AudioBarsVisualizer(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(28.dp),
+                    .height(38.dp),
                 color = MaterialTheme.colorScheme.primary,
                 active = isPlaying,
                 levels = visualizerLevels
             )
-            Spacer(Modifier.height(2.dp))
+            Spacer(Modifier.height(4.dp))
         } else {
             Spacer(Modifier.height(20.dp))
         }
@@ -8351,6 +8853,46 @@ private fun PlayerGlyph.imageVector(): ImageVector = when (this) {
 private object PlayerIconVectors {
     private val stroke = SolidColor(Color.Black)
 
+    val ChevronDown: ImageVector = ImageVector.Builder(
+        name = "ChevronDown",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(
+            fill = null,
+            stroke = stroke,
+            strokeLineWidth = 2.15f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round
+        ) {
+            moveTo(6f, 9f)
+            lineTo(12f, 15f)
+            lineTo(18f, 9f)
+        }
+    }.build()
+
+    val ChevronRight: ImageVector = ImageVector.Builder(
+        name = "ChevronRight",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(
+            fill = null,
+            stroke = stroke,
+            strokeLineWidth = 2.15f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round
+        ) {
+            moveTo(9f, 6f)
+            lineTo(15f, 12f)
+            lineTo(9f, 18f)
+        }
+    }.build()
+
     val Home: ImageVector = ImageVector.Builder(
         name = "Home",
         defaultWidth = 24.dp,
@@ -8824,8 +9366,14 @@ private object PlayerIconVectors {
         }
     }.build()
 
-    private fun ImageVector.Builder.materialSettingsPath() {
-        path(fill = stroke) {
+    private fun ImageVector.Builder.materialSettingsPath(filled: Boolean) {
+        path(
+            fill = if (filled) stroke else null,
+            stroke = if (filled) null else stroke,
+            strokeLineWidth = 1.9f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round
+        ) {
             moveTo(19.43f, 12.98f)
             curveTo(19.47f, 12.66f, 19.5f, 12.33f, 19.5f, 12f)
             curveTo(19.5f, 11.67f, 19.48f, 11.34f, 19.43f, 11.02f)
@@ -8882,7 +9430,7 @@ private object PlayerIconVectors {
         viewportWidth = 24f,
         viewportHeight = 24f
     ).apply {
-        materialSettingsPath()
+        materialSettingsPath(filled = false)
     }.build()
 
     val SettingsFilled: ImageVector = ImageVector.Builder(
@@ -8892,7 +9440,36 @@ private object PlayerIconVectors {
         viewportWidth = 24f,
         viewportHeight = 24f
     ).apply {
-        materialSettingsPath()
+        materialSettingsPath(filled = true)
+    }.build()
+
+    val Equalizer: ImageVector = ImageVector.Builder(
+        name = "Equalizer",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(
+            fill = null,
+            stroke = stroke,
+            strokeLineWidth = 2f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round
+        ) {
+            moveTo(5f, 20f)
+            verticalLineTo(11f)
+            moveTo(12f, 20f)
+            verticalLineTo(4f)
+            moveTo(19f, 20f)
+            verticalLineTo(8f)
+            moveTo(3.5f, 11f)
+            horizontalLineTo(6.5f)
+            moveTo(10.5f, 14f)
+            horizontalLineTo(13.5f)
+            moveTo(17.5f, 8f)
+            horizontalLineTo(20.5f)
+        }
     }.build()
 
     val Queue: ImageVector = ImageVector.Builder(
@@ -9104,7 +9681,6 @@ private fun DiscAlbumStage(
                                     scratchProgress +
                                         (deltaAngle / 360f) * DISC_SCRATCH_SEEK_SCALE
                                     ).coerceIn(0f, 0.995f)
-                                latestOnSeek(scratchProgress)
                             }
                         }
                         change.consume()
@@ -9242,9 +9818,9 @@ private fun TurntableArmOverlay(
             swing
         )
         val armRotationDegrees = armAngle * 180f / PI.toFloat() - 90f
-        val pivotXFraction = 0.918f
-        val pivotYFraction = 0.105f
-        val armHeightFraction = 0.76f
+        val pivotXFraction = 0.966f
+        val pivotYFraction = 0.052f
+        val armHeightFraction = 0.72f
         val stageSize = minOf(maxWidth, maxHeight)
         val pivotX = maxWidth * pivotXFraction
         val pivotY = maxHeight * pivotYFraction
@@ -9289,26 +9865,26 @@ private fun TurntableArmOverlay(
 
             val stylusShadowCenter = pivot +
                 rotatedArmOffset(armWidthPx * 0.04f, armHeightPx * 0.84f) +
-                Offset(8.dp.toPx() + lift * 4.dp.toPx(), 10.dp.toPx() + lift * 3.dp.toPx())
+                Offset(2.dp.toPx() + lift * 8.dp.toPx(), 3.dp.toPx() + lift * 8.dp.toPx())
             val wideShadowPaint = AndroidPaint().apply {
                 isAntiAlias = true
                 color = AndroidColor.argb(
-                    ((0.42f + lift * 0.08f) * 255f).roundToInt().coerceIn(0, 255),
+                    ((0.34f + lift * 0.16f) * 255f).roundToInt().coerceIn(0, 255),
                     0,
                     0,
                     0
                 )
-                maskFilter = BlurMaskFilter(18.dp.toPx(), BlurMaskFilter.Blur.NORMAL)
+                maskFilter = BlurMaskFilter((9f + lift * 10f).dp.toPx(), BlurMaskFilter.Blur.NORMAL)
             }
             val coreShadowPaint = AndroidPaint().apply {
                 isAntiAlias = true
                 color = AndroidColor.argb(
-                    ((0.56f + lift * 0.08f) * 255f).roundToInt().coerceIn(0, 255),
+                    ((0.46f + lift * 0.18f) * 255f).roundToInt().coerceIn(0, 255),
                     0,
                     0,
                     0
                 )
-                maskFilter = BlurMaskFilter(9.dp.toPx(), BlurMaskFilter.Blur.NORMAL)
+                maskFilter = BlurMaskFilter((4f + lift * 8f).dp.toPx(), BlurMaskFilter.Blur.NORMAL)
             }
             drawIntoCanvas { canvas ->
                 val nativeCanvas = canvas.nativeCanvas
@@ -9342,15 +9918,15 @@ private fun TurntableArmOverlay(
             modifier = Modifier
                 .size(width = armWidth, height = armHeight)
                 .offset(
-                    x = pivotX - armWidth * 0.5f + 5.dp + (lift * 3f).dp,
-                    y = pivotY - armHeight * armPivotY + 7.dp + (lift * 2f).dp
+                    x = pivotX - armWidth * 0.5f + 2.dp + (lift * 7f).dp,
+                    y = pivotY - armHeight * armPivotY + 3.dp + (lift * 6f).dp
                 )
                 .graphicsLayer {
                     rotationZ = armRotationDegrees
                     transformOrigin = TransformOrigin(0.5f, armPivotY)
-                    alpha = 0.38f + lift * 0.1f
+                    alpha = 0.3f + lift * 0.18f
                 }
-                .blur(9.dp),
+                .blur((4.5f + lift * 5.5f).dp),
             contentScale = ContentScale.Fit,
             colorFilter = ColorFilter.tint(Color.Black)
         )
@@ -9383,198 +9959,213 @@ private fun VinylDisc(
 ) {
     val tint = track.tint
     BoxWithConstraints(
-        modifier = modifier
-            .graphicsLayer {
-                shape = CircleShape
-                clip = true
-            }
-            .clip(CircleShape)
-            .background(Color.Black),
+        modifier = modifier,
         contentAlignment = Alignment.Center
     ) {
         val discSize = minOf(maxWidth, maxHeight)
-        val albumArtSize = discSize * 0.965f
         val knobSize = discSize * 0.145f
 
         Box(
             modifier = Modifier
-                .fillMaxSize()
+                .size(discSize)
                 .graphicsLayer {
-                    rotationZ = rotationDegrees
-                },
+                    shape = CircleShape
+                    clip = true
+                }
+                .clip(CircleShape)
+                .background(Color.Black),
             contentAlignment = Alignment.Center
         ) {
-            AlbumArtworkImage(
-                track = track,
-                session = session,
+            Box(
                 modifier = Modifier
-                    .size(albumArtSize)
+                    .matchParentSize()
                     .graphicsLayer {
-                        shape = CircleShape
-                        clip = true
+                        rotationZ = rotationDegrees
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                AlbumArtworkImage(
+                    track = track,
+                    session = session,
+                    modifier = Modifier
+                        .matchParentSize()
+                        .graphicsLayer {
+                            shape = CircleShape
+                            clip = true
+                        }
+                        .clip(CircleShape)
+                        .alpha(0.92f),
+                    imageSize = 384,
+                    imageQuality = 78
+                )
+                Canvas(modifier = Modifier.matchParentSize()) {
+                    val radius = size.minDimension / 2f
+                    val center = Offset(size.width / 2f, size.height / 2f)
+
+                    drawCircle(
+                        color = Color.Black.copy(alpha = 0.08f),
+                        radius = radius,
+                        center = center
+                    )
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                tint.copy(alpha = 0.08f),
+                                tint.copy(alpha = 0.03f),
+                                Color.Transparent,
+                                Color.Black.copy(alpha = 0.18f)
+                            ),
+                            center = Offset(size.width * 0.34f, size.height * 0.28f),
+                            radius = radius * 1.1f
+                        ),
+                        radius = radius,
+                        center = center
+                    )
+                    drawCircle(
+                        color = Color.Black.copy(alpha = 0.2f),
+                        radius = radius * 0.948f,
+                        center = center,
+                        style = Stroke(width = radius * 0.052f)
+                    )
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                Color.Transparent,
+                                Color.Black.copy(alpha = 0.045f),
+                                Color.Black.copy(alpha = 0.24f),
+                                Color.Black.copy(alpha = 0.44f)
+                            ),
+                            center = center,
+                            radius = radius
+                        ),
+                        radius = radius,
+                        center = center
+                    )
+                    for (index in 0..184) {
+                        val grooveRadius = radius * (0.288f + index * 0.0036f)
+                        val strongGroove = index % 12 == 0
+                        val midGroove = index % 4 == 0
+                        drawCircle(
+                            color = Color.Black.copy(
+                                alpha = when {
+                                    strongGroove -> 0.16f
+                                    midGroove -> 0.08f
+                                    else -> 0.045f
+                                }
+                            ),
+                            radius = grooveRadius,
+                            center = center,
+                            style = Stroke(width = if (strongGroove) 0.58.dp.toPx() else 0.32.dp.toPx())
+                        )
+                        drawCircle(
+                            color = Color.White.copy(
+                                alpha = when {
+                                    strongGroove -> 0.11f
+                                    midGroove -> 0.052f
+                                    else -> 0.03f
+                                }
+                            ),
+                            radius = grooveRadius,
+                            center = center,
+                            style = Stroke(width = if (strongGroove) 0.48.dp.toPx() else 0.26.dp.toPx())
+                        )
                     }
-                    .clip(CircleShape)
-                    .alpha(0.92f),
-                imageSize = 384,
-                imageQuality = 78
-            )
-            Canvas(modifier = Modifier.fillMaxSize()) {
+                    drawCircle(
+                        color = Color.Black.copy(alpha = 0.24f),
+                        radius = radius * 0.982f,
+                        center = center,
+                        style = Stroke(width = 4.dp.toPx())
+                    )
+                    drawCircle(
+                        color = Color.Black.copy(alpha = 0.22f),
+                        radius = radius * 0.99f,
+                        center = center,
+                        style = Stroke(width = radius * 0.058f)
+                    )
+                    drawCircle(
+                        color = Color.White.copy(alpha = 0.1f),
+                        radius = radius * 0.955f,
+                        center = center,
+                        style = Stroke(width = 1.dp.toPx())
+                    )
+                    drawCircle(
+                        color = Color.White.copy(alpha = 0.12f),
+                        radius = radius * 0.78f,
+                        center = center,
+                        style = Stroke(width = 1.2.dp.toPx())
+                    )
+                    drawCircle(
+                        color = Color.White.copy(alpha = 0.1f),
+                        radius = radius * 0.53f,
+                        center = center,
+                        style = Stroke(width = 1.dp.toPx())
+                    )
+                    drawVinylSpeckleTexture(
+                        center = center,
+                        outerRadius = radius * 0.96f,
+                        innerRadius = radius * 0.29f,
+                        seed = track.id.hashCode()
+                    )
+                }
+            }
+            Canvas(modifier = Modifier.matchParentSize()) {
                 val radius = size.minDimension / 2f
                 val center = Offset(size.width / 2f, size.height / 2f)
 
-                drawCircle(
-                    color = Color.Black.copy(alpha = 0.08f),
+                drawReferenceVinylShines(center = center, radius = radius)
+                drawSoftVinylShade(
+                    center = center,
                     radius = radius,
-                    center = center
+                    startAngle = 198f,
+                    sweepAngle = 98f,
+                    width = radius * 0.18f,
+                    baseAlpha = 0.09f
                 )
+                val softSpotCenter = Offset(size.width * 0.36f, size.height * 0.26f)
                 drawCircle(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            tint.copy(alpha = 0.08f),
-                            tint.copy(alpha = 0.03f),
-                            Color.Transparent,
-                            Color.Black.copy(alpha = 0.18f)
+                            Color(0xFFE8F5FF).copy(alpha = 0.04f),
+                            Color.White.copy(alpha = 0.012f),
+                            Color.Transparent
                         ),
-                        center = Offset(size.width * 0.34f, size.height * 0.28f),
-                        radius = radius * 1.1f
+                        center = softSpotCenter,
+                        radius = radius * 0.34f
                     ),
-                    radius = radius,
-                    center = center
-                )
-                drawCircle(
-                    color = Color.Black.copy(alpha = 0.2f),
-                    radius = radius * 0.948f,
-                    center = center,
-                    style = Stroke(width = radius * 0.052f)
-                )
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            Color.Black.copy(alpha = 0.045f),
-                            Color.Black.copy(alpha = 0.24f),
-                            Color.Black.copy(alpha = 0.44f)
-                        ),
-                        center = center,
-                        radius = radius
-                    ),
-                    radius = radius,
-                    center = center
-                )
-                for (index in 0..184) {
-                    val grooveRadius = radius * (0.288f + index * 0.0036f)
-                    val strongGroove = index % 12 == 0
-                    val midGroove = index % 4 == 0
-                    drawCircle(
-                        color = Color.Black.copy(
-                            alpha = when {
-                                strongGroove -> 0.16f
-                                midGroove -> 0.08f
-                                else -> 0.045f
-                            }
-                        ),
-                        radius = grooveRadius,
-                        center = center,
-                        style = Stroke(width = if (strongGroove) 0.58.dp.toPx() else 0.32.dp.toPx())
-                    )
-                    drawCircle(
-                        color = Color.White.copy(
-                            alpha = when {
-                                strongGroove -> 0.11f
-                                midGroove -> 0.052f
-                                else -> 0.03f
-                            }
-                        ),
-                        radius = grooveRadius,
-                        center = center,
-                        style = Stroke(width = if (strongGroove) 0.48.dp.toPx() else 0.26.dp.toPx())
-                    )
-                }
-                drawCircle(
-                    color = Color.Black.copy(alpha = 0.24f),
-                    radius = radius * 0.982f,
-                    center = center,
-                    style = Stroke(width = 4.dp.toPx())
-                )
-                drawCircle(
-                    color = Color.Black.copy(alpha = 0.22f),
-                    radius = radius * 0.99f,
-                    center = center,
-                    style = Stroke(width = radius * 0.058f)
-                )
-                drawCircle(
-                    color = Color.White.copy(alpha = 0.1f),
-                    radius = radius * 0.955f,
-                    center = center,
-                    style = Stroke(width = 1.dp.toPx())
-                )
-                drawCircle(
-                    color = Color.White.copy(alpha = 0.12f),
-                    radius = radius * 0.78f,
-                    center = center,
-                    style = Stroke(width = 1.2.dp.toPx())
-                )
-                drawCircle(
-                    color = Color.White.copy(alpha = 0.1f),
-                    radius = radius * 0.53f,
-                    center = center,
-                    style = Stroke(width = 1.dp.toPx())
-                )
-                drawVinylSpeckleTexture(
-                    center = center,
-                    outerRadius = radius * 0.96f,
-                    innerRadius = radius * 0.29f,
-                    seed = track.id.hashCode()
+                    radius = radius * 0.34f,
+                    center = softSpotCenter
                 )
             }
-        }
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val radius = size.minDimension / 2f
-            val center = Offset(size.width / 2f, size.height / 2f)
-
-            drawReferenceVinylShines(center = center, radius = radius)
-            drawSoftVinylShade(
-                center = center,
-                radius = radius,
-                startAngle = 198f,
-                sweepAngle = 98f,
-                width = radius * 0.18f,
-                baseAlpha = 0.14f
+            Image(
+                painter = painterResource(R.drawable.turntable_shine),
+                contentDescription = null,
+                modifier = Modifier
+                    .matchParentSize()
+                    .clip(CircleShape)
+                    .alpha(0.16f),
+                contentScale = ContentScale.Crop
             )
-            val softSpotCenter = Offset(size.width * 0.36f, size.height * 0.26f)
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        Color(0xFFE8F5FF).copy(alpha = 0.07f),
-                        Color.White.copy(alpha = 0.022f),
-                        Color.Transparent
-                    ),
-                    center = softSpotCenter,
-                    radius = radius * 0.34f
-                ),
-                radius = radius * 0.34f,
-                center = softSpotCenter
+            Image(
+                painter = painterResource(R.drawable.turntable_knob),
+                contentDescription = null,
+                modifier = Modifier
+                    .size(knobSize)
+                    .alpha(0.98f),
+                contentScale = ContentScale.Fit,
+                colorFilter = ColorFilter.colorMatrix(
+                    ColorMatrix().apply {
+                        setToSaturation(0f)
+                    }
+                )
             )
         }
-        Image(
-            painter = painterResource(R.drawable.turntable_knob),
-            contentDescription = null,
-            modifier = Modifier
-                .size(knobSize)
-                .alpha(0.98f),
-            contentScale = ContentScale.Fit,
-            colorFilter = ColorFilter.colorMatrix(
-                ColorMatrix().apply {
-                    setToSaturation(0f)
-                }
-            )
-        )
     }
 }
 
 private fun DrawScope.drawReferenceVinylShines(center: Offset, radius: Float) {
     val coolWhite = Color(0xFFE8F6FF)
     val softBlue = Color(0xFFBFD8E8)
+    val shineAlphaScale = 0.6f
 
     drawBlurredArcStroke(
         center = center,
@@ -9582,7 +10173,7 @@ private fun DrawScope.drawReferenceVinylShines(center: Offset, radius: Float) {
         startAngle = 178f,
         sweepAngle = 76f,
         strokeWidth = radius * 0.58f,
-        color = coolWhite.copy(alpha = 0.07f),
+        color = coolWhite.copy(alpha = 0.07f * shineAlphaScale),
         blurRadius = radius * 0.12f
     )
     drawBlurredArcStroke(
@@ -9591,7 +10182,7 @@ private fun DrawScope.drawReferenceVinylShines(center: Offset, radius: Float) {
         startAngle = 186f,
         sweepAngle = 42f,
         strokeWidth = radius * 0.3f,
-        color = Color.White.copy(alpha = 0.09f),
+        color = Color.White.copy(alpha = 0.09f * shineAlphaScale),
         blurRadius = radius * 0.065f
     )
     drawBlurredArcStroke(
@@ -9600,7 +10191,7 @@ private fun DrawScope.drawReferenceVinylShines(center: Offset, radius: Float) {
         startAngle = 214f,
         sweepAngle = 92f,
         strokeWidth = radius * 0.52f,
-        color = coolWhite.copy(alpha = 0.07f),
+        color = coolWhite.copy(alpha = 0.07f * shineAlphaScale),
         blurRadius = radius * 0.105f
     )
     drawBlurredArcStroke(
@@ -9609,7 +10200,7 @@ private fun DrawScope.drawReferenceVinylShines(center: Offset, radius: Float) {
         startAngle = 230f,
         sweepAngle = 48f,
         strokeWidth = radius * 0.22f,
-        color = Color.White.copy(alpha = 0.11f),
+        color = Color.White.copy(alpha = 0.11f * shineAlphaScale),
         blurRadius = radius * 0.052f
     )
     drawBlurredArcStroke(
@@ -9618,7 +10209,7 @@ private fun DrawScope.drawReferenceVinylShines(center: Offset, radius: Float) {
         startAngle = 238f,
         sweepAngle = 36f,
         strokeWidth = radius * 0.085f,
-        color = Color.White.copy(alpha = 0.1f),
+        color = Color.White.copy(alpha = 0.1f * shineAlphaScale),
         blurRadius = radius * 0.032f
     )
     drawBlurredArcStroke(
@@ -9627,7 +10218,7 @@ private fun DrawScope.drawReferenceVinylShines(center: Offset, radius: Float) {
         startAngle = 18f,
         sweepAngle = 66f,
         strokeWidth = radius * 0.4f,
-        color = softBlue.copy(alpha = 0.045f),
+        color = softBlue.copy(alpha = 0.045f * shineAlphaScale),
         blurRadius = radius * 0.086f
     )
     drawBlurredArcStroke(
@@ -9636,7 +10227,7 @@ private fun DrawScope.drawReferenceVinylShines(center: Offset, radius: Float) {
         startAngle = 34f,
         sweepAngle = 38f,
         strokeWidth = radius * 0.14f,
-        color = Color.White.copy(alpha = 0.075f),
+        color = Color.White.copy(alpha = 0.075f * shineAlphaScale),
         blurRadius = radius * 0.04f
     )
     drawBlurredArcStroke(
@@ -9645,7 +10236,7 @@ private fun DrawScope.drawReferenceVinylShines(center: Offset, radius: Float) {
         startAngle = 292f,
         sweepAngle = 58f,
         strokeWidth = radius * 0.34f,
-        color = coolWhite.copy(alpha = 0.038f),
+        color = coolWhite.copy(alpha = 0.038f * shineAlphaScale),
         blurRadius = radius * 0.088f
     )
     drawBlurredArcStroke(
@@ -9654,7 +10245,7 @@ private fun DrawScope.drawReferenceVinylShines(center: Offset, radius: Float) {
         startAngle = 300f,
         sweepAngle = 34f,
         strokeWidth = radius * 0.18f,
-        color = Color.White.copy(alpha = 0.036f),
+        color = Color.White.copy(alpha = 0.036f * shineAlphaScale),
         blurRadius = radius * 0.055f
     )
 
@@ -9673,7 +10264,7 @@ private fun DrawScope.drawReferenceVinylShines(center: Offset, radius: Float) {
             startAngle = angle,
             sweepAngle = 16f,
             strokeWidth = radius * 0.018f,
-            color = Color.White.copy(alpha = alpha),
+            color = Color.White.copy(alpha = alpha * shineAlphaScale),
             blurRadius = radius * 0.006f
         )
     }
@@ -9918,12 +10509,45 @@ private fun AudioBarsVisualizer(
             val target = latestTargetLevels
             val next = FloatArray(VISUALIZER_BAR_COUNT)
             var maxLevel = 0f
+            var targetMin = 1f
+            var targetMax = 0f
+            var targetTotal = 0f
+            for (index in 0 until VISUALIZER_BAR_COUNT) {
+                val value = target.getOrElse(index) { 0f }.coerceIn(0f, 1f)
+                targetMin = minOf(targetMin, value)
+                targetMax = maxOf(targetMax, value)
+                targetTotal += value
+            }
+            val targetAverage = targetTotal / VISUALIZER_BAR_COUNT
+            val targetRange = targetMax - targetMin
+            val syntheticMix = when {
+                !latestActive -> 0f
+                targetMax < 0.06f -> 0.9f
+                targetRange < 0.14f -> 0.78f
+                targetAverage < 0.18f -> 0.62f
+                else -> 0.46f
+            }
+            val seconds = frameTime / 1_000_000_000f
+            val beat = ((sin(seconds * 8.6f) + 1f) * 0.5f).let { it * it * it }
+            val sweep = (sin(seconds * 3.1f) + 1f) * 0.5f
 
             for (index in 0 until VISUALIZER_BAR_COUNT) {
-                val goal = target.getOrElse(index) { 0f }.coerceIn(0f, 1f)
+                val baseGoal = target.getOrElse(index) { 0f }.coerceIn(0f, 1f)
+                val normalizedIndex = index.toFloat() / (VISUALIZER_BAR_COUNT - 1).coerceAtLeast(1)
+                val bassWeight = (1f - normalizedIndex).coerceIn(0f, 1f)
+                val localWave = (sin(seconds * (4.4f + normalizedIndex * 5.2f) + index * 0.82f) + 1f) * 0.5f
+                val ripple = (sin(index * 0.54f - seconds * 7.5f) + 1f) * 0.5f
+                val syntheticGoal = (
+                    0.05f +
+                        localWave * 0.2f +
+                        ripple * 0.14f +
+                        beat * (0.42f * bassWeight + 0.18f) +
+                        sweep * 0.18f * (1f - abs(normalizedIndex - 0.5f) * 2f)
+                    ).coerceIn(0f, 0.95f)
+                val goal = (baseGoal * (1f - syntheticMix) + syntheticGoal * syntheticMix).coerceIn(0f, 1f)
                 val level = current.getOrElse(index) { 0f }
-                val speed = if (goal > level) 11.5f else 6.4f
-                val blend = (deltaSeconds * speed).coerceIn(0.08f, 0.42f)
+                val speed = if (goal > level) 18f else 8.8f
+                val blend = (deltaSeconds * speed).coerceIn(0.1f, 0.56f)
                 val smoothed = level + (goal - level) * blend
                 next[index] = smoothed
                 if (smoothed > maxLevel) maxLevel = smoothed
@@ -9940,23 +10564,32 @@ private fun AudioBarsVisualizer(
 
     Canvas(modifier = modifier) {
         val barCount = VISUALIZER_BAR_COUNT
-        val gap = size.width / (barCount * 2.18f)
-        val strokeWidth = gap.coerceAtLeast(2.4f)
+        val gap = size.width / (barCount * 2.32f)
+        val strokeWidth = gap.coerceAtLeast(2.6f)
         val step = size.width / barCount
-        val baseline = size.height * 0.86f
+        val baseline = size.height * 0.9f
         for (index in 0 until barCount) {
             val rawLevel = displayedLevels.getOrElse(index) { 0f }
             val previous = displayedLevels.getOrElse(index - 1) { rawLevel }
             val next = displayedLevels.getOrElse(index + 1) { rawLevel }
-            val level = (rawLevel * 0.72f + previous * 0.14f + next * 0.14f).coerceIn(0f, 1f)
+            val level = (rawLevel * 0.8f + previous * 0.1f + next * 0.1f).coerceIn(0f, 1f)
             val height = if (hasLiveLevels) {
-                size.height * (0.14f + sqrt(level) * 0.78f)
+                size.height * (0.1f + sqrt(level) * 0.86f)
             } else {
                 3.dp.toPx()
             }
             val x = step * index + step / 2f
+            if (hasLiveLevels) {
+                drawLine(
+                    color = color.copy(alpha = 0.09f + level * 0.12f),
+                    start = Offset(x, baseline),
+                    end = Offset(x, baseline - height),
+                    strokeWidth = strokeWidth * 2.1f,
+                    cap = StrokeCap.Round
+                )
+            }
             drawLine(
-                color = color.copy(alpha = if (hasLiveLevels) 0.48f + level * 0.46f else 0.34f),
+                color = color.copy(alpha = if (hasLiveLevels) 0.54f + level * 0.44f else 0.34f),
                 start = Offset(x, baseline),
                 end = Offset(x, baseline - height),
                 strokeWidth = strokeWidth,
@@ -10163,16 +10796,21 @@ private class JellyfinPlayer(private val context: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val notificationController = PlaybackNotificationController(context)
-    private var mediaPlayer: MediaPlayer? = null
-    private var warmedPlayer: WarmedMediaPlayer? = null
+    private var mediaPlayer: ExoPlayer? = null
+    private var activePlayerPrepared = false
     private var visualizer: Visualizer? = null
+    private var equalizer: Equalizer? = null
+    private var equalizerAudioSessionId = 0
+    private var equalizerSettings = loadEqualizerSettings(context)
     private var currentSession: JellyfinSession? = null
     private var audioFocusRequest: AudioFocusRequest? = null
     private var resumeOnAudioFocusGain = false
     private var visualizerEnabled = false
     private var smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+    private var visualizerAutoGain = 1.6f
     private var lastVisualizerCaptureAt = 0L
     private var lastPlaybackReportAt = 0L
+    private var lastWidgetProgressUpdateAt = 0L
     private var visualizerPumpRunning = false
     private var playbackGeneration = 0
     private var pendingSeekTargetMs: Long? = null
@@ -10180,7 +10818,6 @@ private class JellyfinPlayer(private val context: Context) {
     private var queuedSeekTrackId: String? = null
     private var queuedSeekPositionMs: Long? = null
     private var streamStartOffsetMs = 0L
-    private val warmupGeneration = AtomicInteger(0)
     private val visualizerPump = object : Runnable {
         override fun run() {
             if (!isPlaying || !visualizerEnabled) {
@@ -10197,15 +10834,6 @@ private class JellyfinPlayer(private val context: Context) {
     private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
         mainHandler.post { handleAudioFocusChange(focusChange) }
     }
-
-    private data class WarmedMediaPlayer(
-        val trackId: String,
-        val sessionKey: String,
-        val transcoded: Boolean,
-        val generation: Int,
-        val player: MediaPlayer,
-        var isPrepared: Boolean = false
-    )
 
     fun play(track: MusicTrack, session: JellyfinSession) {
         startPlayback(
@@ -10238,21 +10866,10 @@ private class JellyfinPlayer(private val context: Context) {
         val requestedStartPositionMs = startPositionMs
             ?.takeIf { it > 0L && track.durationMs > 0L }
             ?.coerceIn(0L, track.durationMs)
-        val canSeekPreparedPlayer = !bypassOfflineFile && canSeekInPlace(track, session)
-        val seekOnPreparedPositionMs = requestedStartPositionMs.takeIf { canSeekPreparedPlayer }
-        val preparedPlayer = if (bypassOfflineFile) {
-            null
-        } else if (requestedStartPositionMs != null && !canSeekPreparedPlayer) {
-            null
-        } else {
-            takePreparedWarmPlayer(track, session, transcoded)
-        }
+        val streamStartsAtOffset = requestedStartPositionMs != null && !canSeekInPlace(track, session)
+        val mediaSourceStartPositionMs = if (streamStartsAtOffset) 0L else (requestedStartPositionMs ?: 0L)
         releasePlayerForReplacement()
-        streamStartOffsetMs = if (requestedStartPositionMs != null && !canSeekPreparedPlayer) {
-            requestedStartPositionMs
-        } else {
-            0L
-        }
+        streamStartOffsetMs = if (streamStartsAtOffset) requestedStartPositionMs ?: 0L else 0L
         currentSession = session
         currentTrack = track
         status = "Buffering"
@@ -10263,6 +10880,7 @@ private class JellyfinPlayer(private val context: Context) {
         pendingSeekStartedAt = requestedStartPositionMs?.let { SystemClock.elapsedRealtime() } ?: 0L
         smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+        visualizerAutoGain = 1.6f
         lastVisualizerCaptureAt = 0L
         lastPlaybackReportAt = 0L
 
@@ -10270,143 +10888,53 @@ private class JellyfinPlayer(private val context: Context) {
             isPlaying = false
             status = "Audio focus unavailable"
             publishPlaybackState(track)
-            preparedPlayer?.let(::releaseMediaPlayerAsync)
             return
         }
 
-        if (preparedPlayer != null) {
-            mediaPlayer = preparedPlayer
-            configureActivePlayer(preparedPlayer, generation, track, transcoded, allowTranscodedFallback, seekOnPreparedPositionMs)
-            startPreparedPlayer(preparedPlayer, generation, track, seekOnPreparedPositionMs)
-            return
-        }
-
-        val nextPlayer = MediaPlayer()
+        val nextPlayer = createExoPlayer()
         mediaPlayer = nextPlayer
-        publishPlaybackState(track)
-        thread(name = "jellyfin-open-stream", isDaemon = true) {
-            val result = runCatching {
-                nextPlayer.configureDataSource(session, track, transcoded, bypassOfflineFile, requestedStartPositionMs)
-            }
-            mainHandler.post {
-                if (!nextPlayer.isActivePlayback(generation)) {
-                    releaseMediaPlayerAsync(nextPlayer)
-                    return@post
+        activePlayerPrepared = false
+        configureActivePlayer(
+            player = nextPlayer,
+            generation = generation,
+            track = track,
+            transcoded = transcoded,
+            allowTranscodedFallback = allowTranscodedFallback
+        )
+        runCatching {
+            nextPlayer.setMediaSource(
+                buildMediaSource(session, track, transcoded, bypassOfflineFile, requestedStartPositionMs),
+                mediaSourceStartPositionMs
+            )
+            nextPlayer.prepare()
+            nextPlayer.playWhenReady = true
+            publishPlaybackState(track)
+        }.onFailure {
+            if (nextPlayer.isActivePlayback(generation)) {
+                val retried = retryWithTranscodedStream(
+                    nextPlayer,
+                    generation,
+                    track,
+                    transcoded,
+                    allowTranscodedFallback
+                )
+                if (!retried) {
+                    abandonAudioFocus()
+                    isPlaying = false
+                    mediaPlayer = null
+                    activePlayerPrepared = false
+                    status = it.readableMessage()
+                    publishPlaybackState(track)
+                    releaseExoPlayer(nextPlayer)
                 }
-                result
-                    .onSuccess {
-                        runCatching {
-                            configureActivePlayer(
-                                nextPlayer,
-                                generation,
-                                track,
-                                transcoded,
-                                allowTranscodedFallback,
-                                seekOnPreparedPositionMs
-                            )
-                            nextPlayer.prepareAsync()
-                            publishPlaybackState(track)
-                        }.onFailure {
-                            if (nextPlayer.isActivePlayback(generation)) {
-                                val retried = retryWithTranscodedStream(
-                                    nextPlayer,
-                                    generation,
-                                    track,
-                                    transcoded,
-                                    allowTranscodedFallback
-                                )
-                                if (!retried) {
-                                    abandonAudioFocus()
-                                    isPlaying = false
-                                    mediaPlayer = null
-                                    status = it.readableMessage()
-                                    publishPlaybackState(track)
-                                    releaseMediaPlayerAsync(nextPlayer)
-                                }
-                            } else {
-                                releaseMediaPlayerAsync(nextPlayer)
-                            }
-                        }
-                    }
-                    .onFailure {
-                        if (nextPlayer.isActivePlayback(generation)) {
-                            val retried = retryWithTranscodedStream(
-                                nextPlayer,
-                                generation,
-                                track,
-                                transcoded,
-                                allowTranscodedFallback
-                            )
-                            if (!retried) {
-                                abandonAudioFocus()
-                                isPlaying = false
-                                mediaPlayer = null
-                                status = it.readableMessage()
-                                publishPlaybackState(track)
-                                releaseMediaPlayerAsync(nextPlayer)
-                            }
-                        } else {
-                            releaseMediaPlayerAsync(nextPlayer)
-                        }
-                    }
+            } else {
+                releaseExoPlayer(nextPlayer)
             }
         }
     }
 
     fun prepareNext(track: MusicTrack?, session: JellyfinSession?) {
-        if (track == null || session == null || currentTrack?.id == track.id) {
-            releaseWarmedPlayer()
-            return
-        }
-
-        val sessionKey = session.playbackKey()
-        val transcoded = loadTranscodedStreamingEnabled(context)
-        warmedPlayer
-            ?.takeIf { it.trackId == track.id && it.sessionKey == sessionKey && it.transcoded == transcoded }
-            ?.let { return }
-
-        releaseWarmedPlayer()
-        val generation = warmupGeneration.incrementAndGet()
-        val nextPlayer = MediaPlayer()
-        val warmup = WarmedMediaPlayer(
-            trackId = track.id,
-            sessionKey = sessionKey,
-            transcoded = transcoded,
-            generation = generation,
-            player = nextPlayer
-        )
-        warmedPlayer = warmup
-
-        runCatching {
-            nextPlayer.configureDataSource(session, track, transcoded, bypassOfflineFile = false, startPositionMs = null)
-            nextPlayer.setOnPreparedListener {
-                val activeWarmup = warmedPlayer
-                if (
-                    activeWarmup?.player === it &&
-                    activeWarmup.generation == generation &&
-                    activeWarmup.trackId == track.id &&
-                    activeWarmup.sessionKey == sessionKey &&
-                    activeWarmup.transcoded == transcoded
-                ) {
-                    activeWarmup.isPrepared = true
-                } else {
-                    releaseMediaPlayerAsync(it)
-                }
-            }
-            nextPlayer.setOnErrorListener { errorPlayer, _, _ ->
-                if (warmedPlayer?.player === errorPlayer) {
-                    warmedPlayer = null
-                }
-                releaseMediaPlayerAsync(errorPlayer)
-                true
-            }
-            nextPlayer.prepareAsync()
-        }.onFailure {
-            if (warmedPlayer?.player === nextPlayer) {
-                warmedPlayer = null
-            }
-            releaseMediaPlayerAsync(nextPlayer)
-        }
+        // Media3 preloading will be added after the primary playback lifecycle is settled.
     }
 
     fun toggle() {
@@ -10426,13 +10954,28 @@ private class JellyfinPlayer(private val context: Context) {
             )
             return
         }
-        if (status == "Buffering") return
+        if (status == "Buffering") {
+            if (!activePlayerPrepared) {
+                val track = currentTrack ?: return
+                val session = currentSession ?: return
+                startPlayback(
+                    track = track,
+                    session = session,
+                    transcoded = loadTranscodedStreamingEnabled(context),
+                    allowTranscodedFallback = true,
+                    bypassOfflineFile = false,
+                    reportStopped = false,
+                    startPositionMs = queuedSeekPositionFor(track)
+                        ?: track.durationMs.takeIf { it > 0L }?.let { (it * progress.coerceIn(0f, 1f)).toLong() }
+                )
+            }
+            return
+        }
         if (isPlaying) {
             activePlayer.pause()
             abandonAudioFocus()
             visualizer?.runCatching { enabled = false }
             stopVisualizerPump()
-            releaseWarmedPlayer()
             isPlaying = false
             status = "Paused"
             publishPlaybackState()
@@ -10443,8 +10986,8 @@ private class JellyfinPlayer(private val context: Context) {
                 publishPlaybackState()
                 return
             }
-            activePlayer.setVolume(1f, 1f)
-            activePlayer.start()
+            activePlayer.volume = 1f
+            activePlayer.play()
             isPlaying = true
             status = "Playing"
             if (visualizerEnabled) {
@@ -10467,16 +11010,30 @@ private class JellyfinPlayer(private val context: Context) {
             releaseVisualizer()
             smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
             visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+            visualizerAutoGain = 1.6f
         } else if (isPlaying) {
             mediaPlayer?.audioSessionId?.let(::attachVisualizer)
             startVisualizerPump()
         }
     }
 
+    fun setEqualizerSettings(settings: EqualizerSettings) {
+        equalizerSettings = settings
+        saveEqualizerSettings(context, settings)
+        val audioSessionId = mediaPlayer?.audioSessionId ?: 0
+        if (settings.enabled) {
+            attachEqualizer(audioSessionId)
+        } else {
+            releaseEqualizer()
+        }
+    }
+
     fun syncProgress() {
         val activePlayer = mediaPlayer ?: return
+        val activeTrack = currentTrack ?: return
+        if (!activePlayerPrepared || status == "Buffering") return
         runCatching {
-            val duration = activePlayer.playbackDurationMs(currentTrack) ?: return@runCatching
+            val duration = activePlayer.playbackDurationMs(activeTrack) ?: return@runCatching
             val currentPosition = activePlayer.playbackPositionWithOffset().coerceIn(0L, duration)
             val pendingTarget = pendingSeekTargetMs
             if (pendingTarget != null) {
@@ -10486,12 +11043,14 @@ private class JellyfinPlayer(private val context: Context) {
                 if (!seekIsSettled && !seekTimedOut) {
                     progress = (pendingTarget.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
                     notificationController.syncPlaybackState(isPlaying, status, progress)
+                    publishWidgetProgress(activeTrack)
                     return@runCatching
                 }
                 pendingSeekTargetMs = null
             }
             progress = (currentPosition.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
             notificationController.syncPlaybackState(isPlaying, status, progress)
+            publishWidgetProgress(activeTrack)
             reportCurrentPlaybackProgress()
         }
     }
@@ -10500,10 +11059,10 @@ private class JellyfinPlayer(private val context: Context) {
         val track = currentTrack ?: return
         val activePlayer = mediaPlayer
         val duration = track.durationMs.takeIf { it > 0L }
-            ?: activePlayer?.playbackDurationMs(track)
+            ?: activePlayer?.takeIf { activePlayerPrepared }?.playbackDurationMs(track)
             ?: return
         val target = positionForFraction(fraction, duration)
-        if (activePlayer == null || status == "Buffering") {
+        if (activePlayer == null || status == "Buffering" || !activePlayerPrepared) {
             queueSeekPosition(track, target, duration)
             if (status != "Buffering" && status != "Ended") {
                 status = "Paused"
@@ -10599,84 +11158,192 @@ private class JellyfinPlayer(private val context: Context) {
         reportPlaybackStopped(context, session, track, positionMs)
     }
 
-    private fun MediaPlayer.configureDataSource(
+    private fun createExoPlayer(): ExoPlayer =
+        ExoPlayer.Builder(context)
+            .build()
+            .apply {
+                setAudioAttributes(media3PlaybackAudioAttributes(), false)
+                volume = 1f
+            }
+
+    private fun buildMediaSource(
         session: JellyfinSession,
         track: MusicTrack,
         transcoded: Boolean,
         bypassOfflineFile: Boolean,
         startPositionMs: Long?
-    ) {
-        setAudioAttributes(playbackAudioAttributes())
+    ): ProgressiveMediaSource {
         val offlineFile = offlinePlayableFileFor(context, session, track).takeUnless { bypassOfflineFile }
-        if (offlineFile != null) {
-            setDataSource(offlineFile.absolutePath)
-        } else {
-            val streamUrl = track.streamUrl(
-                session = session,
-                transcoded = transcoded,
-                startPositionMs = startPositionMs ?: 0L
+        val mediaUri = offlineFile
+            ?.let { Uri.fromFile(it) }
+            ?: Uri.parse(
+                track.streamUrl(
+                    session = session,
+                    transcoded = transcoded,
+                    startPositionMs = startPositionMs ?: 0L
+                )
             )
-            setDataSource(streamUrl)
+        val dataSourceFactory = if (offlineFile != null) {
+            DefaultDataSource.Factory(context)
+        } else {
+            val httpFactory = DefaultHttpDataSource.Factory()
+                .setUserAgent("JellyfinMusic/0.1.0")
+                .setDefaultRequestProperties(session.streamHeaders())
+            DefaultDataSource.Factory(context, httpFactory)
         }
+        return ProgressiveMediaSource.Factory(dataSourceFactory)
+            .createMediaSource(MediaItem.fromUri(mediaUri))
     }
 
     private fun configureActivePlayer(
-        player: MediaPlayer,
+        player: ExoPlayer,
         generation: Int,
         track: MusicTrack,
         transcoded: Boolean,
-        allowTranscodedFallback: Boolean,
-        startPositionMs: Long?
+        allowTranscodedFallback: Boolean
     ) {
-        player.setOnPreparedListener {
-            startPreparedPlayer(it, generation, track, queuedSeekPositionFor(track) ?: startPositionMs)
-        }
-        player.setOnSeekCompleteListener {
-            if (!it.isActivePlayback(generation)) return@setOnSeekCompleteListener
-            syncProgress()
-            publishPlaybackState(track)
-        }
-        player.setOnCompletionListener {
-            if (!it.isActivePlayback(generation)) return@setOnCompletionListener
-            abandonAudioFocus()
-            visualizer?.runCatching { enabled = false }
-            stopVisualizerPump()
-            isPlaying = false
-            status = "Ended"
-            progress = 1f
-            pendingSeekTargetMs = null
-            pendingSeekStartedAt = 0L
-            smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
-            visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
-            publishPlaybackState(track)
-            reportCurrentPlaybackStopped()
-        }
-        player.setOnErrorListener { errorPlayer, _, _ ->
-            if (!errorPlayer.isActivePlayback(generation)) return@setOnErrorListener true
-            if (retryWithTranscodedStream(errorPlayer, generation, track, transcoded, allowTranscodedFallback)) {
-                return@setOnErrorListener true
+        player.addListener(
+            object : Player.Listener {
+                private var startReported = false
+
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (!player.isActivePlayback(generation)) return
+                    when (playbackState) {
+                        Player.STATE_BUFFERING -> {
+                            status = "Buffering"
+                            publishPlaybackState(track)
+                        }
+
+                        Player.STATE_READY -> {
+                            activePlayerPrepared = true
+                            clearQueuedSeekPosition(track)
+                            if (player.playWhenReady || player.isPlaying) {
+                                status = "Playing"
+                            } else if (status != "Ended") {
+                                status = "Paused"
+                            }
+                            if (visualizerEnabled && player.audioSessionId > 0) {
+                                attachVisualizer(player.audioSessionId)
+                                if (player.isPlaying) startVisualizerPump()
+                            }
+                            if (player.audioSessionId > 0) {
+                                attachEqualizer(player.audioSessionId)
+                            }
+                            syncProgress()
+                            publishPlaybackState(track)
+                        }
+
+                        Player.STATE_ENDED -> {
+                            finishCurrentTrack(track)
+                        }
+
+                        Player.STATE_IDLE -> Unit
+                    }
+                }
+
+                override fun onIsPlayingChanged(isPlayingNow: Boolean) {
+                    if (!player.isActivePlayback(generation)) return
+                    isPlaying = isPlayingNow
+                    if (isPlayingNow) {
+                        status = "Playing"
+                        if (visualizerEnabled && player.audioSessionId > 0) {
+                            attachVisualizer(player.audioSessionId)
+                            startVisualizerPump()
+                        }
+                        if (player.audioSessionId > 0) {
+                            attachEqualizer(player.audioSessionId)
+                        }
+                        if (!startReported) {
+                            reportCurrentPlaybackStarted(track)
+                            startReported = true
+                        } else {
+                            reportCurrentPlaybackProgress(force = true, isPaused = false)
+                        }
+                    } else if (status != "Buffering" && status != "Ended") {
+                        status = "Paused"
+                    }
+                    publishPlaybackState(track)
+                }
+
+                override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                    if (!player.isActivePlayback(generation)) return
+                    if (visualizerEnabled && audioSessionId > 0) {
+                        attachVisualizer(audioSessionId)
+                        if (isPlaying) startVisualizerPump()
+                    }
+                    if (audioSessionId > 0) {
+                        attachEqualizer(audioSessionId)
+                    }
+                }
+
+                override fun onPlayerError(error: PlaybackException) {
+                    if (!player.isActivePlayback(generation)) return
+                    if (retryWithTranscodedStream(player, generation, track, transcoded, allowTranscodedFallback)) {
+                        return
+                    }
+                    abandonAudioFocus()
+                    visualizer?.runCatching { enabled = false }
+                    stopVisualizerPump()
+                    releaseEqualizer()
+                    isPlaying = false
+                    if (mediaPlayer === player) {
+                        mediaPlayer = null
+                        activePlayerPrepared = false
+                    }
+                    status = error.readablePlaybackMessage()
+                    pendingSeekTargetMs = null
+                    pendingSeekStartedAt = 0L
+                    smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+                    visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+                    visualizerAutoGain = 1.6f
+                    publishPlaybackState(track)
+                    releaseExoPlayer(player)
+                }
             }
-            abandonAudioFocus()
-            visualizer?.runCatching { enabled = false }
-            stopVisualizerPump()
-            isPlaying = false
-            if (mediaPlayer === errorPlayer) {
-                mediaPlayer = null
-            }
-            status = "Playback error"
-            pendingSeekTargetMs = null
-            pendingSeekStartedAt = 0L
-            smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
-            visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
-            releaseWarmedPlayer()
-            publishPlaybackState(track)
-            releaseMediaPlayerAsync(errorPlayer)
-            true
-        }
+        )
     }
 
+    private fun finishCurrentTrack(track: MusicTrack) {
+        abandonAudioFocus()
+        visualizer?.runCatching { enabled = false }
+        stopVisualizerPump()
+        isPlaying = false
+        status = "Ended"
+        progress = 1f
+        pendingSeekTargetMs = null
+        pendingSeekStartedAt = 0L
+        smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+        visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+        visualizerAutoGain = 1.6f
+        publishPlaybackState(track)
+        reportCurrentPlaybackStopped()
+    }
+
+    private fun PlaybackException.readablePlaybackMessage(): String =
+        when (errorCode) {
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> {
+                "Server unreachable. Check Jellyfin or your network."
+            }
+            PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> {
+                "Jellyfin rejected the stream. Retrying may refresh it."
+            }
+            PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND -> {
+                "Audio file missing or stream expired."
+            }
+            PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
+            PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES -> {
+                "Format unsupported on this device."
+            }
+            else -> {
+                cause?.readableMessage()
+                    ?: message?.takeIf { it.isNotBlank() }
+                    ?: "Playback failed."
+            }
+        }
+
     private fun retryWithTranscodedStream(
-        player: MediaPlayer,
+        player: ExoPlayer,
         generation: Int,
         track: MusicTrack,
         transcoded: Boolean,
@@ -10700,113 +11367,22 @@ private class JellyfinPlayer(private val context: Context) {
         return true
     }
 
-    private fun startPreparedPlayer(
-        player: MediaPlayer,
-        generation: Int,
-        track: MusicTrack,
-        startPositionMs: Long?
-    ) {
-        if (!player.isActivePlayback(generation)) {
-            releaseMediaPlayerAsync(player)
-            return
-        }
-        if (!requestAudioFocus()) {
-            isPlaying = false
-            status = "Audio focus unavailable"
-            publishPlaybackState(track)
-            return
-        }
-
-        val requestedStartPositionMs = startPositionMs
-            ?.takeIf { it > 0L && track.durationMs > 0L }
-            ?.coerceIn(0L, track.durationMs)
-        player.runCatching {
-            requestedStartPositionMs?.let { target ->
-                runCatching { seekToPosition(target) }
-                    .onSuccess {
-                        pendingSeekTargetMs = target
-                        pendingSeekStartedAt = SystemClock.elapsedRealtime()
-                        progress = (target.toFloat() / track.durationMs.toFloat()).coerceIn(0f, 1f)
-                    }
-            }
-            setVolume(1f, 1f)
-            start()
-        }.onSuccess {
-            clearQueuedSeekPosition(track)
-            isPlaying = true
-            status = "Playing"
-            if (visualizerEnabled) {
-                attachVisualizer(player.audioSessionId)
-                startVisualizerPump()
-            }
-            syncProgress()
-            publishPlaybackState(track)
-            reportCurrentPlaybackStarted(track)
-        }.onFailure {
-            if (player.isActivePlayback(generation)) {
-                abandonAudioFocus()
-                isPlaying = false
-                mediaPlayer = null
-                status = it.readableMessage()
-                publishPlaybackState(track)
-            }
-            releaseMediaPlayerAsync(player)
-        }
-    }
-
-    private fun takePreparedWarmPlayer(track: MusicTrack, session: JellyfinSession, transcoded: Boolean): MediaPlayer? {
-        val warmup = warmedPlayer ?: return null
-        warmedPlayer = null
-        warmupGeneration.incrementAndGet()
-
-        val matches = warmup.trackId == track.id &&
-            warmup.sessionKey == session.playbackKey() &&
-            warmup.transcoded == transcoded &&
-            warmup.isPrepared
-        if (!matches) {
-            releaseMediaPlayerAsync(warmup.player)
-            return null
-        }
-
-        warmup.player.runCatching { setOnPreparedListener(null) }
-        warmup.player.runCatching { setOnSeekCompleteListener(null) }
-        warmup.player.runCatching { setOnCompletionListener(null) }
-        warmup.player.runCatching { setOnErrorListener(null) }
-        return warmup.player
-    }
-
-    private fun releaseWarmedPlayer() {
-        warmupGeneration.incrementAndGet()
-        val warmup = warmedPlayer ?: return
-        warmedPlayer = null
-        releaseMediaPlayerAsync(warmup.player)
-    }
-
-    private fun MediaPlayer.isActivePlayback(generation: Int): Boolean =
+    private fun ExoPlayer.isActivePlayback(generation: Int): Boolean =
         generation == playbackGeneration && mediaPlayer === this
 
-    private fun MediaPlayer.playbackDurationMs(track: MusicTrack?): Long? {
-        val mediaDuration = runCatching { duration.toLong() }.getOrDefault(0L)
+    private fun ExoPlayer.playbackDurationMs(track: MusicTrack?): Long? {
         val trackDuration = track?.durationMs ?: 0L
-        return when {
-            mediaDuration > 0L -> mediaDuration
-            trackDuration > 0L -> trackDuration
-            else -> null
-        }
+        if (trackDuration > 0L) return trackDuration
+        return duration
+            .takeIf { it != C.TIME_UNSET && it > 0L }
     }
 
-    private fun MediaPlayer.seekToPosition(positionMs: Long) {
-        val boundedPosition = positionMs.coerceIn(0L, Int.MAX_VALUE.toLong())
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            seekTo(boundedPosition, MediaPlayer.SEEK_CLOSEST)
-        } else {
-            @Suppress("DEPRECATION")
-            seekTo(boundedPosition.toInt())
-        }
+    private fun ExoPlayer.seekToPosition(positionMs: Long) {
+        seekTo((positionMs - streamStartOffsetMs).coerceAtLeast(0L))
     }
 
-    private fun MediaPlayer.playbackPositionWithOffset(): Long =
-        (streamStartOffsetMs + currentPosition.toLong().coerceAtLeast(0L)).coerceAtLeast(0L)
+    private fun ExoPlayer.playbackPositionWithOffset(): Long =
+        (streamStartOffsetMs + currentPosition.coerceAtLeast(0L)).coerceAtLeast(0L)
 
     private fun positionForFraction(fraction: Float, durationMs: Long): Long =
         (durationMs.toFloat() * fraction.coerceIn(0f, 1f))
@@ -10841,13 +11417,18 @@ private class JellyfinPlayer(private val context: Context) {
         ) {
             return pendingTarget
         }
-        return mediaPlayer?.runCatching { currentPosition.toLong().coerceAtLeast(0L) }?.getOrNull()
+        val playerPositionMs = mediaPlayer
+            ?.takeIf { activePlayerPrepared }
+            ?.runCatching { currentPosition.toLong().coerceAtLeast(0L) }
+            ?.getOrNull()
+        return playerPositionMs
             ?.let { (streamStartOffsetMs + it).coerceAtLeast(0L) }
             ?: track.durationMs.takeIf { it > 0L }?.let { (it * progress.coerceIn(0f, 1f)).toLong() }
     }
 
     private fun publishPlaybackState(track: MusicTrack? = currentTrack) {
-        saveWidgetState(context, track, status, progress)
+        lastWidgetProgressUpdateAt = SystemClock.elapsedRealtime()
+        saveWidgetState(context, track, currentSession, status, progress)
         notificationController.update(
             track = track,
             session = currentSession,
@@ -10857,6 +11438,13 @@ private class JellyfinPlayer(private val context: Context) {
         )
     }
 
+    private fun publishWidgetProgress(track: MusicTrack) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastWidgetProgressUpdateAt < WIDGET_PROGRESS_UPDATE_MS) return
+        lastWidgetProgressUpdateAt = now
+        saveWidgetState(context, track, currentSession, status, progress)
+    }
+
     private fun playbackAudioAttributes(): AudioAttributes =
         AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -10864,6 +11452,17 @@ private class JellyfinPlayer(private val context: Context) {
             .apply {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     setAllowedCapturePolicy(AudioAttributes.ALLOW_CAPTURE_BY_ALL)
+                }
+            }
+            .build()
+
+    private fun media3PlaybackAudioAttributes(): Media3AudioAttributes =
+        Media3AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+            .apply {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    setAllowedCapturePolicy(C.ALLOW_CAPTURE_BY_ALL)
                 }
             }
             .build()
@@ -10902,10 +11501,10 @@ private class JellyfinPlayer(private val context: Context) {
         val activePlayer = mediaPlayer ?: return
         when (focusChange) {
             AudioManager.AUDIOFOCUS_GAIN -> {
-                activePlayer.runCatching { setVolume(1f, 1f) }
+                activePlayer.runCatching { volume = 1f }
                 if (resumeOnAudioFocusGain && !isPlaying) {
                     activePlayer.runCatching {
-                        start()
+                        play()
                         this@JellyfinPlayer.isPlaying = true
                         status = "Playing"
                         if (visualizerEnabled) {
@@ -10935,7 +11534,7 @@ private class JellyfinPlayer(private val context: Context) {
             }
 
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
-                activePlayer.runCatching { setVolume(0.25f, 0.25f) }
+                activePlayer.runCatching { volume = 0.25f }
             }
         }
     }
@@ -10958,40 +11557,44 @@ private class JellyfinPlayer(private val context: Context) {
     private fun releasePlayerForReplacement() {
         stopVisualizerPump()
         releaseVisualizer()
-        releaseMediaPlayerAsync(mediaPlayer)
+        releaseEqualizer()
+        releaseExoPlayer(mediaPlayer)
         mediaPlayer = null
+        activePlayerPrepared = false
         isPlaying = false
         pendingSeekTargetMs = null
         pendingSeekStartedAt = 0L
         streamStartOffsetMs = 0L
         smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+        visualizerAutoGain = 1.6f
     }
 
     private fun releasePlayer() {
         stopVisualizerPump()
         releaseVisualizer()
-        releaseWarmedPlayer()
+        releaseEqualizer()
         abandonAudioFocus()
-        releaseMediaPlayerAsync(mediaPlayer)
+        releaseExoPlayer(mediaPlayer)
         mediaPlayer = null
+        activePlayerPrepared = false
         isPlaying = false
         pendingSeekTargetMs = null
         pendingSeekStartedAt = 0L
         streamStartOffsetMs = 0L
         smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+        visualizerAutoGain = 1.6f
     }
 
-    private fun releaseMediaPlayerAsync(player: MediaPlayer?) {
+    private fun releaseExoPlayer(player: ExoPlayer?) {
         val stalePlayer = player ?: return
-        stalePlayer.runCatching { setOnPreparedListener(null) }
-        stalePlayer.runCatching { setOnSeekCompleteListener(null) }
-        stalePlayer.runCatching { setOnCompletionListener(null) }
-        stalePlayer.runCatching { setOnErrorListener(null) }
-        thread(name = "jellyfin-player-release", isDaemon = true) {
-            stalePlayer.runCatching { reset() }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
             stalePlayer.runCatching { release() }
+        } else {
+            mainHandler.post {
+                stalePlayer.runCatching { release() }
+            }
         }
     }
 
@@ -11039,7 +11642,73 @@ private class JellyfinPlayer(private val context: Context) {
             visualizer = null
             smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
             visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+            visualizerAutoGain = 1.6f
         }
+    }
+
+    private fun attachEqualizer(audioSessionId: Int) {
+        if (!equalizerSettings.enabled) {
+            releaseEqualizer()
+            return
+        }
+        if (audioSessionId == AudioManager.ERROR || audioSessionId <= 0) return
+        val activeEqualizer = equalizer
+        if (activeEqualizer != null && equalizerAudioSessionId == audioSessionId) {
+            runCatching {
+                activeEqualizer.enabled = false
+                applyEqualizerBandLevels(activeEqualizer, equalizerSettings.normalizedLevels())
+                activeEqualizer.enabled = true
+            }.onFailure {
+                releaseEqualizer()
+            }
+            return
+        }
+
+        releaseEqualizer()
+        runCatching {
+            val nextEqualizer = Equalizer(0, audioSessionId).apply {
+                enabled = false
+                applyEqualizerBandLevels(this, equalizerSettings.normalizedLevels())
+                enabled = true
+            }
+            equalizer = nextEqualizer
+            equalizerAudioSessionId = audioSessionId
+        }.onFailure {
+            releaseEqualizer()
+        }
+    }
+
+    private fun applyEqualizerBandLevels(effect: Equalizer, levelsDb: List<Float>) {
+        val range = effect.bandLevelRange
+        val minLevel = range.getOrNull(0)?.toInt() ?: -1200
+        val maxLevel = range.getOrNull(1)?.toInt() ?: 1200
+        val bandCount = effect.numberOfBands.toInt().coerceAtLeast(1)
+        val levels = if (levelsDb.size == EQUALIZER_BAND_COUNT) levelsDb else EqualizerFlatPreset.levelsDb
+        for (band in 0 until bandCount) {
+            val position = if (bandCount == 1) {
+                0f
+            } else {
+                band.toFloat() / (bandCount - 1).toFloat() * (EQUALIZER_BAND_COUNT - 1).toFloat()
+            }
+            val lowerIndex = position.toInt().coerceIn(0, EQUALIZER_BAND_COUNT - 1)
+            val upperIndex = (lowerIndex + 1).coerceIn(0, EQUALIZER_BAND_COUNT - 1)
+            val blend = (position - lowerIndex).coerceIn(0f, 1f)
+            val levelDb = levels[lowerIndex] + (levels[upperIndex] - levels[lowerIndex]) * blend
+            val milliBel = (levelDb * 100f)
+                .roundToInt()
+                .coerceIn(minLevel, maxLevel)
+                .toShort()
+            effect.setBandLevel(band.toShort(), milliBel)
+        }
+    }
+
+    private fun releaseEqualizer() {
+        equalizer?.runCatching {
+            enabled = false
+            release()
+        }
+        equalizer = null
+        equalizerAudioSessionId = 0
     }
 
     private fun publishNativeVisualizerLevels(target: FloatArray) {
@@ -11070,7 +11739,7 @@ private class JellyfinPlayer(private val context: Context) {
             val next = rawBars.getOrElse(bar + 1) { rawBars[bar] }
             bars[bar] = (rawBars[bar] * 0.62f + previous * 0.19f + next * 0.19f).coerceIn(0f, 1f)
         }
-        return bars
+        return normalizeVisualizerLevels(bars)
     }
 
     private fun fftToBars(fft: ByteArray): FloatArray {
@@ -11100,10 +11769,29 @@ private class JellyfinPlayer(private val context: Context) {
             val lowEndLift = 1f + (1f - bar.toFloat() / (VISUALIZER_BAR_COUNT - 1).coerceAtLeast(1)) * 0.32f
             rawBars[bar] = (shaped * lowEndLift).coerceIn(0f, 1f)
         }
-        return FloatArray(VISUALIZER_BAR_COUNT) { index ->
+        val bars = FloatArray(VISUALIZER_BAR_COUNT) { index ->
             val previous = rawBars.getOrElse(index - 1) { rawBars[index] }
             val next = rawBars.getOrElse(index + 1) { rawBars[index] }
             (rawBars[index] * 0.64f + previous * 0.18f + next * 0.18f).coerceIn(0f, 1f)
+        }
+        return normalizeVisualizerLevels(bars)
+    }
+
+    private fun normalizeVisualizerLevels(rawBars: FloatArray): FloatArray {
+        if (rawBars.isEmpty()) return FloatArray(VISUALIZER_BAR_COUNT)
+        val peak = rawBars.maxOrNull() ?: 0f
+        if (peak <= 0.003f) return rawBars.copyOf()
+        val average = rawBars.average().toFloat().coerceAtLeast(0.001f)
+        val loudness = (peak * 0.72f + average * 0.28f).coerceAtLeast(0.04f)
+        val targetGain = (0.82f / loudness).coerceIn(1.1f, 6.2f)
+        val gainBlend = if (targetGain > visualizerAutoGain) 0.18f else 0.06f
+        visualizerAutoGain += (targetGain - visualizerAutoGain) * gainBlend
+
+        return FloatArray(VISUALIZER_BAR_COUNT) { index ->
+            val boosted = (rawBars.getOrElse(index) { 0f } * visualizerAutoGain).coerceIn(0f, 1f)
+            val shaped = sqrt(boosted).coerceIn(0f, 1f)
+            val bassLift = 1f + (1f - index.toFloat() / (VISUALIZER_BAR_COUNT - 1).coerceAtLeast(1)) * 0.16f
+            (shaped * bassLift).coerceIn(0.015f, 1f)
         }
     }
 
@@ -11111,17 +11799,31 @@ private class JellyfinPlayer(private val context: Context) {
         val time = nowMs / 1_000f
         val seed = trackId?.hashCode() ?: 0
         val center = (VISUALIZER_BAR_COUNT - 1) / 2f
+        val rawBeat = (sin(time * 8.8f + seed * 0.00011f) + 1f) * 0.5f
+        val beat = rawBeat * rawBeat * rawBeat
+        val sideBeat = (sin(time * 5.35f + seed * 0.00023f) + 1f) * 0.5f
+        val swell = (sin(time * 1.42f + seed * 0.00019f) + 1f) * 0.5f
         return FloatArray(VISUALIZER_BAR_COUNT) { index ->
             val distanceFromCenter = abs(index - center) / center.coerceAtLeast(1f)
             val centerWeight = 1f - distanceFromCenter
             val hash = speckleHash(seed, index)
             val phaseA = ((hash and 0x3FF) / 1024f) * PI.toFloat() * 2f
             val phaseB = (((hash ushr 10) and 0x3FF) / 1024f) * PI.toFloat() * 2f
-            val drift = (sin(time * 1.35f + phaseA) + 1f) * 0.5f
-            val pulse = (sin(time * 1.9f + phaseB) + 1f) * 0.5f
-            val lift = (sin(time * 1.1f + seed * 0.00019f) + 1f) * 0.5f
-            (0.025f + drift * 0.18f + pulse * 0.08f + lift * centerWeight * 0.16f)
-                .coerceIn(0.02f, 0.55f)
+            val drift = (sin(time * (2.8f + index * 0.05f) + phaseA) + 1f) * 0.5f
+            val pulse = (sin(time * (4.4f + index * 0.09f) + phaseB) + 1f) * 0.5f
+            val chase = (sin(index * 0.58f - time * 8.4f + phaseA * 0.18f) + 1f) * 0.5f
+            val bassWeight = (1f - index.toFloat() / VISUALIZER_BAR_COUNT).coerceIn(0f, 1f)
+            val trebleSpark = ((hash ushr 22) and 0xFF) / 255f
+            (
+                0.035f +
+                    drift * 0.2f +
+                    pulse * 0.16f +
+                    chase * 0.16f +
+                    beat * (0.42f * bassWeight + 0.18f * centerWeight) +
+                    sideBeat * 0.16f * (1f - centerWeight) +
+                    swell * centerWeight * 0.24f +
+                    trebleSpark * 0.1f * (1f - bassWeight)
+                ).coerceIn(0.025f, 0.92f)
         }
     }
 
@@ -11149,6 +11851,7 @@ private class JellyfinPlayer(private val context: Context) {
         mainHandler.removeCallbacks(visualizerPump)
         smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
+        visualizerAutoGain = 1.6f
         lastVisualizerCaptureAt = 0L
     }
 
@@ -11811,6 +12514,39 @@ private fun savePlaybackReportingEnabled(context: Context, enabled: Boolean) {
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
         .putBoolean(PREF_PLAYBACK_REPORTING_ENABLED, enabled)
+        .apply()
+}
+
+private fun loadEqualizerSettings(context: Context): EqualizerSettings {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val presetName = prefs.getString(PREF_EQUALIZER_PRESET, EqualizerFlatPreset.name)
+        ?.takeIf { name -> EqualizerPresets.any { it.name == name } || name == "Custom" }
+        ?: EqualizerFlatPreset.name
+    val fallbackLevels = EqualizerPresets.firstOrNull { it.name == presetName }?.levelsDb
+        ?: EqualizerFlatPreset.levelsDb
+    val levels = prefs.getString(PREF_EQUALIZER_LEVELS, null)
+        ?.split(',')
+        ?.mapNotNull { it.toFloatOrNull()?.coerceIn(EQUALIZER_MIN_DB, EQUALIZER_MAX_DB) }
+        ?.takeIf { it.size == EQUALIZER_BAND_COUNT }
+        ?: fallbackLevels
+    return EqualizerSettings(
+        enabled = prefs.getBoolean(PREF_EQUALIZER_ENABLED, false),
+        presetName = presetName,
+        levelsDb = levels
+    )
+}
+
+private fun saveEqualizerSettings(context: Context, settings: EqualizerSettings) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(PREF_EQUALIZER_ENABLED, settings.enabled)
+        .putString(PREF_EQUALIZER_PRESET, settings.presetName)
+        .putString(
+            PREF_EQUALIZER_LEVELS,
+            settings.normalizedLevels().joinToString(separator = ",") { level ->
+                ((level * 2f).roundToInt() / 2f).toString()
+            }
+        )
         .apply()
 }
 

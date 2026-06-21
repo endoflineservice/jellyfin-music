@@ -8,4 +8,15 @@
     <color name="splash_visualizer_bar_3">#DDF8EF</color>
     <color name="splash_visualizer_bar_4">#DDF8EF</color>
     <color name="splash_visualizer_bar_5">#DDF8EF</color>
+    <color name="widget_surface">#1B1D20</color>
+    <color name="widget_surface_high">#262B2E</color>
+    <color name="widget_on_surface">#E8EDEE</color>
+    <color name="widget_on_surface_variant">#C0C9C7</color>
+    <color name="widget_outline">#4EC0C9C7</color>
+    <color name="widget_primary">#9CDCD3</color>
+    <color name="widget_on_primary">#003733</color>
+    <color name="widget_primary_container">#164F4A</color>
+    <color name="widget_on_primary_container">#D4FFF7</color>
+    <color name="widget_secondary_container">#30383A</color>
+    <color name="widget_on_secondary_container">#D6E4E1</color>
 </resources>

@@ -1,9 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <shape xmlns:android="http://schemas.android.com/apk/res/android">
-    <corners android:radius="28dp" />
-    <gradient
-        android:angle="0"
-        android:centerColor="#786EDB"
-        android:endColor="#AD75DF"
-        android:startColor="#2F3441" />
+    <corners android:radius="24dp" />
+    <solid android:color="@color/widget_surface_high" />
 </shape>

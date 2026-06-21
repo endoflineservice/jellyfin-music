@@ -1,51 +1,52 @@
 <?xml version="1.0" encoding="utf-8"?>
-<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item>
-        <shape android:shape="oval">
-            <gradient
-                android:angle="45"
-                android:centerColor="#3E3A43"
-                android:endColor="#08070A"
-                android:startColor="#1C1A20" />
-            <stroke
-                android:width="1dp"
-                android:color="#55FFFFFF" />
-        </shape>
-    </item>
-    <item
-        android:bottom="10dp"
-        android:left="10dp"
-        android:right="10dp"
-        android:top="10dp">
-        <shape android:shape="oval">
-            <solid android:color="#00111111" />
-            <stroke
-                android:width="1dp"
-                android:color="#22FFFFFF" />
-        </shape>
-    </item>
-    <item
-        android:bottom="22dp"
-        android:left="22dp"
-        android:right="22dp"
-        android:top="22dp">
-        <shape android:shape="oval">
-            <solid android:color="#00111111" />
-            <stroke
-                android:width="1dp"
-                android:color="#18FFFFFF" />
-        </shape>
-    </item>
-    <item
-        android:bottom="44dp"
-        android:left="44dp"
-        android:right="44dp"
-        android:top="44dp">
-        <shape android:shape="oval">
-            <gradient
-                android:angle="45"
-                android:endColor="#9677F4"
-                android:startColor="#80F2F1" />
-        </shape>
-    </item>
-</layer-list>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="96dp"
+    android:height="96dp"
+    android:viewportWidth="96"
+    android:viewportHeight="96">
+
+    <path
+        android:fillColor="@color/widget_on_surface"
+        android:pathData="M48,5 C24.25,5 5,24.25 5,48 C5,71.75 24.25,91 48,91 C71.75,91 91,71.75 91,48 C91,24.25 71.75,5 48,5 Z" />
+    <path
+        android:fillColor="@color/widget_secondary_container"
+        android:pathData="M48,10 C27.01,10 10,27.01 10,48 C10,68.99 27.01,86 48,86 C68.99,86 86,68.99 86,48 C86,27.01 68.99,10 48,10 Z" />
+    <path
+        android:fillColor="@color/widget_surface_high"
+        android:fillAlpha="0.72"
+        android:pathData="M48,16 C30.33,16 16,30.33 16,48 C16,65.67 30.33,80 48,80 C65.67,80 80,65.67 80,48 C80,30.33 65.67,16 48,16 Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="@color/widget_outline"
+        android:strokeWidth="1"
+        android:pathData="M48,20 C32.54,20 20,32.54 20,48 C20,63.46 32.54,76 48,76 C63.46,76 76,63.46 76,48 C76,32.54 63.46,20 48,20 Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="@color/widget_outline"
+        android:strokeWidth="1"
+        android:pathData="M48,29 C37.51,29 29,37.51 29,48 C29,58.49 37.51,67 48,67 C58.49,67 67,58.49 67,48 C67,37.51 58.49,29 48,29 Z" />
+    <path
+        android:fillColor="@color/widget_primary"
+        android:fillAlpha="0.88"
+        android:pathData="M48,35 C40.82,35 35,40.82 35,48 C35,55.18 40.82,61 48,61 C55.18,61 61,55.18 61,48 C61,40.82 55.18,35 48,35 Z" />
+    <path
+        android:fillColor="@color/widget_on_primary"
+        android:pathData="M48,43 C45.24,43 43,45.24 43,48 C43,50.76 45.24,53 48,53 C50.76,53 53,50.76 53,48 C53,45.24 50.76,43 48,43 Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="@color/widget_on_surface_variant"
+        android:strokeAlpha="0.92"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:pathData="M70,14 C79,23 80,39 71,54 L62,69" />
+    <path
+        android:fillColor="@color/widget_primary_container"
+        android:pathData="M57,68 L66,62 L71,70 L61,76 Z" />
+    <path
+        android:fillColor="@color/widget_primary"
+        android:pathData="M59,73 L71,66 L73,70 L62,78 Z" />
+    <path
+        android:fillColor="@color/widget_on_surface_variant"
+        android:fillAlpha="0.16"
+        android:pathData="M26,22 C39,12 57,11 70,21 C53,18 38,24 26,36 Z" />
+</vector>

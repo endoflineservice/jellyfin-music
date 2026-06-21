@@ -1,130 +1,113 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/widget_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@drawable/widget_card_background"
-    android:gravity="center_vertical"
-    android:orientation="horizontal"
-    android:padding="14dp">
+    android:padding="18dp">
 
-    <FrameLayout
-        android:layout_width="118dp"
-        android:layout_height="118dp">
+    <ImageView
+        android:id="@+id/widget_album"
+        android:layout_width="124dp"
+        android:layout_height="124dp"
+        android:layout_alignParentStart="true"
+        android:layout_centerVertical="true"
+        android:contentDescription="@string/widget_music_card_description"
+        android:scaleType="fitCenter"
+        android:src="@drawable/widget_vinyl" />
 
-        <ImageView
-            android:id="@+id/widget_album"
-            android:layout_width="118dp"
-            android:layout_height="118dp"
-            android:contentDescription="@string/widget_music_card_description"
-            android:src="@drawable/widget_vinyl" />
+    <TextView
+        android:id="@+id/widget_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_alignTop="@id/widget_album"
+        android:layout_marginStart="20dp"
+        android:layout_marginTop="2dp"
+        android:layout_marginEnd="4dp"
+        android:layout_toEndOf="@id/widget_album"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:text="Jellyfin Music"
+        android:textColor="@color/widget_on_surface"
+        android:textSize="19sp"
+        android:textStyle="bold" />
 
-        <TextView
-            android:layout_width="32dp"
-            android:layout_height="32dp"
-            android:layout_gravity="center"
-            android:background="@drawable/widget_label_dot"
-            android:gravity="center"
-            android:text="JM"
-            android:textColor="#FDF8FF"
-            android:textSize="9sp"
-            android:textStyle="bold" />
-    </FrameLayout>
+    <TextView
+        android:id="@+id/widget_artist"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_below="@id/widget_title"
+        android:layout_marginStart="20dp"
+        android:layout_marginTop="4dp"
+        android:layout_marginEnd="4dp"
+        android:layout_toEndOf="@id/widget_album"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:text="Tap to open"
+        android:textColor="@color/widget_on_surface_variant"
+        android:textSize="13sp" />
+
+    <TextView
+        android:id="@+id/widget_status"
+        android:layout_width="1dp"
+        android:layout_height="1dp"
+        android:visibility="invisible" />
+
+    <ProgressBar
+        android:id="@+id/widget_progress"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="5dp"
+        android:layout_below="@id/widget_artist"
+        android:layout_marginStart="20dp"
+        android:layout_marginTop="13dp"
+        android:layout_marginEnd="4dp"
+        android:layout_toEndOf="@id/widget_album"
+        android:indeterminate="false"
+        android:max="1000"
+        android:progress="180"
+        android:progressDrawable="@drawable/widget_progress" />
 
     <LinearLayout
-        android:layout_width="0dp"
-        android:layout_height="match_parent"
-        android:layout_marginStart="14dp"
-        android:gravity="center_vertical"
-        android:orientation="vertical"
-        android:paddingEnd="4dp">
+        android:id="@+id/widget_controls"
+        android:layout_width="wrap_content"
+        android:layout_height="46dp"
+        android:layout_alignStart="@id/widget_progress"
+        android:layout_below="@id/widget_progress"
+        android:layout_marginTop="16dp"
+        android:gravity="center"
+        android:orientation="horizontal">
 
-        <TextView
-            android:id="@+id/widget_title"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:ellipsize="end"
-            android:maxLines="1"
-            android:text="Jellyfin Music"
-            android:textColor="#FEF7FF"
-            android:textSize="18sp"
-            android:textStyle="bold" />
+        <ImageView
+            android:id="@+id/widget_previous"
+            android:layout_width="42dp"
+            android:layout_height="42dp"
+            android:background="@drawable/widget_control_button"
+            android:contentDescription="Previous"
+            android:padding="11dp"
+            android:scaleType="center"
+            android:src="@drawable/widget_icon_previous" />
 
-        <TextView
-            android:id="@+id/widget_artist"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:ellipsize="end"
-            android:maxLines="1"
-            android:text="Tap to open"
-            android:textColor="#E9DDFF"
-            android:textSize="12sp" />
+        <ImageView
+            android:id="@+id/widget_play"
+            android:layout_width="46dp"
+            android:layout_height="46dp"
+            android:layout_marginStart="8dp"
+            android:layout_marginEnd="8dp"
+            android:background="@drawable/widget_play_button"
+            android:contentDescription="Play or pause"
+            android:padding="13dp"
+            android:scaleType="center"
+            android:src="@drawable/widget_icon_play" />
 
-        <TextView
-            android:id="@+id/widget_status"
-            android:layout_width="wrap_content"
-            android:layout_height="28dp"
-            android:layout_marginTop="12dp"
-            android:background="@drawable/widget_status_pill"
-            android:gravity="center"
-            android:minWidth="88dp"
-            android:paddingStart="12dp"
-            android:paddingEnd="12dp"
-            android:text="Ready"
-            android:textColor="#FDF8FF"
-            android:textSize="11sp" />
-
-        <ProgressBar
-            android:id="@+id/widget_progress"
-            style="?android:attr/progressBarStyleHorizontal"
-            android:layout_width="match_parent"
-            android:layout_height="7dp"
-            android:layout_marginTop="14dp"
-            android:indeterminate="false"
-            android:max="100"
-            android:progress="18"
-            android:progressDrawable="@drawable/widget_progress" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="36dp"
-            android:layout_marginTop="8dp"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
-
-            <TextView
-                android:id="@+id/widget_previous"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:gravity="center"
-                android:text="|&lt;"
-                android:textColor="#FDF8FF"
-                android:textSize="16sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/widget_play"
-                android:layout_width="52dp"
-                android:layout_height="match_parent"
-                android:background="@drawable/widget_play_button"
-                android:gravity="center"
-                android:text=">"
-                android:textColor="#3C354B"
-                android:textSize="18sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/widget_next"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:gravity="center"
-                android:text="&gt;|"
-                android:textColor="#FDF8FF"
-                android:textSize="16sp"
-                android:textStyle="bold" />
-        </LinearLayout>
+        <ImageView
+            android:id="@+id/widget_next"
+            android:layout_width="42dp"
+            android:layout_height="42dp"
+            android:background="@drawable/widget_control_button"
+            android:contentDescription="Next"
+            android:padding="11dp"
+            android:scaleType="center"
+            android:src="@drawable/widget_icon_next" />
     </LinearLayout>
-</LinearLayout>
+</RelativeLayout>

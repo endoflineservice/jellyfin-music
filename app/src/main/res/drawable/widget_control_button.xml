@@ -6,8 +6,8 @@
         android:right="1dp"
         android:top="1dp">
         <shape>
-            <solid android:color="@color/widget_primary" />
-            <corners android:radius="24dp" />
+            <solid android:color="@color/widget_secondary_container" />
+            <corners android:radius="23dp" />
         </shape>
     </item>
 </layer-list>

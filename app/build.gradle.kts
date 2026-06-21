@@ -12,7 +12,7 @@ android {
         applicationId = "dev.cholt.jellyfinmusic"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
+        versionCode = 2
         versionName = "0.1.0"
     }
 
@@ -37,5 +37,7 @@ dependencies {
     implementation("androidx.compose.material:material-icons-core:1.7.8")
     implementation("androidx.compose.ui:ui:1.8.3")
     implementation("androidx.compose.material3:material3:1.3.2")
+    implementation("androidx.media3:media3-datasource:1.10.1")
+    implementation("androidx.media3:media3-exoplayer:1.10.1")
     implementation("ir.mahozad.multiplatform:wavy-slider:2.2.0")
 }
