@@ -8,13 +8,11 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
-import android.graphics.Shader
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -27,7 +25,7 @@ import java.net.URL
 import java.security.MessageDigest
 import java.util.Collections
 import kotlin.concurrent.thread
-import kotlin.math.max
+import kotlin.math.min
 
 enum class WidgetLayoutPreference {
     Responsive,
@@ -39,6 +37,14 @@ enum class WidgetLayoutPreference {
 open class AdaptiveMusicWidgetProvider(
     private val preference: WidgetLayoutPreference
 ) : AppWidgetProvider() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == ACTION_REFRESH_MUSIC_WIDGETS) {
+            updateMusicWidgets(context)
+            return
+        }
+        super.onReceive(context, intent)
+    }
+
     override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
         ids.forEach { id ->
             updateAdaptiveWidget(context, manager, id, preference)
@@ -138,14 +144,23 @@ private fun layoutForWidgetSize(options: Bundle, preference: WidgetLayoutPrefere
         maxKey = AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT,
         fallback = fallbackHeight
     )
+    val aspectRatio = widthDp.toFloat() / heightDp.coerceAtLeast(1).toFloat()
+    val verticalShape = heightDp >= widthDp * 1.14f
+    val tallControlsShape = verticalShape && widthDp >= 168 && heightDp >= 312
+    val extraLargeLandscapeShape = widthDp >= 330 && heightDp >= 230 && aspectRatio >= 1.18f
+    val squareShape = widthDp >= 160 && heightDp >= 150 && aspectRatio in 0.76f..1.28f
+    val largeShape = widthDp >= 330 && heightDp >= 176 && aspectRatio >= 1.16f
 
     return when {
-        widthDp < 190 && heightDp >= 172 -> R.layout.widget_music_vertical
-        widthDp < 238 && heightDp >= 214 && heightDp > widthDp -> R.layout.widget_music_vertical
-        heightDp < 82 || widthDp < 190 -> R.layout.widget_music_mini
+        heightDp < 66 -> R.layout.widget_music_mini
+        widthDp < 128 -> R.layout.widget_music_mini
+        widthDp >= 224 && heightDp <= 116 -> R.layout.widget_music_pill
+        tallControlsShape -> R.layout.widget_music_tall
+        verticalShape && heightDp >= 224 -> R.layout.widget_music_vertical
+        extraLargeLandscapeShape -> R.layout.widget_music_xlarge
+        largeShape -> R.layout.widget_music_large
+        squareShape -> R.layout.widget_music_square
         heightDp >= 132 && widthDp >= 286 -> R.layout.widget_music_card
-        heightDp < 112 && widthDp >= 248 -> R.layout.widget_music_pill
-        widthDp >= 224 && heightDp <= 118 -> R.layout.widget_music_pill
         preference == WidgetLayoutPreference.Pill && widthDp >= 224 -> R.layout.widget_music_pill
         else -> R.layout.widget_music_compact
     }
@@ -158,18 +173,30 @@ private fun widgetBoundDp(options: Bundle, minKey: String, maxKey: String, fallb
 }
 
 private fun buildResponsiveRemoteViews(context: Context, selectedLayout: Int): RemoteViews {
-    val candidates = linkedMapOf(
+    val layoutAnchors = linkedMapOf(
         SizeF(110f, 56f) to R.layout.widget_music_mini,
-        SizeF(176f, 72f) to R.layout.widget_music_compact,
-        SizeF(286f, 76f) to R.layout.widget_music_pill,
-        SizeF(160f, 220f) to R.layout.widget_music_vertical,
-        SizeF(320f, 150f) to R.layout.widget_music_card
+        SizeF(184f, 76f) to R.layout.widget_music_compact,
+        SizeF(310f, 80f) to R.layout.widget_music_pill,
+        SizeF(150f, 270f) to R.layout.widget_music_vertical,
+        SizeF(172f, 332f) to R.layout.widget_music_tall,
+        SizeF(236f, 420f) to R.layout.widget_music_tall,
+        SizeF(244f, 244f) to R.layout.widget_music_square,
+        SizeF(304f, 304f) to R.layout.widget_music_square,
+        SizeF(320f, 150f) to R.layout.widget_music_card,
+        SizeF(400f, 206f) to R.layout.widget_music_large,
+        SizeF(460f, 242f) to R.layout.widget_music_large,
+        SizeF(360f, 280f) to R.layout.widget_music_xlarge,
+        SizeF(460f, 320f) to R.layout.widget_music_xlarge,
+        SizeF(560f, 360f) to R.layout.widget_music_xlarge
     )
-    if (candidates.values.none { it == selectedLayout }) {
-        candidates[SizeF(280f, 128f)] = selectedLayout
+    if (layoutAnchors.values.none { it == selectedLayout }) {
+        layoutAnchors[SizeF(280f, 128f)] = selectedLayout
     }
-    return RemoteViews(candidates.mapValues { (_, layoutId) ->
+    val viewsByLayout = layoutAnchors.values.distinct().associateWith { layoutId ->
         buildRemoteViews(context, layoutId)
+    }
+    return RemoteViews(layoutAnchors.mapValues { (_, layoutId) ->
+        viewsByLayout.getValue(layoutId)
     })
 }
 
@@ -185,7 +212,11 @@ private fun buildRemoteViews(context: Context, layoutId: Int): RemoteViews {
             (
                 layoutId == R.layout.widget_music_card ||
                     layoutId == R.layout.widget_music_pill ||
-                    layoutId == R.layout.widget_music_vertical
+                    layoutId == R.layout.widget_music_vertical ||
+                    layoutId == R.layout.widget_music_square ||
+                    layoutId == R.layout.widget_music_tall ||
+                    layoutId == R.layout.widget_music_large ||
+                    layoutId == R.layout.widget_music_xlarge
                 )
         ) {
             View.VISIBLE
@@ -205,10 +236,24 @@ private fun buildRemoteViews(context: Context, layoutId: Int): RemoteViews {
             setImageViewBitmap(R.id.widget_album, artwork)
         } else {
             setImageViewResource(R.id.widget_album, R.drawable.widget_vinyl)
+            state.imageUrl?.let { cacheWidgetArtworkAsync(context.applicationContext, it) }
         }
         setProgressBar(R.id.widget_progress, 1000, (state.progress * 1000).toInt().coerceIn(0, 1000), false)
 
-        val openIntent = Intent(context, MainActivity::class.java)
+        val openIntent = context.packageManager
+            .getLaunchIntentForPackage(context.packageName)
+            ?.apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+            }
+            ?: Intent(context, MainActivity::class.java).apply {
+                action = Intent.ACTION_MAIN
+                addCategory(Intent.CATEGORY_LAUNCHER)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+            }
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             PendingIntent.FLAG_IMMUTABLE
         } else {
@@ -335,7 +380,12 @@ private fun cacheWidgetArtworkAsync(context: Context, imageUrl: String) {
 private fun loadWidgetArtworkBitmap(context: Context, imageUrl: String): Bitmap? {
     val file = widgetArtworkFile(context, imageUrl)
     if (!file.isFile) return null
-    return BitmapFactory.decodeFile(file.absolutePath)
+    val decoded = BitmapFactory.decodeFile(file.absolutePath) ?: return null
+    return if (decoded.width <= WIDGET_ALBUM_ART_SIZE && decoded.height <= WIDGET_ALBUM_ART_SIZE) {
+        decoded
+    } else {
+        createWidgetAlbumBitmap(decoded)
+    }
 }
 
 private fun downloadWidgetArtwork(context: Context, imageUrl: String) {
@@ -363,27 +413,32 @@ private fun downloadWidgetArtwork(context: Context, imageUrl: String) {
 }
 
 private fun createWidgetAlbumBitmap(source: Bitmap): Bitmap {
-    val size = 256
+    val size = WIDGET_ALBUM_ART_SIZE
     val output = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(output)
     val rect = RectF(0f, 0f, size.toFloat(), size.toFloat())
-    val radius = 42f
+    val radius = size * 0.164f
     val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
-    val shader = BitmapShader(source, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-    val scale = max(size.toFloat() / source.width.toFloat(), size.toFloat() / source.height.toFloat())
-    val matrix = Matrix().apply {
-        setScale(scale, scale)
-        postTranslate(
-            (size - source.width * scale) * 0.5f,
-            (size - source.height * scale) * 0.5f
-        )
-    }
-    shader.setLocalMatrix(matrix)
-    paint.shader = shader
+    paint.style = Paint.Style.FILL
+    paint.color = Color.argb(28, 0, 0, 0)
     canvas.drawRoundRect(rect, radius, radius, paint)
 
-    paint.shader = null
+    val clipPath = Path().apply {
+        addRoundRect(rect, radius, radius, Path.Direction.CW)
+    }
+    val scale = min(size.toFloat() / source.width.toFloat(), size.toFloat() / source.height.toFloat())
+    val destination = RectF(
+        (size - source.width * scale) * 0.5f,
+        (size - source.height * scale) * 0.5f,
+        (size + source.width * scale) * 0.5f,
+        (size + source.height * scale) * 0.5f
+    )
+    canvas.save()
+    canvas.clipPath(clipPath)
+    canvas.drawBitmap(source, null, destination, paint)
+    canvas.restore()
+
     paint.style = Paint.Style.STROKE
     paint.strokeWidth = 5f
     paint.color = Color.argb(90, 255, 255, 255)
@@ -396,9 +451,12 @@ private fun createWidgetAlbumBitmap(source: Bitmap): Bitmap {
 }
 
 private fun widgetArtworkFile(context: Context, imageUrl: String): File =
-    File(File(context.cacheDir, "widget_album_art"), "${widgetCacheKey(imageUrl)}.png")
+    File(File(context.cacheDir, "widget_album_art"), "${widgetCacheKey("$WIDGET_ALBUM_ART_SIZE|$imageUrl")}.png")
 
 private fun widgetCacheKey(value: String): String {
     val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
     return digest.joinToString("") { "%02x".format(it) }
 }
+
+private const val WIDGET_ALBUM_ART_SIZE = 384
+private const val ACTION_REFRESH_MUSIC_WIDGETS = "dev.cholt.jellyfinmusic.action.REFRESH_WIDGETS"

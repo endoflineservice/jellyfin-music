@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_card_background"
+    android:orientation="horizontal"
+    android:paddingStart="16dp"
+    android:paddingTop="16dp"
+    android:paddingEnd="16dp"
+    android:paddingBottom="16dp">
+
+    <ImageView
+        android:id="@+id/widget_album"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1.18"
+        android:contentDescription="@string/widget_music_card_description"
+        android:scaleType="fitCenter"
+        android:src="@drawable/widget_vinyl" />
+
+    <RelativeLayout
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_marginStart="18dp"
+        android:layout_weight="0.92">
+
+        <TextView
+            android:id="@+id/widget_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_alignParentTop="true"
+            android:ellipsize="end"
+            android:maxLines="3"
+            android:text="Jellyfin Music"
+            android:textColor="@color/widget_on_surface"
+            android:textSize="21sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/widget_artist"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/widget_title"
+            android:layout_marginTop="5dp"
+            android:ellipsize="end"
+            android:maxLines="2"
+            android:text="Tap to open"
+            android:textColor="@color/widget_on_surface_variant"
+            android:textSize="14sp" />
+
+        <LinearLayout
+            android:id="@+id/widget_controls"
+            android:layout_width="wrap_content"
+            android:layout_height="60dp"
+            android:layout_alignParentEnd="true"
+            android:layout_alignParentBottom="true"
+            android:gravity="center"
+            android:orientation="horizontal">
+
+            <ImageView
+                android:id="@+id/widget_previous"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="@drawable/widget_control_button"
+                android:contentDescription="Previous"
+                android:padding="14dp"
+                android:scaleType="center"
+                android:src="@drawable/widget_icon_previous" />
+
+            <ImageView
+                android:id="@+id/widget_play"
+                android:layout_width="60dp"
+                android:layout_height="60dp"
+                android:layout_marginStart="10dp"
+                android:layout_marginEnd="10dp"
+                android:background="@drawable/widget_play_button"
+                android:contentDescription="Play or pause"
+                android:padding="18dp"
+                android:scaleType="center"
+                android:src="@drawable/widget_icon_play" />
+
+            <ImageView
+                android:id="@+id/widget_next"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="@drawable/widget_control_button"
+                android:contentDescription="Next"
+                android:padding="14dp"
+                android:scaleType="center"
+                android:src="@drawable/widget_icon_next" />
+        </LinearLayout>
+
+        <ProgressBar
+            android:id="@+id/widget_progress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="7dp"
+            android:layout_above="@id/widget_controls"
+            android:layout_marginBottom="14dp"
+            android:indeterminate="false"
+            android:max="1000"
+            android:progress="180"
+            android:progressDrawable="@drawable/widget_progress" />
+
+        <TextView
+            android:id="@+id/widget_status"
+            android:layout_width="1dp"
+            android:layout_height="1dp"
+            android:visibility="invisible" />
+    </RelativeLayout>
+</LinearLayout>
