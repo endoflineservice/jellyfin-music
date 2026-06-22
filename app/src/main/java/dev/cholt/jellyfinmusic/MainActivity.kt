@@ -210,6 +210,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -251,6 +252,7 @@ class MainActivity : ComponentActivity() {
         setTheme(R.style.AppTheme)
         applySystemBarStyle(isSystemDarkMode())
         super.onCreate(savedInstanceState)
+        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContent {
             JellyfinMusicRoot()
         }
@@ -479,6 +481,7 @@ private const val DISC_SCRATCH_RING_GAP_DP = 9f
 private const val DISC_SCRATCH_START_SLOP_DP = 7f
 private const val RECORD_FLIP_DURATION_MS = 720
 private const val RECORD_FLIP_ROTATION_DEGREES = 96f
+private const val RECORD_FLIP_ART_PRELOAD_TIMEOUT_MS = 850L
 private const val DISC_SCRATCH_SEEK_SCALE = 0.55f
 private const val DISC_SCRATCH_DEAD_ZONE = 0.22f
 private const val USER_SEEK_PROGRESS_HOLD_MS = 2_000L
@@ -628,9 +631,13 @@ private const val AUTO_ROOT_ID = "auto:root"
 private const val AUTO_SONGS_ID = "auto:songs"
 private const val AUTO_ALBUMS_ID = "auto:albums"
 private const val AUTO_ARTISTS_ID = "auto:artists"
+private const val AUTO_FAVORITES_ID = "auto:favorites"
+private const val AUTO_RECENT_ID = "auto:recent"
+private const val AUTO_PLAYLISTS_ID = "auto:playlists"
 private const val AUTO_TRACK_PREFIX = "auto:track:"
 private const val AUTO_ALBUM_PREFIX = "auto:album:"
 private const val AUTO_ARTIST_PREFIX = "auto:artist:"
+private const val AUTO_PLAYLIST_PREFIX = "auto:playlist:"
 private const val AUTO_MAX_TOP_LEVEL_ITEMS = 500
 
 private data class PlaybackActionHandlers(
@@ -659,8 +666,8 @@ private object PlaybackNotificationActions {
         handlers = null
     }
 
-    fun handle(action: String?) {
-        val activeHandlers = handlers ?: return
+    fun handle(action: String?): Boolean {
+        val activeHandlers = handlers ?: return false
         when (action) {
             PLAYBACK_ACTION_PLAY -> activeHandlers.onPlay()
             PLAYBACK_ACTION_PAUSE -> activeHandlers.onPause()
@@ -672,7 +679,9 @@ private object PlaybackNotificationActions {
             PLAYBACK_ACTION_SHUFFLE -> activeHandlers.onShuffle()
             PLAYBACK_ACTION_REPEAT -> activeHandlers.onRepeat()
             PLAYBACK_ACTION_DOWNLOAD -> activeHandlers.onDownload()
+            else -> return false
         }
+        return true
     }
 
     fun seekToFraction(fraction: Float) {
@@ -827,6 +836,8 @@ class AutoMediaBrowserService : MediaBrowserService() {
     private val serviceHandler = Handler(Looper.getMainLooper())
     private lateinit var autoSession: MediaSession
     private var autoQueue: List<MusicTrack> = emptyList()
+    private var autoShuffleEnabled = false
+    private var autoRepeatEnabled = false
     private var statePumpRunning = false
     private val statePump = object : Runnable {
         override fun run() {
@@ -883,6 +894,13 @@ class AutoMediaBrowserService : MediaBrowserService() {
                     autoPlayer().seekToFraction(pos.toFloat() / duration.toFloat())
                     publishAutoSessionState()
                 }
+
+                override fun onCustomAction(action: String, extras: Bundle?) {
+                    if (!PlaybackNotificationActions.handle(action)) {
+                        handleAutoCustomAction(action)
+                    }
+                    publishAutoSessionState()
+                }
             })
             isActive = true
         }
@@ -908,26 +926,50 @@ class AutoMediaBrowserService : MediaBrowserService() {
     }
 
     private fun buildAutoChildren(parentId: String): List<MediaBrowser.MediaItem> {
-        val (_, tracks) = loadAutoTracks()
+        val (session, tracks) = loadAutoTracks()
         return when {
             parentId == AUTO_ROOT_ID -> buildAutoRootItems(tracks)
             parentId == AUTO_SONGS_ID -> tracks
                 .take(AUTO_MAX_TOP_LEVEL_ITEMS)
-                .map { it.toAutoTrackItem() }
+                .map { it.toAutoTrackItem(session) }
+            parentId == AUTO_FAVORITES_ID -> {
+                val activeSession = session ?: return emptyList()
+                val tracksById = tracks.associateBy { it.id }
+                loadLikedTrackIds(applicationContext, activeSession)
+                    .mapNotNull { tracksById[it] }
+                    .take(AUTO_MAX_TOP_LEVEL_ITEMS)
+                    .map { it.toAutoTrackItem(session) }
+            }
+            parentId == AUTO_RECENT_ID -> {
+                val activeSession = session ?: return emptyList()
+                val tracksById = tracks.associateBy { it.id }
+                loadRecentTrackIds(applicationContext, activeSession)
+                    .mapNotNull { tracksById[it] }
+                    .take(AUTO_MAX_TOP_LEVEL_ITEMS)
+                    .map { it.toAutoTrackItem(session) }
+            }
             parentId == AUTO_ALBUMS_ID -> tracks
                 .groupByAlbum()
                 .take(AUTO_MAX_TOP_LEVEL_ITEMS)
-                .map { it.toAutoGroupItem(AUTO_ALBUM_PREFIX, MediaBrowser.MediaItem.FLAG_BROWSABLE) }
+                .map { it.toAutoGroupItem(AUTO_ALBUM_PREFIX, MediaBrowser.MediaItem.FLAG_BROWSABLE, session) }
             parentId == AUTO_ARTISTS_ID -> tracks
                 .groupByArtist()
                 .take(AUTO_MAX_TOP_LEVEL_ITEMS)
-                .map { it.toAutoGroupItem(AUTO_ARTIST_PREFIX, MediaBrowser.MediaItem.FLAG_BROWSABLE) }
+                .map { it.toAutoGroupItem(AUTO_ARTIST_PREFIX, MediaBrowser.MediaItem.FLAG_BROWSABLE, session) }
+            parentId == AUTO_PLAYLISTS_ID -> {
+                val activeSession = session ?: return emptyList()
+                loadLocalPlaylists(applicationContext, activeSession)
+                    .withGeneratedFavoritesPlaylist(loadLikedTrackIds(applicationContext, activeSession))
+                    .toLibraryGroups(tracks)
+                    .take(AUTO_MAX_TOP_LEVEL_ITEMS)
+                    .map { it.toAutoGroupItem(AUTO_PLAYLIST_PREFIX, MediaBrowser.MediaItem.FLAG_BROWSABLE, session) }
+            }
             parentId.startsWith(AUTO_ALBUM_PREFIX) -> {
                 val album = Uri.decode(parentId.removePrefix(AUTO_ALBUM_PREFIX))
                 tracks
                     .filter { it.album.equals(album, ignoreCase = true) }
                     .sortedWith(MusicTrackSort)
-                    .map { it.toAutoTrackItem() }
+                    .map { it.toAutoTrackItem(session) }
             }
             parentId.startsWith(AUTO_ARTIST_PREFIX) -> {
                 val artist = Uri.decode(parentId.removePrefix(AUTO_ARTIST_PREFIX))
@@ -939,7 +981,19 @@ class AutoMediaBrowserService : MediaBrowserService() {
                             { it.title.lowercase(Locale.getDefault()) }
                         )
                     )
-                    .map { it.toAutoTrackItem() }
+                    .map { it.toAutoTrackItem(session) }
+            }
+            parentId.startsWith(AUTO_PLAYLIST_PREFIX) -> {
+                val activeSession = session ?: return emptyList()
+                val playlistKey = Uri.decode(parentId.removePrefix(AUTO_PLAYLIST_PREFIX))
+                val playlists = loadLocalPlaylists(applicationContext, activeSession)
+                    .withGeneratedFavoritesPlaylist(loadLikedTrackIds(applicationContext, activeSession))
+                val playlist = playlists.firstOrNull { it.id == playlistKey || it.name.equals(playlistKey, ignoreCase = true) }
+                    ?: return emptyList()
+                val tracksById = tracks.associateBy { it.id }
+                playlist.trackIds
+                    .mapNotNull { tracksById[it] }
+                    .map { it.toAutoTrackItem(session) }
             }
             else -> emptyList()
         }
@@ -968,6 +1022,30 @@ class AutoMediaBrowserService : MediaBrowserService() {
                     .setMediaId(AUTO_ARTISTS_ID)
                     .setTitle("Artists")
                     .setSubtitle(tracks.groupByArtist().size.countLabel("artist"))
+                    .build(),
+                MediaBrowser.MediaItem.FLAG_BROWSABLE
+            ),
+            MediaBrowser.MediaItem(
+                MediaDescription.Builder()
+                    .setMediaId(AUTO_FAVORITES_ID)
+                    .setTitle("Favorites")
+                    .setSubtitle("Liked songs")
+                    .build(),
+                MediaBrowser.MediaItem.FLAG_BROWSABLE
+            ),
+            MediaBrowser.MediaItem(
+                MediaDescription.Builder()
+                    .setMediaId(AUTO_RECENT_ID)
+                    .setTitle("Recently played")
+                    .setSubtitle("Your recent listening")
+                    .build(),
+                MediaBrowser.MediaItem.FLAG_BROWSABLE
+            ),
+            MediaBrowser.MediaItem(
+                MediaDescription.Builder()
+                    .setMediaId(AUTO_PLAYLISTS_ID)
+                    .setTitle("Playlists")
+                    .setSubtitle("Saved and generated")
                     .build(),
                 MediaBrowser.MediaItem.FLAG_BROWSABLE
             )
@@ -1008,6 +1086,24 @@ class AutoMediaBrowserService : MediaBrowserService() {
                         )
                     )
             }
+            mediaId.startsWith(AUTO_PLAYLIST_PREFIX) -> {
+                val playlistKey = Uri.decode(mediaId.removePrefix(AUTO_PLAYLIST_PREFIX))
+                val tracksById = tracks.associateBy { it.id }
+                loadLocalPlaylists(applicationContext, session)
+                    .withGeneratedFavoritesPlaylist(loadLikedTrackIds(applicationContext, session))
+                    .firstOrNull { it.id == playlistKey || it.name.equals(playlistKey, ignoreCase = true) }
+                    ?.trackIds
+                    ?.mapNotNull { tracksById[it] }
+                    .orEmpty()
+            }
+            mediaId == AUTO_FAVORITES_ID -> {
+                val tracksById = tracks.associateBy { it.id }
+                loadLikedTrackIds(applicationContext, session).mapNotNull { tracksById[it] }
+            }
+            mediaId == AUTO_RECENT_ID -> {
+                val tracksById = tracks.associateBy { it.id }
+                loadRecentTrackIds(applicationContext, session).mapNotNull { tracksById[it] }
+            }
             mediaId == AUTO_SONGS_ID -> tracks
             else -> emptyList()
         }
@@ -1024,8 +1120,43 @@ class AutoMediaBrowserService : MediaBrowserService() {
             .ifEmpty { listOf(activeTrack) }
             .queueStartingAt(activeTrack)
         if (queue.isEmpty()) return
-        val nextIndex = (offset + queue.size) % queue.size
+        val nextIndex = when {
+            offset > 0 && autoRepeatEnabled -> 0
+            offset > 0 && autoShuffleEnabled && queue.size > 1 -> Random.nextInt(1, queue.size)
+            else -> (offset + queue.size) % queue.size
+        }
         playTrackFromQueue(queue, queue[nextIndex], session)
+    }
+
+    private fun handleAutoCustomAction(action: String?) {
+        when (action) {
+            PLAYBACK_ACTION_SHUFFLE -> {
+                autoShuffleEnabled = !autoShuffleEnabled
+                autoPlayer().currentTrack?.let { activeTrack ->
+                    val baseQueue = autoQueue.ifEmpty { loadAutoTracks().second.queueStartingAt(activeTrack) }
+                    if (baseQueue.size > 2) {
+                        autoQueue = listOf(activeTrack) + baseQueue.drop(1).randomizedPlaybackQueue()
+                    }
+                }
+            }
+            PLAYBACK_ACTION_REPEAT -> {
+                autoRepeatEnabled = !autoRepeatEnabled
+            }
+            PLAYBACK_ACTION_FAVORITE -> {
+                val (session, _) = loadAutoTracks()
+                val track = autoPlayer().currentTrack
+                if (session != null && track != null) {
+                    val liked = loadLikedTrackIds(applicationContext, session).toMutableSet()
+                    if (!liked.add(track.id)) {
+                        liked.remove(track.id)
+                    }
+                    saveLikedTrackIds(applicationContext, session, liked)
+                    val playlists = loadLocalPlaylists(applicationContext, session)
+                        .withGeneratedFavoritesPlaylist(liked)
+                    saveLocalPlaylists(applicationContext, session, playlists)
+                }
+            }
+        }
     }
 
     private fun playTrackFromQueue(
@@ -1060,6 +1191,12 @@ class AutoMediaBrowserService : MediaBrowserService() {
                     .putString(MediaMetadata.METADATA_KEY_ARTIST, track.artist)
                     .putString(MediaMetadata.METADATA_KEY_ALBUM, track.album)
                     .putLong(MediaMetadata.METADATA_KEY_DURATION, track.durationMs.coerceAtLeast(0L))
+                    .apply {
+                        track.imageUrl(snapshot.session, size = 512, quality = 84)?.let { imageUrl ->
+                            putString(MediaMetadata.METADATA_KEY_ART_URI, imageUrl)
+                            putString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI, imageUrl)
+                        }
+                    }
                     .build()
             )
         }
@@ -1076,6 +1213,27 @@ class AutoMediaBrowserService : MediaBrowserService() {
                         PlaybackState.ACTION_SEEK_TO or
                         PlaybackState.ACTION_PLAY_FROM_MEDIA_ID or
                         PlaybackState.ACTION_PLAY_FROM_SEARCH
+                )
+                .addCustomAction(
+                    PlaybackState.CustomAction.Builder(
+                        PLAYBACK_ACTION_SHUFFLE,
+                        "Shuffle",
+                        android.R.drawable.ic_menu_rotate
+                    ).build()
+                )
+                .addCustomAction(
+                    PlaybackState.CustomAction.Builder(
+                        PLAYBACK_ACTION_REPEAT,
+                        "Repeat",
+                        android.R.drawable.ic_menu_revert
+                    ).build()
+                )
+                .addCustomAction(
+                    PlaybackState.CustomAction.Builder(
+                        PLAYBACK_ACTION_FAVORITE,
+                        "Favorite",
+                        android.R.drawable.star_big_off
+                    ).build()
                 )
                 .setState(snapshot.androidPlaybackState(), position, if (snapshot.isPlaying) 1f else 0f, snapshot.updatedAtMs)
                 .build()
@@ -1134,6 +1292,10 @@ private class PlaybackNotificationController(context: Context) {
 
             override fun onStop() {
                 PlaybackNotificationActions.handle(PLAYBACK_ACTION_STOP)
+            }
+
+            override fun onCustomAction(action: String, extras: Bundle?) {
+                PlaybackNotificationActions.handle(action)
             }
 
             override fun onMediaButtonEvent(mediaButtonIntent: Intent): Boolean {
@@ -1345,6 +1507,10 @@ private class PlaybackNotificationController(context: Context) {
                 .putString(MediaMetadata.METADATA_KEY_ALBUM, track.album)
                 .putLong(MediaMetadata.METADATA_KEY_DURATION, track.durationMs.coerceAtLeast(0L))
                 .apply {
+                    track.imageUrl(snapshot.session, size = 512, quality = 84)?.let { imageUrl ->
+                        putString(MediaMetadata.METADATA_KEY_ART_URI, imageUrl)
+                        putString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI, imageUrl)
+                    }
                     largeIcon?.takeIf { largeIconTrackId == track.id }?.let {
                         putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, it)
                     }
@@ -1361,6 +1527,27 @@ private class PlaybackNotificationController(context: Context) {
                         PlaybackState.ACTION_SKIP_TO_NEXT or
                         PlaybackState.ACTION_STOP or
                         PlaybackState.ACTION_SEEK_TO
+                )
+                .addCustomAction(
+                    PlaybackState.CustomAction.Builder(
+                        PLAYBACK_ACTION_SHUFFLE,
+                        "Shuffle",
+                        android.R.drawable.ic_menu_rotate
+                    ).build()
+                )
+                .addCustomAction(
+                    PlaybackState.CustomAction.Builder(
+                        PLAYBACK_ACTION_REPEAT,
+                        "Repeat",
+                        android.R.drawable.ic_menu_revert
+                    ).build()
+                )
+                .addCustomAction(
+                    PlaybackState.CustomAction.Builder(
+                        PLAYBACK_ACTION_FAVORITE,
+                        "Favorite",
+                        android.R.drawable.star_big_off
+                    ).build()
                 )
                 .setState(
                     snapshot.androidPlaybackState(),
@@ -2102,6 +2289,7 @@ private fun stableCacheKey(value: String): String =
 private fun JellyfinMusicApp() {
     val context = LocalContext.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
     val hapticFeedback = LocalHapticFeedback.current
     val coroutineScope = rememberCoroutineScope()
     val libraryRailScrollJob = remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
@@ -2403,11 +2591,20 @@ private fun JellyfinMusicApp() {
     }
 
     fun showNowPlayingPlayer() {
+        keyboardController?.hide()
+        focusManager.clearFocus()
+        searchFieldFocused = false
         showPlayer = true
         isPlayerOpenDragging = false
         playerOpenDragOffsetPx = 0f
         isPlayerDismissDragging = false
         playerDismissDragOffsetPx = 0f
+    }
+
+    fun hideSearchKeyboard() {
+        keyboardController?.hide()
+        focusManager.clearFocus()
+        searchFieldFocused = false
     }
 
     fun playTrack(track: MusicTrack, openPlayer: Boolean = false, source: List<MusicTrack> = tracks) {
@@ -2806,10 +3003,25 @@ private fun JellyfinMusicApp() {
                 }
             )
         )
+        player.onTrackEnded = handleEnded@ { endedTrack ->
+            val activeSession = session ?: return@handleEnded false
+            if (player.currentTrack?.id != endedTrack.id) return@handleEnded false
+            if (repeatEnabled) {
+                player.play(endedTrack, activeSession)
+            } else if (playbackBehaviorSettings.stopAfterCurrent) {
+                player.release()
+                showPlayer = false
+                statusText = "Stopped after current track"
+            } else {
+                playAdjacent(1)
+            }
+            true
+        }
     }
 
     DisposableEffect(Unit) {
         onDispose {
+            player.onTrackEnded = null
             if (!player.isPlaying) {
                 PlaybackNotificationActions.clear()
                 player.dispose()
@@ -2830,6 +3042,12 @@ private fun JellyfinMusicApp() {
             delay(80)
             runCatching { searchFocusRequester.requestFocus() }
             keyboardController?.show()
+        }
+    }
+
+    LaunchedEffect(selectedDestination, showPlayer, activeLibraryDetail) {
+        if (selectedDestination != AppDestination.Search || showPlayer || activeLibraryDetail != null) {
+            hideSearchKeyboard()
         }
     }
 
@@ -2869,22 +3087,6 @@ private fun JellyfinMusicApp() {
         player.prepareNext(nextTrack, activeSession)
     }
 
-    LaunchedEffect(player.status) {
-        val activeTrack = player.currentTrack
-        val activeSession = session
-        if (player.status == "Ended" && activeTrack != null && activeSession != null) {
-            delay(450)
-            if (repeatEnabled) {
-                player.play(activeTrack, activeSession)
-            } else if (playbackBehaviorSettings.stopAfterCurrent) {
-                player.release()
-                showPlayer = false
-                statusText = "Stopped after current track"
-            } else {
-                playAdjacent(1)
-            }
-        }
-    }
     val closePlayer = {
         showPlayer = false
         isPlayerDismissDragging = false
@@ -7514,6 +7716,7 @@ private fun SearchHeader(
     onRefresh: () -> Unit
 ) {
     val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(9.dp)
@@ -7557,7 +7760,13 @@ private fun SearchHeader(
                 keyboardType = KeyboardType.Text,
                 autoCorrectEnabled = false
             ),
-            keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
+            keyboardActions = KeyboardActions(
+                onSearch = {
+                    keyboardController?.hide()
+                    focusManager.clearFocus()
+                    onSearchFocusChange(false)
+                }
+            ),
             shape = RoundedCornerShape(22.dp)
         )
         Row(
@@ -9742,7 +9951,13 @@ private suspend fun loadAlbumBitmap(context: Context, imageUrl: String, token: S
     loadAlbumBitmapBlocking(context, imageUrl, token)
 }
 
-private fun loadAlbumBitmapBlocking(context: Context, imageUrl: String, token: String?): Bitmap? {
+private fun loadAlbumBitmapBlocking(
+    context: Context,
+    imageUrl: String,
+    token: String?,
+    connectTimeoutMs: Int = 6_000,
+    readTimeoutMs: Int = 10_000
+): Bitmap? {
     AlbumArtCache[imageUrl]?.let { return it }
     loadAlbumBitmapFromDisk(context, imageUrl)?.let { bitmap ->
         AlbumArtCache[imageUrl] = bitmap
@@ -9751,8 +9966,8 @@ private fun loadAlbumBitmapBlocking(context: Context, imageUrl: String, token: S
     runCatching {
         val connection = (URL(imageUrl).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
-            connectTimeout = 6_000
-            readTimeout = 10_000
+            connectTimeout = connectTimeoutMs
+            readTimeout = readTimeoutMs
             setRequestProperty("Accept", "image/*")
             token?.let { setRequestProperty("X-Emby-Token", it) }
         }
@@ -12188,6 +12403,7 @@ private fun DiscAlbumStage(
     var outgoingFlipRotation by remember { mutableFloatStateOf(0f) }
     val recordFlipProgress = remember { Animatable(1f) }
     val density = LocalDensity.current
+    val context = LocalContext.current
     val stageProgress = if (isScratching || holdScrubProgress) scratchProgress else progress
     val flipProgress = recordFlipProgress.value.coerceIn(0f, 1f)
     val flipDepth = (1f - abs(flipProgress - 0.5f) * 2f).coerceIn(0f, 1f)
@@ -12233,6 +12449,20 @@ private fun DiscAlbumStage(
             lastFlipSession = session
             recordFlipProgress.snapTo(1f)
         } else if (previousTrack.id != track.id) {
+            val incomingImageUrl = track.imageUrl(session, size = 512, quality = 86)
+            if (incomingImageUrl != null && AlbumArtCache[incomingImageUrl] == null) {
+                withTimeoutOrNull(RECORD_FLIP_ART_PRELOAD_TIMEOUT_MS) {
+                    withContext(Dispatchers.IO) {
+                        loadAlbumBitmapBlocking(
+                            context = context,
+                            imageUrl = incomingImageUrl,
+                            token = session?.token,
+                            connectTimeoutMs = 250,
+                            readTimeoutMs = 600
+                        )
+                    }
+                }
+            }
             outgoingFlipTrack = previousTrack
             outgoingFlipSession = lastFlipSession
             outgoingFlipRotation = discRotation
@@ -13656,6 +13886,7 @@ private class JellyfinPlayer(private val context: Context) {
         private set
     var visualizerLevels by mutableStateOf(FloatArray(VISUALIZER_BAR_COUNT))
         private set
+    var onTrackEnded: ((MusicTrack) -> Boolean)? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -13967,29 +14198,6 @@ private class JellyfinPlayer(private val context: Context) {
             reportCurrentPlaybackProgress(force = true, isPaused = true)
             return
         }
-        val session = currentSession
-        if (session != null && !canSeekInPlace(track, session)) {
-            val shouldResume = isPlaying
-            queueSeekPosition(track, target, duration)
-            if (shouldResume && loadPlaybackRecoverySettings(context).resumeAfterSeekEnabled) {
-                publishPlaybackState(track)
-                reportCurrentPlaybackProgress(force = true, isPaused = false)
-                scheduleDeferredStreamingSeek(track, session, target)
-            } else {
-                if (shouldResume) {
-                    activePlayer.pause()
-                    abandonAudioFocus()
-                    stopVisualizerPump()
-                    isPlaying = false
-                }
-                if (status != "Ended") {
-                    status = "Paused"
-                }
-                publishPlaybackState(track)
-                reportCurrentPlaybackProgress(force = true, isPaused = true)
-            }
-            return
-        }
         runCatching {
             activePlayer.seekToPosition(target)
             pendingSeekTargetMs = target
@@ -14211,8 +14419,25 @@ private class JellyfinPlayer(private val context: Context) {
         pendingSeekStartedAt = 0L
         smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
-        publishPlaybackState(track)
         reportCurrentPlaybackStopped()
+        val endHandler = onTrackEnded
+        if (endHandler != null) {
+            val dispatchEnd = {
+                if (currentTrack?.id == track.id && status == "Ended") {
+                    val handled = endHandler(track)
+                    if (!handled && currentTrack?.id == track.id && status == "Ended") {
+                        publishPlaybackState(track)
+                    }
+                }
+            }
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                dispatchEnd()
+            } else {
+                mainHandler.post(dispatchEnd)
+            }
+        } else {
+            publishPlaybackState(track)
+        }
     }
 
     private fun PlaybackException.readablePlaybackMessage(): String =
@@ -14348,7 +14573,8 @@ private class JellyfinPlayer(private val context: Context) {
     }
 
     private fun canSeekInPlace(track: MusicTrack, session: JellyfinSession): Boolean =
-        offlinePlayableFileFor(context, session, track) != null
+        (currentTrack?.id == track.id && mediaPlayer != null && activePlayerPrepared) ||
+            offlinePlayableFileFor(context, session, track) != null
 
     private fun currentPlaybackPositionMs(track: MusicTrack): Long? {
         queuedSeekPositionFor(track)?.takeIf { !isPlaying || status == "Buffering" }?.let { return it }
@@ -16766,22 +16992,34 @@ private fun LocalPlaylist.resolveTracks(tracks: List<MusicTrack>): List<MusicTra
     return trackIds.mapNotNull { tracksById[it] }
 }
 
-private fun MusicTrack.toAutoTrackItem(): MediaBrowser.MediaItem =
+private fun MusicTrack.toAutoTrackItem(session: JellyfinSession?): MediaBrowser.MediaItem =
     MediaBrowser.MediaItem(
         MediaDescription.Builder()
             .setMediaId("$AUTO_TRACK_PREFIX$id")
             .setTitle(title)
             .setSubtitle(notificationSubtitle())
+            .apply {
+                imageUrl(session, size = 256, quality = 78)?.let { setIconUri(Uri.parse(it)) }
+            }
             .build(),
         MediaBrowser.MediaItem.FLAG_PLAYABLE
     )
 
-private fun LibraryGroup.toAutoGroupItem(prefix: String, flags: Int): MediaBrowser.MediaItem =
+private fun LibraryGroup.toAutoGroupItem(
+    prefix: String,
+    flags: Int,
+    session: JellyfinSession?
+): MediaBrowser.MediaItem =
     MediaBrowser.MediaItem(
         MediaDescription.Builder()
-            .setMediaId("$prefix${Uri.encode(title)}")
+            .setMediaId("$prefix${Uri.encode(if (prefix == AUTO_PLAYLIST_PREFIX) key else title)}")
             .setTitle(title)
             .setSubtitle(subtitle)
+            .apply {
+                tracks.firstOrNull()
+                    ?.imageUrl(session, size = 256, quality = 78)
+                    ?.let { setIconUri(Uri.parse(it)) }
+            }
             .build(),
         flags
     )
