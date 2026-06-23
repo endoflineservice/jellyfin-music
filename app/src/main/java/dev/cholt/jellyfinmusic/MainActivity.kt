@@ -9999,8 +9999,7 @@ private fun DailyMixCard(
     onClick: () -> Unit
 ) {
     val colorScheme = MaterialTheme.colorScheme
-    val accent = if (card.accent == Color.Unspecified) colorScheme.primary else card.accent
-    val cardColor = accent
+    val cardColor = colorScheme.primary
     val cardContentColor = readableOnColor(cardColor)
     val secondaryContentColor = cardContentColor.copy(alpha = 0.78f)
     val artworkTracks = remember(card.id, card.tracks) {
