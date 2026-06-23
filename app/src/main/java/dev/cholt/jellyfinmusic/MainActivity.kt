@@ -385,6 +385,7 @@ private const val PREF_PINNED_LIBRARY_ITEMS_PREFIX = "pinned_library_items_"
 private const val PREF_RECENT_TRACK_IDS_PREFIX = "recent_track_ids_"
 private const val PREF_LOCAL_PLAYLISTS_PREFIX = "local_playlists_"
 private const val PREF_LAST_QUEUE_IDS_PREFIX = "last_queue_ids_"
+private const val PREF_LAST_PLAYBACK_STATE_PREFIX = "last_playback_state_"
 private const val PREF_QUEUE_HISTORY_IDS_PREFIX = "queue_history_ids_"
 private const val PREF_OFFLINE_WIFI_ONLY = "offline_wifi_only"
 private const val PREF_OFFLINE_STORAGE_LIMIT_MB = "offline_storage_limit_mb"
@@ -1927,6 +1928,12 @@ private data class StartupBehaviorSettings(
     val restoreLastQueue: Boolean = true
 )
 
+private data class LastPlaybackState(
+    val trackId: String,
+    val positionMs: Long,
+    val updatedAtMs: Long
+)
+
 private data class QueueBehaviorSettings(
     val tapAction: TrackTapAction = TrackTapAction.VisibleList,
     val shuffleAfterCurrent: Boolean = false
@@ -2550,13 +2557,30 @@ private fun JellyfinMusicApp() {
         startupBehaviorSettings.restoreLastQueue
     ) {
         val activeSession = session ?: return@LaunchedEffect
-        if (!startupBehaviorSettings.restoreLastQueue || playQueue.isNotEmpty() || tracks.isEmpty()) return@LaunchedEffect
+        if (!startupBehaviorSettings.restoreLastQueue || player.currentTrack != null || tracks.isEmpty()) {
+            return@LaunchedEffect
+        }
         val tracksById = tracks.associateBy { it.id }
-        val restoredQueue = loadLastQueueIds(context, activeSession)
+        val lastPlaybackState = loadLastPlaybackState(context, activeSession)
+        val restoredTrack = lastPlaybackState?.trackId?.let { tracksById[it] }
+        val restoredQueueIds = loadLastQueueIds(context, activeSession)
+        val restoredQueue = restoredQueueIds
             .mapNotNull { tracksById[it] }
             .distinctBy { it.id }
+            .let { queue ->
+                when {
+                    restoredTrack == null -> queue
+                    queue.isEmpty() -> listOf(restoredTrack)
+                    else -> (listOf(restoredTrack) + queue).distinctBy { it.id }.queueStartingAt(restoredTrack)
+                }
+            }
         if (restoredQueue.isNotEmpty()) {
             playQueue = restoredQueue
+        }
+        lastPlaybackState?.let { playbackState ->
+            if (restoredTrack != null) {
+                player.restorePaused(restoredTrack, activeSession, playbackState.positionMs)
+            }
         }
     }
 
@@ -3078,6 +3102,9 @@ private fun JellyfinMusicApp() {
         statusText = "Offline downloads cleared"
     }
 
+    val latestSessionForDispose by rememberUpdatedState(session)
+    val latestStartupBehaviorSettingsForDispose by rememberUpdatedState(startupBehaviorSettings)
+
     SideEffect {
         PlaybackNotificationActions.register(
             PlaybackActionHandlers(
@@ -3155,6 +3182,15 @@ private fun JellyfinMusicApp() {
     DisposableEffect(Unit) {
         onDispose {
             player.onTrackEnded = null
+            val activeSession = latestSessionForDispose
+            val snapshot = player.playbackSnapshot
+            if (
+                latestStartupBehaviorSettingsForDispose.restoreLastQueue &&
+                activeSession != null &&
+                snapshot.track != null
+            ) {
+                saveLastPlaybackState(context, activeSession, snapshot)
+            }
             if (!player.isPlaying) {
                 PlaybackNotificationActions.clear()
                 player.dispose()
@@ -14274,6 +14310,33 @@ private class JellyfinPlayer(private val context: Context) {
         )
     }
 
+    fun restorePaused(track: MusicTrack, session: JellyfinSession, positionMs: Long) {
+        playbackGeneration++
+        releasePlayer()
+        val durationMs = track.durationMs.coerceAtLeast(0L)
+        val restoredPositionMs = if (durationMs > 0L) {
+            positionMs.coerceIn(0L, durationMs)
+        } else {
+            positionMs.coerceAtLeast(0L)
+        }
+        currentSession = session
+        currentTrack = track
+        isPlaying = false
+        status = "Paused"
+        progress = if (durationMs > 0L) {
+            restoredPositionMs.toFloat() / durationMs.toFloat()
+        } else {
+            0f
+        }.coerceIn(0f, 1f)
+        queuedSeekTrackId = track.id
+        queuedSeekPositionMs = restoredPositionMs
+        pendingSeekTargetMs = restoredPositionMs
+        pendingSeekStartedAt = SystemClock.elapsedRealtime()
+        lastPlaybackReportAt = 0L
+        PlaybackDiagnostics.record("Restored playback", "${track.title} - ${formatDuration(restoredPositionMs)}")
+        publishPlaybackState(track)
+    }
+
     private fun startPlayback(
         track: MusicTrack,
         session: JellyfinSession,
@@ -14977,6 +15040,7 @@ private class JellyfinPlayer(private val context: Context) {
         val snapshot = createPlaybackSnapshot(track)
         playbackSnapshot = snapshot
         lastWidgetProgressUpdateAt = snapshot.updatedAtMs
+        persistResumeState(snapshot)
         saveWidgetState(context, snapshot)
         notificationController.update(snapshot)
     }
@@ -14992,7 +15056,13 @@ private class JellyfinPlayer(private val context: Context) {
         val now = SystemClock.elapsedRealtime()
         if (now - lastWidgetProgressUpdateAt < WIDGET_PROGRESS_UPDATE_MS) return
         lastWidgetProgressUpdateAt = now
+        persistResumeState(snapshot)
         saveWidgetState(context, snapshot)
+    }
+
+    private fun persistResumeState(snapshot: PlaybackSnapshot) {
+        val activeSession = snapshot.session ?: return
+        saveLastPlaybackState(context, activeSession, snapshot)
     }
 
     private fun playbackAudioAttributes(): AudioAttributes =
@@ -16662,6 +16732,9 @@ private fun saveRecentTrackIds(
 private fun lastQueueIdsPreferenceKey(session: JellyfinSession): String =
     "$PREF_LAST_QUEUE_IDS_PREFIX${stableCacheKey("${session.serverUrl}|${session.userId}")}"
 
+private fun lastPlaybackStatePreferenceKey(session: JellyfinSession): String =
+    "$PREF_LAST_PLAYBACK_STATE_PREFIX${stableCacheKey("${session.serverUrl}|${session.userId}")}"
+
 private fun loadLastQueueIds(context: Context, session: JellyfinSession): List<String> {
     val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .getString(lastQueueIdsPreferenceKey(session), null)
@@ -16682,6 +16755,35 @@ private fun saveLastQueueIds(context: Context, session: JellyfinSession, queue: 
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
         .putString(lastQueueIdsPreferenceKey(session), items.toString())
+        .apply()
+}
+
+private fun loadLastPlaybackState(context: Context, session: JellyfinSession): LastPlaybackState? {
+    val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getString(lastPlaybackStatePreferenceKey(session), null)
+        ?: return null
+    return runCatching {
+        val root = JSONObject(raw)
+        val trackId = root.optString("trackId").takeIf { it.isNotBlank() } ?: return@runCatching null
+        LastPlaybackState(
+            trackId = trackId,
+            positionMs = root.optLong("positionMs", 0L).coerceAtLeast(0L),
+            updatedAtMs = root.optLong("updatedAtMs", 0L).coerceAtLeast(0L)
+        )
+    }.getOrNull()
+}
+
+private fun saveLastPlaybackState(context: Context, session: JellyfinSession, snapshot: PlaybackSnapshot) {
+    val track = snapshot.track ?: return
+    if (snapshot.isEnded) return
+    val positionMs = snapshot.livePositionMs.coerceAtLeast(0L)
+    val root = JSONObject()
+        .put("trackId", track.id)
+        .put("positionMs", positionMs)
+        .put("updatedAtMs", System.currentTimeMillis())
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(lastPlaybackStatePreferenceKey(session), root.toString())
         .apply()
 }
 
