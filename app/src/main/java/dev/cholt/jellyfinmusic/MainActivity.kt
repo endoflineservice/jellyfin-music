@@ -630,6 +630,7 @@ const val PLAYBACK_ACTION_REPEAT = "dev.cholt.jellyfinmusic.action.REPEAT"
 const val PLAYBACK_ACTION_DOWNLOAD = "dev.cholt.jellyfinmusic.action.DOWNLOAD"
 private const val PLAYBACK_SERVICE_ACTION_START = "dev.cholt.jellyfinmusic.service.START"
 private const val PLAYBACK_SERVICE_ACTION_STOP = "dev.cholt.jellyfinmusic.service.STOP"
+private const val GITHUB_REPOSITORY_URL = "https://github.com/endoflineservice/jellyfin-music"
 private const val AUTO_ROOT_ID = "auto:root"
 private const val AUTO_SONGS_ID = "auto:songs"
 private const val AUTO_ALBUMS_ID = "auto:albums"
@@ -5699,6 +5700,7 @@ private fun PageTitleRow(
 
 @Composable
 private fun AboutCard() {
+    val context = LocalContext.current
     Card(
         shape = RoundedCornerShape(26.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
@@ -5717,6 +5719,44 @@ private fun AboutCard() {
                 title = "Version",
                 value = appVersionLabel(includeCode = true)
             )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+            Text(
+                text = "Developer",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = "GitHub repository",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = GITHUB_REPOSITORY_URL,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                TextButton(
+                    onClick = {
+                        runCatching {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_REPOSITORY_URL))
+                            )
+                        }
+                    },
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Text("Open")
+                }
+            }
         }
     }
 }
