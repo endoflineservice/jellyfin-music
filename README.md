@@ -30,9 +30,9 @@ docs/screenshots/
 
 Current release screenshots:
 
-- [Home smart cards](docs/screenshots/home-smart-cards.png)
-- [Now playing turntable](docs/screenshots/now-playing-turntable.png)
-- [Audio equalizer](docs/screenshots/audio-equalizer.png)
+| Home | Now Playing | Audio |
+| --- | --- | --- |
+| <img src="docs/screenshots/home-smart-cards.png" width="220" alt="Home smart cards screen" /> | <img src="docs/screenshots/now-playing-turntable.png" width="220" alt="Now playing turntable screen" /> | <img src="docs/screenshots/audio-equalizer.png" width="220" alt="Audio equalizer settings screen" /> |
 
 ## Roadmap
 
