@@ -147,6 +147,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -384,6 +385,7 @@ private const val PREF_PINNED_LIBRARY_ITEMS_PREFIX = "pinned_library_items_"
 private const val PREF_RECENT_TRACK_IDS_PREFIX = "recent_track_ids_"
 private const val PREF_LOCAL_PLAYLISTS_PREFIX = "local_playlists_"
 private const val PREF_LAST_QUEUE_IDS_PREFIX = "last_queue_ids_"
+private const val PREF_QUEUE_HISTORY_IDS_PREFIX = "queue_history_ids_"
 private const val PREF_OFFLINE_WIFI_ONLY = "offline_wifi_only"
 private const val PREF_OFFLINE_STORAGE_LIMIT_MB = "offline_storage_limit_mb"
 private const val PREF_DOWNLOADED_ONLY_MODE = "downloaded_only_mode"
@@ -482,6 +484,7 @@ private const val DISC_SCRATCH_START_SLOP_DP = 7f
 private const val RECORD_FLIP_DURATION_MS = 720
 private const val RECORD_FLIP_ROTATION_DEGREES = 96f
 private const val RECORD_FLIP_ART_PRELOAD_TIMEOUT_MS = 850L
+private const val RECORD_ROTATION_DURATION_MS = 14_000
 private const val DISC_SCRATCH_SEEK_SCALE = 0.55f
 private const val DISC_SCRATCH_DEAD_ZONE = 0.22f
 private const val USER_SEEK_PROGRESS_HOLD_MS = 2_000L
@@ -634,6 +637,9 @@ private const val AUTO_ARTISTS_ID = "auto:artists"
 private const val AUTO_FAVORITES_ID = "auto:favorites"
 private const val AUTO_RECENT_ID = "auto:recent"
 private const val AUTO_PLAYLISTS_ID = "auto:playlists"
+private const val AUTO_SHUFFLE_ALL_ID = "auto:shuffle-all"
+private const val AUTO_RECENTLY_ADDED_ID = "auto:recently-added"
+private const val AUTO_OFFLINE_ID = "auto:offline"
 private const val AUTO_TRACK_PREFIX = "auto:track:"
 private const val AUTO_ALBUM_PREFIX = "auto:album:"
 private const val AUTO_ARTIST_PREFIX = "auto:artist:"
@@ -653,6 +659,36 @@ private data class PlaybackActionHandlers(
     val onRepeat: () -> Unit,
     val onDownload: () -> Unit
 )
+
+private data class PlaybackDiagnosticEvent(
+    val timeMs: Long,
+    val title: String,
+    val detail: String
+)
+
+private object PlaybackDiagnostics {
+    private const val MAX_EVENTS = 24
+    private val mainHandler = Handler(Looper.getMainLooper())
+    val events = mutableStateListOf<PlaybackDiagnosticEvent>()
+
+    fun record(title: String, detail: String) {
+        val addEvent = {
+            events.add(0, PlaybackDiagnosticEvent(System.currentTimeMillis(), title, detail))
+            while (events.size > MAX_EVENTS) {
+                events.removeAt(events.lastIndex)
+            }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            addEvent()
+        } else {
+            mainHandler.post(addEvent)
+        }
+    }
+
+    fun clear() {
+        events.clear()
+    }
+}
 
 private object PlaybackNotificationActions {
     @Volatile
@@ -896,7 +932,10 @@ class AutoMediaBrowserService : MediaBrowserService() {
                 }
 
                 override fun onCustomAction(action: String, extras: Bundle?) {
-                    if (!PlaybackNotificationActions.handle(action)) {
+                    val handledByApp = PlaybackNotificationActions.handle(action)
+                    if (handledByApp) {
+                        mirrorAutoTransportState(action)
+                    } else {
                         handleAutoCustomAction(action)
                     }
                     publishAutoSessionState()
@@ -928,7 +967,7 @@ class AutoMediaBrowserService : MediaBrowserService() {
     private fun buildAutoChildren(parentId: String): List<MediaBrowser.MediaItem> {
         val (session, tracks) = loadAutoTracks()
         return when {
-            parentId == AUTO_ROOT_ID -> buildAutoRootItems(tracks)
+            parentId == AUTO_ROOT_ID -> buildAutoRootItems(session, tracks)
             parentId == AUTO_SONGS_ID -> tracks
                 .take(AUTO_MAX_TOP_LEVEL_ITEMS)
                 .map { it.toAutoTrackItem(session) }
@@ -945,6 +984,19 @@ class AutoMediaBrowserService : MediaBrowserService() {
                 val tracksById = tracks.associateBy { it.id }
                 loadRecentTrackIds(applicationContext, activeSession)
                     .mapNotNull { tracksById[it] }
+                    .take(AUTO_MAX_TOP_LEVEL_ITEMS)
+                    .map { it.toAutoTrackItem(session) }
+            }
+            parentId == AUTO_RECENTLY_ADDED_ID -> tracks
+                .filter { it.dateAddedMs > 0L }
+                .sortedByDescending { it.dateAddedMs }
+                .take(AUTO_MAX_TOP_LEVEL_ITEMS)
+                .map { it.toAutoTrackItem(session) }
+            parentId == AUTO_OFFLINE_ID -> {
+                val activeSession = session ?: return emptyList()
+                val offlineTrackIds = loadOfflineDownloads(applicationContext, activeSession).keys
+                tracks
+                    .filter { it.id in offlineTrackIds }
                     .take(AUTO_MAX_TOP_LEVEL_ITEMS)
                     .map { it.toAutoTrackItem(session) }
             }
@@ -999,8 +1051,25 @@ class AutoMediaBrowserService : MediaBrowserService() {
         }
     }
 
-    private fun buildAutoRootItems(tracks: List<MusicTrack>): List<MediaBrowser.MediaItem> =
-        listOf(
+    private fun buildAutoRootItems(session: JellyfinSession?, tracks: List<MusicTrack>): List<MediaBrowser.MediaItem> {
+        val likedCount = session?.let { loadLikedTrackIds(applicationContext, it).size } ?: 0
+        val recentCount = session?.let { loadRecentTrackIds(applicationContext, it).size } ?: 0
+        val playlistCount = session?.let {
+            loadLocalPlaylists(applicationContext, it)
+                .withGeneratedFavoritesPlaylist(loadLikedTrackIds(applicationContext, it))
+                .size
+        } ?: 0
+        val offlineCount = session?.let { loadOfflineDownloads(applicationContext, it).size } ?: 0
+        val recentlyAddedCount = tracks.count { it.dateAddedMs > 0L }
+        return listOf(
+            MediaBrowser.MediaItem(
+                MediaDescription.Builder()
+                    .setMediaId(AUTO_SHUFFLE_ALL_ID)
+                    .setTitle("Shuffle all")
+                    .setSubtitle(tracks.size.countLabel("song"))
+                    .build(),
+                MediaBrowser.MediaItem.FLAG_PLAYABLE
+            ),
             MediaBrowser.MediaItem(
                 MediaDescription.Builder()
                     .setMediaId(AUTO_SONGS_ID)
@@ -1029,7 +1098,7 @@ class AutoMediaBrowserService : MediaBrowserService() {
                 MediaDescription.Builder()
                     .setMediaId(AUTO_FAVORITES_ID)
                     .setTitle("Favorites")
-                    .setSubtitle("Liked songs")
+                    .setSubtitle(likedCount.countLabel("song"))
                     .build(),
                 MediaBrowser.MediaItem.FLAG_BROWSABLE
             ),
@@ -1037,7 +1106,23 @@ class AutoMediaBrowserService : MediaBrowserService() {
                 MediaDescription.Builder()
                     .setMediaId(AUTO_RECENT_ID)
                     .setTitle("Recently played")
-                    .setSubtitle("Your recent listening")
+                    .setSubtitle(recentCount.countLabel("song"))
+                    .build(),
+                MediaBrowser.MediaItem.FLAG_BROWSABLE
+            ),
+            MediaBrowser.MediaItem(
+                MediaDescription.Builder()
+                    .setMediaId(AUTO_RECENTLY_ADDED_ID)
+                    .setTitle("Recently added")
+                    .setSubtitle(recentlyAddedCount.countLabel("song"))
+                    .build(),
+                MediaBrowser.MediaItem.FLAG_BROWSABLE
+            ),
+            MediaBrowser.MediaItem(
+                MediaDescription.Builder()
+                    .setMediaId(AUTO_OFFLINE_ID)
+                    .setTitle("Offline downloads")
+                    .setSubtitle(offlineCount.countLabel("song"))
                     .build(),
                 MediaBrowser.MediaItem.FLAG_BROWSABLE
             ),
@@ -1045,11 +1130,12 @@ class AutoMediaBrowserService : MediaBrowserService() {
                 MediaDescription.Builder()
                     .setMediaId(AUTO_PLAYLISTS_ID)
                     .setTitle("Playlists")
-                    .setSubtitle("Saved and generated")
+                    .setSubtitle(playlistCount.countLabel("playlist"))
                     .build(),
                 MediaBrowser.MediaItem.FLAG_BROWSABLE
             )
         )
+    }
 
     private fun playFirstOrResume() {
         val player = autoPlayer()
@@ -1104,6 +1190,14 @@ class AutoMediaBrowserService : MediaBrowserService() {
                 val tracksById = tracks.associateBy { it.id }
                 loadRecentTrackIds(applicationContext, session).mapNotNull { tracksById[it] }
             }
+            mediaId == AUTO_RECENTLY_ADDED_ID -> tracks
+                .filter { it.dateAddedMs > 0L }
+                .sortedByDescending { it.dateAddedMs }
+            mediaId == AUTO_OFFLINE_ID -> {
+                val offlineTrackIds = loadOfflineDownloads(applicationContext, session).keys
+                tracks.filter { it.id in offlineTrackIds }
+            }
+            mediaId == AUTO_SHUFFLE_ALL_ID -> tracks.randomizedPlaybackQueue()
             mediaId == AUTO_SONGS_ID -> tracks
             else -> emptyList()
         }
@@ -1126,6 +1220,17 @@ class AutoMediaBrowserService : MediaBrowserService() {
             else -> (offset + queue.size) % queue.size
         }
         playTrackFromQueue(queue, queue[nextIndex], session)
+    }
+
+    private fun mirrorAutoTransportState(action: String?) {
+        when (action) {
+            PLAYBACK_ACTION_SHUFFLE -> {
+                autoShuffleEnabled = !autoShuffleEnabled
+            }
+            PLAYBACK_ACTION_REPEAT -> {
+                autoRepeatEnabled = !autoRepeatEnabled
+            }
+        }
     }
 
     private fun handleAutoCustomAction(action: String?) {
@@ -1201,6 +1306,8 @@ class AutoMediaBrowserService : MediaBrowserService() {
             )
         }
         val position = track?.let { snapshot.livePositionMs } ?: PlaybackState.PLAYBACK_POSITION_UNKNOWN
+        val trackIsFavorite = track != null &&
+            snapshot.session?.let { track.id in loadLikedTrackIds(applicationContext, it) } == true
         autoSession.setPlaybackState(
             PlaybackState.Builder()
                 .setActions(
@@ -1217,22 +1324,22 @@ class AutoMediaBrowserService : MediaBrowserService() {
                 .addCustomAction(
                     PlaybackState.CustomAction.Builder(
                         PLAYBACK_ACTION_SHUFFLE,
-                        "Shuffle",
+                        if (autoShuffleEnabled) "Shuffle on" else "Shuffle off",
                         android.R.drawable.ic_menu_rotate
                     ).build()
                 )
                 .addCustomAction(
                     PlaybackState.CustomAction.Builder(
                         PLAYBACK_ACTION_REPEAT,
-                        "Repeat",
+                        if (autoRepeatEnabled) "Repeat on" else "Repeat off",
                         android.R.drawable.ic_menu_revert
                     ).build()
                 )
                 .addCustomAction(
                     PlaybackState.CustomAction.Builder(
                         PLAYBACK_ACTION_FAVORITE,
-                        "Favorite",
-                        android.R.drawable.star_big_off
+                        if (trackIsFavorite) "Unfavorite" else "Favorite",
+                        if (trackIsFavorite) android.R.drawable.star_big_on else android.R.drawable.star_big_off
                     ).build()
                 )
                 .setState(snapshot.androidPlaybackState(), position, if (snapshot.isPlaying) 1f else 0f, snapshot.updatedAtMs)
@@ -1690,6 +1797,7 @@ private enum class SettingsPage(val label: String, val subtitle: String) {
     Home("Home page", "Sections and shelves"),
     Offline("Cache & offline", "Downloads, artwork, and storage"),
     Playback("Playback recovery", "Streams, seek, and buffering"),
+    Diagnostics("Diagnostics", "Playback events and queue debug"),
     Notifications("Notifications", "Lock screen and media buttons"),
     Audio("Audio", "Equalizer, crossfade, and output tone"),
     Appearance("Look and feel", "Theme, colors, and turntable"),
@@ -2015,6 +2123,9 @@ private fun formatLastLibrarySync(timestampMs: Long?): String {
     }
 }
 
+private fun formatClockTime(timestampMs: Long): String =
+    SimpleDateFormat("h:mm:ss a", Locale.getDefault()).format(java.util.Date(timestampMs))
+
 private fun parseJellyfinDateMs(value: String): Long {
     val raw = value.trim()
     if (raw.isBlank()) return 0L
@@ -2319,6 +2430,9 @@ private fun JellyfinMusicApp() {
     var recentTrackIds by remember(session?.serverUrl, session?.userId) {
         mutableStateOf(session?.let { loadRecentTrackIds(context, it) } ?: emptyList())
     }
+    var queueHistoryTrackIds by remember(session?.serverUrl, session?.userId) {
+        mutableStateOf(session?.let { loadQueueHistoryTrackIds(context, it) } ?: emptyList())
+    }
     var pinnedLibraryItems by remember(session?.serverUrl, session?.userId) {
         mutableStateOf(session?.let { loadPinnedLibraryItems(context, it) } ?: emptyList())
     }
@@ -2607,6 +2721,30 @@ private fun JellyfinMusicApp() {
         searchFieldFocused = false
     }
 
+    fun rememberPlaybackSelection(track: MusicTrack, activeSession: JellyfinSession) {
+        val nextRecentTrackIds = (listOf(track.id) + recentTrackIds.filterNot { it == track.id }).take(80)
+        recentTrackIds = nextRecentTrackIds
+        saveRecentTrackIds(context, activeSession, nextRecentTrackIds)
+        val nextQueueHistoryTrackIds =
+            (listOf(track.id) + queueHistoryTrackIds.filterNot { it == track.id }).take(200)
+        queueHistoryTrackIds = nextQueueHistoryTrackIds
+        saveQueueHistoryTrackIds(context, activeSession, nextQueueHistoryTrackIds)
+    }
+
+    fun playTrackFromQueue(
+        track: MusicTrack,
+        queue: List<MusicTrack>,
+        activeSession: JellyfinSession,
+        openPlayer: Boolean = false
+    ) {
+        playQueue = queue.queueStartingAt(track).ifEmpty { listOf(track) }
+        if (openPlayer) {
+            showNowPlayingPlayer()
+        }
+        player.play(track, activeSession)
+        rememberPlaybackSelection(track, activeSession)
+    }
+
     fun playTrack(track: MusicTrack, openPlayer: Boolean = false, source: List<MusicTrack> = tracks) {
         session?.let { activeSession ->
             val queueSource = when (queueBehaviorSettings.tapAction) {
@@ -2619,18 +2757,12 @@ private fun JellyfinMusicApp() {
                 TrackTapAction.Ask -> source
             }
             val baseQueue = queueSource.queueStartingAt(track).ifEmpty { listOf(track) }
-            playQueue = if (queueBehaviorSettings.shuffleAfterCurrent && baseQueue.size > 2) {
+            val nextQueue = if (queueBehaviorSettings.shuffleAfterCurrent && baseQueue.size > 2) {
                 listOf(baseQueue.first()) + baseQueue.drop(1).randomizedPlaybackQueue()
             } else {
                 baseQueue
             }
-            if (openPlayer) {
-                showNowPlayingPlayer()
-            }
-            player.play(track, activeSession)
-            val nextRecentTrackIds = (listOf(track.id) + recentTrackIds.filterNot { it == track.id }).take(80)
-            recentTrackIds = nextRecentTrackIds
-            saveRecentTrackIds(context, activeSession, nextRecentTrackIds)
+            playTrackFromQueue(track, nextQueue, activeSession, openPlayer)
         }
     }
 
@@ -2638,14 +2770,13 @@ private fun JellyfinMusicApp() {
         session?.let { activeSession ->
             val randomizedQueue = source.randomizedPlaybackQueue()
             val firstTrack = randomizedQueue.firstOrNull() ?: return
-            playQueue = randomizedQueue
-            player.play(firstTrack, activeSession)
-            showNowPlayingPlayer()
+            playTrackFromQueue(firstTrack, randomizedQueue, activeSession, openPlayer = true)
         }
     }
 
     fun playAdjacent(offset: Int) {
         val activeTrack = player.currentTrack ?: return
+        val activeSession = session ?: return
         val baseQueue = playQueue
             .ifEmpty { tracks.queueStartingAt(activeTrack) }
             .ifEmpty { listOf(activeTrack) }
@@ -2656,12 +2787,13 @@ private fun JellyfinMusicApp() {
         } else {
             (offset + baseQueue.size) % baseQueue.size
         }
-        playTrack(baseQueue[nextIndex], openPlayer = true, source = baseQueue)
+        playTrackFromQueue(baseQueue[nextIndex], baseQueue, activeSession, openPlayer = true)
     }
 
     fun playQueuedTrack(track: MusicTrack) {
+        val activeSession = session ?: return
         val source = playQueue.ifEmpty { tracks }
-        playTrack(track, openPlayer = true, source = source)
+        playTrackFromQueue(track, source, activeSession, openPlayer = true)
     }
 
     fun moveQueueTrack(fromIndex: Int, toIndex: Int) {
@@ -3797,6 +3929,24 @@ private fun JellyfinMusicApp() {
                                                 playbackBehaviorSettings = settings
                                                 savePlaybackBehaviorSettings(context, settings)
                                             }
+                                        )
+                                    }
+
+                                    SettingsPage.Diagnostics -> item {
+                                        PlaybackDiagnosticsCard(
+                                            currentTrack = player.currentTrack,
+                                            isPlaying = player.isPlaying,
+                                            status = player.status,
+                                            progress = player.progress,
+                                            queue = playQueue,
+                                            queueHistory = queueHistoryTrackIds
+                                                .mapNotNull { trackId -> tracks.firstOrNull { it.id == trackId } }
+                                                .take(8),
+                                            streamingQualitySettings = streamingQualitySettings,
+                                            playbackRecoverySettings = playbackRecoverySettings,
+                                            downloadedTrackCount = offlineDownloads.size,
+                                            events = PlaybackDiagnostics.events,
+                                            onClearEvents = { PlaybackDiagnostics.clear() }
                                         )
                                     }
 
@@ -5423,6 +5573,7 @@ private fun settingsCategoryDetail(
             "${playbackRecoverySettings.bufferingTimeoutSeconds}s timeout",
             if (playbackBehaviorSettings.stopAfterCurrent) "Stop after current" else null
         ).filterNotNull().joinToString(" - ")
+        SettingsPage.Diagnostics -> "Recent playback events and queue state"
         SettingsPage.Notifications -> listOf(
             if (notificationActionSettings.showPrevious) "Previous" else null,
             "Play",
@@ -5449,6 +5600,7 @@ private fun settingsCategoryIcon(page: SettingsPage): ImageVector =
         SettingsPage.Home -> PlayerIconVectors.HomeFilled
         SettingsPage.Offline -> PlayerIconVectors.Download
         SettingsPage.Playback -> PlayerIconVectors.Pause
+        SettingsPage.Diagnostics -> PlayerIconVectors.MoreVertical
         SettingsPage.Notifications -> PlayerIconVectors.MusicNote
         SettingsPage.Audio -> PlayerIconVectors.Equalizer
         SettingsPage.Appearance -> PlayerIconVectors.HomeFilled
@@ -6357,6 +6509,124 @@ private fun OfflineDownloadsCard(
                     shape = RoundedCornerShape(16.dp)
                 ) {
                     Text("Clear downloads")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaybackDiagnosticsCard(
+    currentTrack: MusicTrack?,
+    isPlaying: Boolean,
+    status: String,
+    progress: Float,
+    queue: List<MusicTrack>,
+    queueHistory: List<MusicTrack>,
+    streamingQualitySettings: StreamingQualitySettings,
+    playbackRecoverySettings: PlaybackRecoverySettings,
+    downloadedTrackCount: Int,
+    events: List<PlaybackDiagnosticEvent>,
+    onClearEvents: () -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = "Playback diagnostics",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Useful when a stream, queue, or seek feels wrong",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                TextButton(
+                    onClick = onClearEvents,
+                    enabled = events.isNotEmpty()
+                ) {
+                    Text("Clear")
+                }
+            }
+            SettingsInfoRow(title = "State", value = if (isPlaying) "Playing - $status" else status)
+            SettingsInfoRow(title = "Track", value = currentTrack?.title ?: "None")
+            SettingsInfoRow(title = "Position", value = currentTrack?.let { formatDuration((it.durationMs * progress.coerceIn(0f, 1f)).toLong()) } ?: "--:--")
+            SettingsInfoRow(
+                title = "Stream mode",
+                value = when {
+                    streamingQualitySettings.forceTranscoding -> "Force transcoding"
+                    streamingQualitySettings.tryDirectPlayFirst -> "Direct first"
+                    else -> "Transcode first"
+                }
+            )
+            SettingsInfoRow(
+                title = "Recovery",
+                value = listOf(
+                    if (playbackRecoverySettings.autoRetryEnabled) "Auto retry" else "Manual retry",
+                    "${playbackRecoverySettings.bufferingTimeoutSeconds}s timeout"
+                ).joinToString(" - ")
+            )
+            SettingsInfoRow(title = "Queue", value = queue.size.countLabel("song"))
+            SettingsInfoRow(title = "Offline", value = downloadedTrackCount.countLabel("song"))
+            if (queueHistory.isNotEmpty()) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+                Text(
+                    text = "Queue history",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                queueHistory.take(5).forEach { track ->
+                    Text(
+                        text = "${track.title} - ${track.artist}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+            Text(
+                text = "Recent events",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            if (events.isEmpty()) {
+                Text(
+                    text = "No playback events logged yet",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                events.forEach { event ->
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = "${formatClockTime(event.timeMs)} - ${event.title}",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = event.detail,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
         }
@@ -10269,7 +10539,7 @@ private fun FullPlayerScreen(
                         Spacer(Modifier.height(if (compactTabletPortrait) 4.dp else 8.dp))
                         PlayerProgressSection(
                             track = track,
-                            progress = progress,
+                            progress = turntableProgress,
                             onSeek = onSeek,
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -10346,7 +10616,7 @@ private fun FullPlayerScreen(
                                 Spacer(Modifier.height(22.dp))
                                 PlayerProgressSection(
                                     track = track,
-                                    progress = progress,
+                                    progress = turntableProgress,
                                     onSeek = onSeek
                                 )
                                 Spacer(Modifier.height(26.dp))
@@ -10423,7 +10693,7 @@ private fun FullPlayerScreen(
                     Spacer(Modifier.height(mobileProgressGap))
                     PlayerProgressSection(
                         track = track,
-                        progress = progress,
+                        progress = turntableProgress,
                         onSeek = onSeek
                     )
                     Spacer(Modifier.height(mobileControlGap))
@@ -12395,7 +12665,8 @@ private fun DiscAlbumStage(
     var isScratching by remember { mutableStateOf(false) }
     var holdScrubProgress by remember { mutableStateOf(false) }
     var scratchProgress by remember { mutableFloatStateOf(progress) }
-    var discRotation by remember { mutableFloatStateOf(0f) }
+    val discRotation = remember { Animatable(0f) }
+    var requestedScratchRotation by remember { mutableStateOf<Float?>(null) }
     var lastFlipTrack by remember { mutableStateOf<MusicTrack?>(null) }
     var lastFlipSession by remember { mutableStateOf<JellyfinSession?>(null) }
     var outgoingFlipTrack by remember { mutableStateOf<MusicTrack?>(null) }
@@ -12405,6 +12676,7 @@ private fun DiscAlbumStage(
     val density = LocalDensity.current
     val context = LocalContext.current
     val stageProgress = if (isScratching || holdScrubProgress) scratchProgress else progress
+    val currentDiscRotation = discRotation.value.floorMod(360f)
     val flipProgress = recordFlipProgress.value.coerceIn(0f, 1f)
     val flipDepth = (1f - abs(flipProgress - 0.5f) * 2f).coerceIn(0f, 1f)
     val incomingAlpha = ((flipProgress - 0.12f) / 0.42f).coerceIn(0f, 1f)
@@ -12433,12 +12705,19 @@ private fun DiscAlbumStage(
 
     LaunchedEffect(isPlaying, isScratching, track.id) {
         if (!isPlaying || isScratching) return@LaunchedEffect
-        var lastFrameTime = withFrameNanos { it }
         while (true) {
-            val frameTime = withFrameNanos { it }
-            val deltaSeconds = (frameTime - lastFrameTime) / 1_000_000_000f
-            lastFrameTime = frameTime
-            discRotation = (discRotation + deltaSeconds * (360f / 14f)) % 360f
+            val startRotation = discRotation.value
+            discRotation.animateTo(
+                targetValue = startRotation + 360f,
+                animationSpec = tween(durationMillis = RECORD_ROTATION_DURATION_MS, easing = LinearEasing)
+            )
+            discRotation.snapTo(discRotation.value.floorMod(360f))
+        }
+    }
+
+    LaunchedEffect(requestedScratchRotation) {
+        requestedScratchRotation?.let { rotation ->
+            discRotation.snapTo(rotation)
         }
     }
 
@@ -12465,7 +12744,7 @@ private fun DiscAlbumStage(
             }
             outgoingFlipTrack = previousTrack
             outgoingFlipSession = lastFlipSession
-            outgoingFlipRotation = discRotation
+            outgoingFlipRotation = currentDiscRotation
             lastFlipTrack = track
             lastFlipSession = session
             recordFlipProgress.snapTo(0f)
@@ -12509,6 +12788,7 @@ private fun DiscAlbumStage(
                     }
 
                     scratchProgress = latestProgress
+                    var scratchDiscRotation = currentDiscRotation
                     var lastAngle = angleForOffset(
                         offset = down.position,
                         width = stageWidth,
@@ -12551,7 +12831,8 @@ private fun DiscAlbumStage(
                             }
 
                             if (scratchStarted && abs(deltaAngle) > 0.05f) {
-                                discRotation = (discRotation + deltaAngle) % 360f
+                                scratchDiscRotation = (scratchDiscRotation + deltaAngle).floorMod(360f)
+                                requestedScratchRotation = scratchDiscRotation
                                 scratchProgress = (
                                     scratchProgress +
                                         (deltaAngle / 360f) * DISC_SCRATCH_SEEK_SCALE
@@ -12595,7 +12876,7 @@ private fun DiscAlbumStage(
         VinylDisc(
             track = track,
             session = session,
-            rotationDegrees = discRotation,
+            rotationDegrees = currentDiscRotation,
             modifier = Modifier
                 .fillMaxSize(DISC_RECORD_STAGE_SCALE)
                 .zIndex(1f)
@@ -12764,6 +13045,11 @@ private fun shortestAngleDelta(start: Float, end: Float): Float {
     while (delta > 180f) delta -= 360f
     while (delta < -180f) delta += 360f
     return delta
+}
+
+private fun Float.floorMod(modulus: Float): Float {
+    val result = this % modulus
+    return if (result < 0f) result + modulus else result
 }
 
 @Composable
@@ -13700,6 +13986,13 @@ private fun NowPlayingBar(
     onPrevious: () -> Unit,
     onNext: () -> Unit
 ) {
+    val displayProgress = rememberSmoothedPlaybackProgress(
+        trackId = track.id,
+        durationMs = track.durationMs,
+        progress = progress,
+        isPlaying = isPlaying,
+        status = status
+    )
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
@@ -13778,7 +14071,7 @@ private fun NowPlayingBar(
                 }
                 Spacer(Modifier.height(4.dp))
                 WavySeekBar(
-                    progress = progress,
+                    progress = displayProgress,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(12.dp),
@@ -13853,7 +14146,7 @@ private fun WavySeekBar(
         waveVelocity = 22.dp to HEAD,
         waveThickness = 5.dp,
         trackThickness = 5.dp,
-        incremental = true,
+        incremental = false,
         thumb = {
             Box(
                 modifier = Modifier
@@ -13978,10 +14271,20 @@ private class JellyfinPlayer(private val context: Context) {
         smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         lastPlaybackReportAt = 0L
+        val streamMode = when {
+            offlinePlayableFileFor(context, session, track) != null && !bypassOfflineFile -> "offline"
+            transcoded -> "transcoded"
+            else -> "direct"
+        }
+        PlaybackDiagnostics.record(
+            title = "Starting playback",
+            detail = "${track.title} - $streamMode stream - start ${formatDuration(requestedStartPositionMs ?: 0L)}"
+        )
 
         if (!requestAudioFocus()) {
             isPlaying = false
             status = "Audio focus unavailable"
+            PlaybackDiagnostics.record("Audio focus unavailable", track.title)
             publishPlaybackState(track)
             return
         }
@@ -14019,6 +14322,7 @@ private class JellyfinPlayer(private val context: Context) {
                     mediaPlayer = null
                     activePlayerPrepared = false
                     status = it.readableMessage()
+                    PlaybackDiagnostics.record("Playback start failed", "${track.title} - $status")
                     publishPlaybackState(track)
                     releaseExoPlayer(nextPlayer)
                 }
@@ -14210,9 +14514,11 @@ private class JellyfinPlayer(private val context: Context) {
             }
             publishPlaybackState()
             reportCurrentPlaybackProgress(force = true, isPaused = !isPlaying)
+            PlaybackDiagnostics.record("Seek", "${track.title} - ${formatDuration(target)}")
         }.onFailure {
             queueSeekPosition(track, target, duration)
             status = "Paused"
+            PlaybackDiagnostics.record("Seek queued", "${track.title} - ${formatDuration(target)}")
             publishPlaybackState(track)
             reportCurrentPlaybackProgress(force = true, isPaused = true)
         }
@@ -14398,6 +14704,7 @@ private class JellyfinPlayer(private val context: Context) {
                         activePlayerPrepared = false
                     }
                     status = error.readablePlaybackMessage()
+                    PlaybackDiagnostics.record("Playback error", "${track.title} - $status")
                     pendingSeekTargetMs = null
                     pendingSeekStartedAt = 0L
                     smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
@@ -14415,6 +14722,7 @@ private class JellyfinPlayer(private val context: Context) {
         isPlaying = false
         status = "Ended"
         progress = 1f
+        PlaybackDiagnostics.record("Track ended", track.title)
         pendingSeekTargetMs = null
         pendingSeekStartedAt = 0L
         smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
@@ -14479,6 +14787,7 @@ private class JellyfinPlayer(private val context: Context) {
         ) return false
         status = "Retrying transcoded stream"
         isPlaying = false
+        PlaybackDiagnostics.record("Retrying transcoded stream", track.title)
         publishPlaybackState(track)
         pendingSeekTargetMs = null
         pendingSeekStartedAt = 0L
@@ -16333,6 +16642,36 @@ private fun saveLastQueueIds(context: Context, session: JellyfinSession, queue: 
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
         .putString(lastQueueIdsPreferenceKey(session), items.toString())
+        .apply()
+}
+
+private fun queueHistoryIdsPreferenceKey(session: JellyfinSession): String =
+    "$PREF_QUEUE_HISTORY_IDS_PREFIX${stableCacheKey("${session.serverUrl}|${session.userId}")}"
+
+private fun loadQueueHistoryTrackIds(context: Context, session: JellyfinSession): List<String> {
+    val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getString(queueHistoryIdsPreferenceKey(session), null)
+        ?: return emptyList()
+    return runCatching {
+        val items = JSONArray(raw)
+        buildList {
+            for (index in 0 until items.length()) {
+                items.optString(index).takeIf { it.isNotBlank() }?.let(::add)
+            }
+        }.distinct().take(200)
+    }.getOrDefault(emptyList())
+}
+
+private fun saveQueueHistoryTrackIds(
+    context: Context,
+    session: JellyfinSession,
+    trackIds: List<String>
+) {
+    val items = JSONArray()
+    trackIds.distinct().take(200).forEach(items::put)
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(queueHistoryIdsPreferenceKey(session), items.toString())
         .apply()
 }
 

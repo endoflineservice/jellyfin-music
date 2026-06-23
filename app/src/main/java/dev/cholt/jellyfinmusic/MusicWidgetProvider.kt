@@ -236,7 +236,7 @@ private fun buildRemoteViews(context: Context, layoutId: Int): RemoteViews {
             setImageViewBitmap(R.id.widget_album, artwork)
         } else {
             setImageViewResource(R.id.widget_album, R.drawable.widget_vinyl)
-            state.imageUrl?.let { cacheWidgetArtworkAsync(context.applicationContext, it) }
+            state.imageUrl?.let { cacheWidgetArtworkAsync(context.applicationContext, it, state.token) }
         }
         setProgressBar(R.id.widget_progress, 1000, (state.progress * 1000).toInt().coerceIn(0, 1000), false)
 
@@ -289,6 +289,7 @@ private data class WidgetState(
     val durationMs: Long,
     val updatedAtMs: Long,
     val imageUrl: String?,
+    val token: String?,
     val hasTrack: Boolean
 ) {
     val progress: Float
@@ -326,6 +327,7 @@ private fun loadWidgetState(context: Context): WidgetState {
         durationMs = prefs.getLong("durationMs", 0L),
         updatedAtMs = prefs.getLong("updatedAtMs", 0L),
         imageUrl = prefs.getString("imageUrl", null)?.takeIf { hasTrack && it.isNotBlank() },
+        token = prefs.getString("token", null)?.takeIf { hasTrack && it.isNotBlank() },
         hasTrack = hasTrack
     )
 }
@@ -355,21 +357,26 @@ fun saveWidgetState(context: Context, snapshot: PlaybackSnapshot) {
     } else {
         editor.remove("imageUrl")
     }
+    if (session?.token?.isNotBlank() == true) {
+        editor.putString("token", session.token)
+    } else {
+        editor.remove("token")
+    }
     editor.apply()
     updateMusicWidgets(context)
     if (imageUrl != null && (imageUrl != previousImageUrl || !widgetArtworkFile(context, imageUrl).isFile)) {
-        cacheWidgetArtworkAsync(context.applicationContext, imageUrl)
+        cacheWidgetArtworkAsync(context.applicationContext, imageUrl, session?.token)
     }
 }
 
 private val WidgetArtworkDownloads = Collections.synchronizedSet(mutableSetOf<String>())
 
-private fun cacheWidgetArtworkAsync(context: Context, imageUrl: String) {
+private fun cacheWidgetArtworkAsync(context: Context, imageUrl: String, token: String?) {
     if (!WidgetArtworkDownloads.add(imageUrl)) return
     thread(name = "jellyfin-widget-art", isDaemon = true) {
         runCatching {
             if (!widgetArtworkFile(context, imageUrl).isFile) {
-                downloadWidgetArtwork(context, imageUrl)
+                downloadWidgetArtwork(context, imageUrl, token)
             }
         }
         WidgetArtworkDownloads.remove(imageUrl)
@@ -388,12 +395,13 @@ private fun loadWidgetArtworkBitmap(context: Context, imageUrl: String): Bitmap?
     }
 }
 
-private fun downloadWidgetArtwork(context: Context, imageUrl: String) {
+private fun downloadWidgetArtwork(context: Context, imageUrl: String, token: String?) {
     val connection = (URL(imageUrl).openConnection() as HttpURLConnection).apply {
         requestMethod = "GET"
         connectTimeout = 5_000
         readTimeout = 8_000
         setRequestProperty("Accept", "image/*")
+        token?.let { setRequestProperty("X-Emby-Token", it) }
     }
     try {
         if (connection.responseCode !in 200..299) return
@@ -436,6 +444,7 @@ private fun createWidgetAlbumBitmap(source: Bitmap): Bitmap {
     )
     canvas.save()
     canvas.clipPath(clipPath)
+    paint.alpha = 255
     canvas.drawBitmap(source, null, destination, paint)
     canvas.restore()
 
@@ -451,7 +460,10 @@ private fun createWidgetAlbumBitmap(source: Bitmap): Bitmap {
 }
 
 private fun widgetArtworkFile(context: Context, imageUrl: String): File =
-    File(File(context.cacheDir, "widget_album_art"), "${widgetCacheKey("$WIDGET_ALBUM_ART_SIZE|$imageUrl")}.png")
+    File(
+        File(context.cacheDir, "widget_album_art"),
+        "${widgetCacheKey("$WIDGET_ALBUM_ART_CACHE_VERSION|$WIDGET_ALBUM_ART_SIZE|$imageUrl")}.png"
+    )
 
 private fun widgetCacheKey(value: String): String {
     val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
@@ -459,4 +471,5 @@ private fun widgetCacheKey(value: String): String {
 }
 
 private const val WIDGET_ALBUM_ART_SIZE = 384
+private const val WIDGET_ALBUM_ART_CACHE_VERSION = 2
 private const val ACTION_REFRESH_MUSIC_WIDGETS = "dev.cholt.jellyfinmusic.action.REFRESH_WIDGETS"
