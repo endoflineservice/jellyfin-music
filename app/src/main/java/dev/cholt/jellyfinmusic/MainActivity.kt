@@ -165,6 +165,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -1948,6 +1949,8 @@ private data class PlaybackBehaviorSettings(
     val rememberPlaybackSpeed: Boolean = false
 )
 
+private val SleepTimerMinuteOptions = listOf(0, 15, 30, 45, 60, 90, 120)
+
 private data class NotificationActionSettings(
     val showPrevious: Boolean = true,
     val showNext: Boolean = true,
@@ -2052,6 +2055,14 @@ private data class LibraryGroup(
     val key: String = title
 )
 
+private data class DailyMixCardSpec(
+    val id: String,
+    val title: String,
+    val subtitle: String,
+    val tracks: List<MusicTrack>,
+    val accent: Color
+)
+
 private data class PinnedLibraryItem(
     val type: LibraryCollectionType,
     val key: String
@@ -2122,6 +2133,12 @@ private fun SearchResultCounts.summary(): String =
 
 private fun Int.countLabel(label: String): String =
     "$this $label${if (this == 1) "" else "s"}"
+
+private fun sleepTimerOptionLabel(minutes: Int): String =
+    if (minutes <= 0) "Off" else "${minutes}m"
+
+private fun sleepTimerStatusLabel(minutes: Int): String =
+    if (minutes <= 0) "Off" else "Stops in ${minutes}m"
 
 private fun formatLastLibrarySync(timestampMs: Long?): String {
     val timestamp = timestampMs?.takeIf { it > 0L } ?: return "Never"
@@ -3588,6 +3605,14 @@ private fun JellyfinMusicApp() {
             val recentTracks = remember(visibleTracks, recentTrackIds) {
                 recentTrackIds.mapNotNull { trackId -> visibleTracks.firstOrNull { it.id == trackId } }
             }
+            val dailyMixCards = remember(visibleTracks, likedTrackIds, recentTrackIds, activeTrack) {
+                buildDailyMixCards(
+                    tracks = visibleTracks,
+                    likedTrackIds = likedTrackIds,
+                    recentTrackIds = recentTrackIds,
+                    activeTrack = activeTrack
+                )
+            }
             val displayedTracks = remember(visibleTracks, searchQuery, isSearchDestination) {
                 if (isSearchDestination) visibleTracks.filterBy(searchQuery) else visibleTracks
             }
@@ -4299,6 +4324,22 @@ private fun JellyfinMusicApp() {
                                             playlists = localPlaylists,
                                             onAddToPlaylist = { playlist, track -> addTrackToPlaylist(playlist, track) }
                                         )
+                                    }
+                                    if (dailyMixCards.isNotEmpty()) {
+                                        item {
+                                            DailyMixCardRow(
+                                                title = "Daily cards",
+                                                cards = dailyMixCards,
+                                                session = connectedSession,
+                                                onCardClick = { card ->
+                                                    connectedSession?.let { activeSession ->
+                                                        card.tracks.firstOrNull()?.let { firstTrack ->
+                                                            playTrackFromQueue(firstTrack, card.tracks, activeSession, openPlayer = true)
+                                                        }
+                                                    }
+                                                }
+                                            )
+                                        }
                                     }
                                     homePageSettings.orderedSections().forEach { section ->
                                         when (section) {
@@ -5055,6 +5096,22 @@ private fun JellyfinMusicApp() {
                                 }
 
                                 if (queryIsBlank) {
+                                    if (dailyMixCards.isNotEmpty()) {
+                                        item {
+                                            DailyMixCardRow(
+                                                title = "Daily cards",
+                                                cards = dailyMixCards,
+                                                session = connectedSession,
+                                                onCardClick = { card ->
+                                                    connectedSession?.let { activeSession ->
+                                                        card.tracks.firstOrNull()?.let { firstTrack ->
+                                                            playTrackFromQueue(firstTrack, card.tracks, activeSession, openPlayer = true)
+                                                        }
+                                                    }
+                                                }
+                                            )
+                                        }
+                                    }
                                     if (recentTracks.isNotEmpty()) {
                                         item {
                                             SearchSectionHeader(
@@ -5392,10 +5449,26 @@ private fun JellyfinMusicApp() {
                     isFavorite = activeTrack.id in likedTrackIds,
                     isDownloaded = activeTrack.id in offlineDownloads,
                     downloadProgress = downloadProgressById[activeTrack.id],
+                    sleepTimerMinutes = playbackBehaviorSettings.sleepTimerMinutes,
                     playlists = localPlaylists,
                     onToggleShuffle = { shuffleEnabled = !shuffleEnabled },
                     onToggleRepeat = { repeatEnabled = !repeatEnabled },
                     onToggleFavorite = { toggleLiked(activeTrack) },
+                    onOpenEqualizer = {
+                        showPlayer = false
+                        selectedDestination = AppDestination.Profile
+                        activeSettingsPage = SettingsPage.Audio
+                    },
+                    onSleepTimerChange = { minutes ->
+                        val nextSettings = playbackBehaviorSettings.copy(sleepTimerMinutes = minutes)
+                        playbackBehaviorSettings = nextSettings
+                        savePlaybackBehaviorSettings(context, nextSettings)
+                        statusText = if (minutes > 0) {
+                            "Sleep timer set for ${minutes}m"
+                        } else {
+                            "Sleep timer off"
+                        }
+                    },
                     onToggleDownload = { toggleOfflineDownload(activeTrack) },
                     onGoToAlbum = {
                         openLibraryDetail(LibraryDetail(LibraryCollectionType.Album, activeTrack.album))
@@ -6884,7 +6957,7 @@ private fun PlaybackSettingsCard(
                     fontWeight = FontWeight.SemiBold
                 )
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(listOf(0, 15, 30, 45, 60, 90, 120)) { minutes ->
+                    items(SleepTimerMinuteOptions) { minutes ->
                         FilterChip(
                             selected = playbackBehaviorSettings.sleepTimerMinutes == minutes,
                             onClick = {
@@ -6892,7 +6965,7 @@ private fun PlaybackSettingsCard(
                                     playbackBehaviorSettings.copy(sleepTimerMinutes = minutes)
                                 )
                             },
-                            label = { Text(if (minutes == 0) "Off" else "${minutes}m") }
+                            label = { Text(sleepTimerOptionLabel(minutes)) }
                         )
                     }
                 }
@@ -7087,7 +7160,18 @@ private fun EqualizerSettingsCard(
                 )
             }
 
-            EqualizerPreview(levels = levels, enabled = settings.enabled)
+            EqualizerHardwarePanel(
+                levels = levels,
+                enabled = settings.enabled,
+                presetName = settings.presetName,
+                onLevelChange = { index, value ->
+                    updateLevels(
+                        levels.toMutableList().also {
+                            it[index] = value
+                        }
+                    )
+                }
+            )
 
             SettingsSwitchRow(
                 title = "Crossfade",
@@ -7156,52 +7240,16 @@ private fun EqualizerSettingsCard(
                 }
             }
 
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
-
-            EqualizerBandLabels.forEachIndexed { index, label ->
-                val level = levels[index]
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "$label Hz",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = formatEqualizerDb(level),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                    Slider(
-                        value = level,
-                        onValueChange = { value ->
-                            updateLevels(
-                                levels.toMutableList().also {
-                                    it[index] = (value * 2f).roundToInt() / 2f
-                                }
-                            )
-                        },
-                        valueRange = EQUALIZER_MIN_DB..EQUALIZER_MAX_DB,
-                        steps = 47,
-                        colors = SliderDefaults.colors(
-                            activeTrackColor = MaterialTheme.colorScheme.primary,
-                            inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-                            thumbColor = MaterialTheme.colorScheme.primary
-                        )
-                    )
-                }
-            }
-
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
+                Text(
+                    text = if (settings.presetName == "Custom") "Custom tone" else "${settings.presetName} tone",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 TextButton(
                     onClick = { onSettingsChange(settings.copy(presetName = EqualizerFlatPreset.name, levelsDb = EqualizerFlatPreset.levelsDb)) },
                     shape = RoundedCornerShape(16.dp)
@@ -7308,6 +7356,345 @@ private fun EqualizerPreview(
 }
 
 @Composable
+private fun EqualizerHardwarePanel(
+    levels: List<Float>,
+    enabled: Boolean,
+    presetName: String,
+    onLevelChange: (Int, Float) -> Unit
+) {
+    val accent = if (enabled) Color(0xFF38E16D) else Color(0xFF9AA69D)
+    val subduedAccent = accent.copy(alpha = if (enabled) 0.42f else 0.22f)
+    val bassLevel = ((levels.getOrElse(0) { 0f } + levels.getOrElse(1) { 0f }) / 2f)
+    val airLevel = ((levels.getOrElse(3) { 0f } + levels.getOrElse(4) { 0f }) / 2f)
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(30.dp))
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0xFF2B302C),
+                        Color(0xFF151916),
+                        Color(0xFF0F1210)
+                    )
+                )
+            )
+            .padding(18.dp)
+    ) {
+        Canvas(modifier = Modifier.matchParentSize()) {
+            drawRoundRect(
+                color = Color.White.copy(alpha = 0.06f),
+                size = size,
+                cornerRadius = CornerRadius(30.dp.toPx(), 30.dp.toPx()),
+                style = Stroke(width = 1.dp.toPx())
+            )
+            drawCircle(
+                color = accent.copy(alpha = if (enabled) 0.08f else 0.035f),
+                radius = size.minDimension * 0.5f,
+                center = Offset(size.width * 0.16f, size.height * 0.18f)
+            )
+            drawLine(
+                color = Color.White.copy(alpha = 0.08f),
+                start = Offset(size.width * 0.5f, 18.dp.toPx()),
+                end = Offset(size.width * 0.5f, 82.dp.toPx()),
+                strokeWidth = 1.dp.toPx()
+            )
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(18.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                EqualizerKnob(
+                    label = "Bass",
+                    level = bassLevel,
+                    accent = accent,
+                    enabled = enabled,
+                    modifier = Modifier.weight(1f)
+                )
+                Column(
+                    modifier = Modifier.weight(0.72f),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Text(
+                        text = presetName,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color.White.copy(alpha = if (enabled) 0.9f else 0.58f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        repeat(5) { index ->
+                            Box(
+                                modifier = Modifier
+                                    .height((8 + index * 3).dp)
+                                    .width(3.dp)
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(subduedAccent)
+                            )
+                        }
+                    }
+                }
+                EqualizerKnob(
+                    label = "Air",
+                    level = airLevel,
+                    accent = accent,
+                    enabled = enabled,
+                    modifier = Modifier.weight(0.82f)
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.Bottom
+            ) {
+                EqualizerBandLabels.forEachIndexed { index, label ->
+                    EqualizerVerticalSlider(
+                        label = label,
+                        level = levels.getOrElse(index) { 0f },
+                        accent = accent,
+                        enabled = enabled,
+                        onValueChange = { value -> onLevelChange(index, value) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EqualizerKnob(
+    label: String,
+    level: Float,
+    accent: Color,
+    enabled: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val fraction = equalizerLevelFraction(level)
+    val textColor = Color.White.copy(alpha = if (enabled) 0.88f else 0.56f)
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Canvas(modifier = Modifier.size(76.dp)) {
+            val center = Offset(size.width / 2f, size.height / 2f)
+            val radius = size.minDimension * 0.34f
+            val tickRadius = radius * 1.48f
+            drawCircle(
+                color = Color.Black.copy(alpha = 0.52f),
+                radius = radius * 1.14f,
+                center = center + Offset(0f, 5.dp.toPx())
+            )
+            repeat(13) { tick ->
+                val angle = ((-140f + tick * (280f / 12f)) * PI / 180f).toFloat()
+                val start = Offset(
+                    x = center.x + cos(angle) * tickRadius,
+                    y = center.y + sin(angle) * tickRadius
+                )
+                val end = Offset(
+                    x = center.x + cos(angle) * (tickRadius + 5.dp.toPx()),
+                    y = center.y + sin(angle) * (tickRadius + 5.dp.toPx())
+                )
+                drawLine(
+                    color = accent.copy(alpha = if (enabled) 0.72f else 0.28f),
+                    start = start,
+                    end = end,
+                    strokeWidth = 2.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+            }
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = if (enabled) 0.24f else 0.1f),
+                        accent.copy(alpha = if (enabled) 0.95f else 0.45f),
+                        Color(0xFF0A5E2D).copy(alpha = if (enabled) 1f else 0.48f)
+                    ),
+                    center = center - Offset(radius * 0.26f, radius * 0.28f),
+                    radius = radius * 1.45f
+                ),
+                radius = radius,
+                center = center
+            )
+            drawCircle(
+                color = Color.Black.copy(alpha = 0.2f),
+                radius = radius,
+                center = center,
+                style = Stroke(width = 2.dp.toPx())
+            )
+            drawCircle(
+                color = Color.White.copy(alpha = 0.16f),
+                radius = radius * 0.62f,
+                center = center - Offset(radius * 0.14f, radius * 0.18f)
+            )
+            val pointerAngle = ((-140f + fraction * 280f) * PI / 180f).toFloat()
+            drawLine(
+                color = Color.White.copy(alpha = if (enabled) 0.9f else 0.45f),
+                start = center,
+                end = Offset(
+                    x = center.x + cos(pointerAngle) * radius * 0.72f,
+                    y = center.y + sin(pointerAngle) * radius * 0.72f
+                ),
+                strokeWidth = 2.4.dp.toPx(),
+                cap = StrokeCap.Round
+            )
+        }
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = textColor
+        )
+        Text(
+            text = formatEqualizerDb(level),
+            style = MaterialTheme.typography.labelSmall,
+            color = textColor.copy(alpha = 0.72f),
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun EqualizerVerticalSlider(
+    label: String,
+    level: Float,
+    accent: Color,
+    enabled: Boolean,
+    onValueChange: (Float) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val valueLabel = formatEqualizerDb(level)
+    Column(
+        modifier = modifier.semantics {
+            contentDescription = "$label Hz equalizer $valueLabel"
+        },
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(150.dp)
+                .pointerInput(label) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+
+                        fun updateFromY(y: Float) {
+                            val top = 8.dp.toPx()
+                            val bottom = size.height - 8.dp.toPx()
+                            val fraction = ((bottom - y) / (bottom - top)).coerceIn(0f, 1f)
+                            val rawValue = EQUALIZER_MIN_DB + fraction * (EQUALIZER_MAX_DB - EQUALIZER_MIN_DB)
+                            onValueChange((rawValue * 2f).roundToInt() / 2f)
+                        }
+
+                        updateFromY(down.position.y)
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) break
+                            updateFromY(change.position.y)
+                            change.consume()
+                        }
+                    }
+                }
+        ) {
+            Canvas(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 3.dp, vertical = 2.dp)
+            ) {
+                val centerX = size.width / 2f
+                val top = 10.dp.toPx()
+                val bottom = size.height - 10.dp.toPx()
+                val fraction = equalizerLevelFraction(level)
+                val thumbY = bottom - fraction * (bottom - top)
+                val trackColor = Color.White.copy(alpha = if (enabled) 0.18f else 0.09f)
+                val activeColor = accent.copy(alpha = if (enabled) 0.95f else 0.42f)
+                repeat(10) { tick ->
+                    val y = top + (bottom - top) * tick / 9f
+                    val tickWidth = if (tick == 0 || tick == 9 || tick == 4) 13.dp.toPx() else 8.dp.toPx()
+                    drawLine(
+                        color = Color.White.copy(alpha = if (enabled) 0.22f else 0.1f),
+                        start = Offset(centerX - tickWidth - 8.dp.toPx(), y),
+                        end = Offset(centerX - 8.dp.toPx(), y),
+                        strokeWidth = 1.dp.toPx()
+                    )
+                    drawLine(
+                        color = Color.White.copy(alpha = if (enabled) 0.22f else 0.1f),
+                        start = Offset(centerX + 8.dp.toPx(), y),
+                        end = Offset(centerX + tickWidth + 8.dp.toPx(), y),
+                        strokeWidth = 1.dp.toPx()
+                    )
+                }
+                drawLine(
+                    color = trackColor,
+                    start = Offset(centerX, top),
+                    end = Offset(centerX, bottom),
+                    strokeWidth = 5.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+                drawLine(
+                    color = activeColor,
+                    start = Offset(centerX, bottom),
+                    end = Offset(centerX, thumbY),
+                    strokeWidth = 5.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+                val thumbWidth = minOf(30.dp.toPx(), size.width * 0.72f)
+                val thumbHeight = 16.dp.toPx()
+                drawRoundRect(
+                    color = Color.Black.copy(alpha = 0.42f),
+                    topLeft = Offset(centerX - thumbWidth / 2f + 1.dp.toPx(), thumbY - thumbHeight / 2f + 3.dp.toPx()),
+                    size = Size(thumbWidth, thumbHeight),
+                    cornerRadius = CornerRadius(5.dp.toPx(), 5.dp.toPx())
+                )
+                drawRoundRect(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = if (enabled) 0.34f else 0.14f),
+                            Color(0xFF3E4640),
+                            Color(0xFF151916)
+                        ),
+                        startY = thumbY - thumbHeight,
+                        endY = thumbY + thumbHeight
+                    ),
+                    topLeft = Offset(centerX - thumbWidth / 2f, thumbY - thumbHeight / 2f),
+                    size = Size(thumbWidth, thumbHeight),
+                    cornerRadius = CornerRadius(5.dp.toPx(), 5.dp.toPx())
+                )
+                drawLine(
+                    color = accent.copy(alpha = if (enabled) 0.7f else 0.24f),
+                    start = Offset(centerX - thumbWidth * 0.28f, thumbY),
+                    end = Offset(centerX + thumbWidth * 0.28f, thumbY),
+                    strokeWidth = 1.3.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+            }
+        }
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.White.copy(alpha = if (enabled) 0.8f else 0.5f),
+            maxLines = 1
+        )
+        Text(
+            text = valueLabel,
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.White.copy(alpha = if (enabled) 0.58f else 0.34f),
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
 private fun EqualizerMiniIcon(
     levels: List<Float>,
     enabled: Boolean
@@ -7329,6 +7716,9 @@ private fun EqualizerMiniIcon(
         }
     }
 }
+
+private fun equalizerLevelFraction(level: Float): Float =
+    ((level - EQUALIZER_MIN_DB) / (EQUALIZER_MAX_DB - EQUALIZER_MIN_DB)).coerceIn(0f, 1f)
 
 private fun formatEqualizerDb(level: Float): String {
     val rounded = (level * 2f).roundToInt() / 2f
@@ -8055,7 +8445,8 @@ private fun LibraryHeader(
                 onValueChange = onSearchQueryChange,
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
-                label = { Text("Search music") }
+                label = { Text("Search music") },
+                shape = RoundedCornerShape(50.dp)
             )
         }
         if (isBusy) {
@@ -8127,7 +8518,7 @@ private fun SearchHeader(
                     onSearchFocusChange(false)
                 }
             ),
-            shape = RoundedCornerShape(22.dp)
+            shape = RoundedCornerShape(50.dp)
         )
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -9580,6 +9971,153 @@ private fun HomeQuickTile(
 }
 
 @Composable
+private fun DailyMixCardRow(
+    title: String,
+    cards: List<DailyMixCardSpec>,
+    session: JellyfinSession?,
+    onCardClick: (DailyMixCardSpec) -> Unit
+) {
+    if (cards.isEmpty()) return
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        HomeSectionTitle(title)
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            items(cards, key = { it.id }) { card ->
+                DailyMixCard(
+                    card = card,
+                    session = session,
+                    onClick = { onCardClick(card) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DailyMixCard(
+    card: DailyMixCardSpec,
+    session: JellyfinSession?,
+    onClick: () -> Unit
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val accent = if (card.accent == Color.Unspecified) colorScheme.primary else card.accent
+    val cardColor = accent
+    val cardContentColor = readableOnColor(cardColor)
+    val secondaryContentColor = cardContentColor.copy(alpha = 0.78f)
+    val artworkTracks = remember(card.id, card.tracks) {
+        card.tracks.distinctBy { it.album.ifBlank { it.id } }.take(3).ifEmpty { card.tracks.take(3) }
+    }
+    Surface(
+        onClick = onClick,
+        modifier = Modifier
+            .width(238.dp)
+            .height(164.dp),
+        shape = RoundedCornerShape(8.dp),
+        color = cardColor
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(cardColor)
+                .padding(14.dp)
+        ) {
+            TiltedAlbumArtStack(
+                tracks = artworkTracks,
+                session = session,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .size(width = 108.dp, height = 104.dp)
+            )
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth(0.76f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = card.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = cardContentColor
+                )
+                Text(
+                    text = card.subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = secondaryContentColor,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .size(34.dp),
+                shape = CircleShape,
+                color = cardContentColor.copy(alpha = 0.18f)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = PlayerGlyph.Play.imageVector(),
+                        contentDescription = null,
+                        tint = cardContentColor,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TiltedAlbumArtStack(
+    tracks: List<MusicTrack>,
+    session: JellyfinSession?,
+    modifier: Modifier = Modifier
+) {
+    val stackTracks = tracks.take(3)
+    Box(modifier = modifier) {
+        stackTracks.forEachIndexed { index, track ->
+            val rotation = when (index) {
+                0 -> -12f
+                1 -> 9f
+                else -> -3f
+            }
+            val offsetX = when (index) {
+                0 -> 0.dp
+                1 -> 22.dp
+                else -> 42.dp
+            }
+            val offsetY = when (index) {
+                0 -> 14.dp
+                1 -> 2.dp
+                else -> 22.dp
+            }
+            Surface(
+                modifier = Modifier
+                    .size(66.dp)
+                    .offset(x = offsetX, y = offsetY)
+                    .graphicsLayer {
+                        rotationZ = rotation
+                        shadowElevation = 10f
+                    }
+                    .zIndex(index.toFloat()),
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHighest
+            ) {
+                AlbumArtworkImage(
+                    track = track,
+                    session = session,
+                    modifier = Modifier.fillMaxSize(),
+                    imageSize = 180,
+                    imageQuality = 76
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun HomeTrackShelf(
     title: String,
     tracks: List<MusicTrack>,
@@ -10520,10 +11058,13 @@ private fun FullPlayerScreen(
     isFavorite: Boolean,
     isDownloaded: Boolean,
     downloadProgress: OfflineDownloadProgress?,
+    sleepTimerMinutes: Int,
     playlists: List<LocalPlaylist>,
     onToggleShuffle: () -> Unit,
     onToggleRepeat: () -> Unit,
     onToggleFavorite: () -> Unit,
+    onOpenEqualizer: () -> Unit,
+    onSleepTimerChange: (Int) -> Unit,
     onToggleDownload: () -> Unit,
     onGoToAlbum: () -> Unit,
     onGoToArtist: () -> Unit,
@@ -10643,6 +11184,7 @@ private fun FullPlayerScreen(
                             track = track,
                             isFavorite = isFavorite,
                             onToggleFavorite = onToggleFavorite,
+                            onEqualizerClick = onOpenEqualizer,
                             onOptionsClick = {
                                 showQueue = false
                                 actionsExpanded = true
@@ -10723,6 +11265,7 @@ private fun FullPlayerScreen(
                                     track = track,
                                     isFavorite = isFavorite,
                                     onToggleFavorite = onToggleFavorite,
+                                    onEqualizerClick = onOpenEqualizer,
                                     onOptionsClick = {
                                         showQueue = false
                                         actionsExpanded = true
@@ -10800,6 +11343,7 @@ private fun FullPlayerScreen(
                         track = track,
                         isFavorite = isFavorite,
                         onToggleFavorite = onToggleFavorite,
+                        onEqualizerClick = onOpenEqualizer,
                         onOptionsClick = {
                             showQueue = false
                             actionsExpanded = true
@@ -10948,10 +11492,12 @@ private fun FullPlayerScreen(
                 isFavorite = isFavorite,
                 isDownloaded = isDownloaded,
                 downloadProgress = downloadProgress,
+                sleepTimerMinutes = sleepTimerMinutes,
                 playlists = playlists,
                 onDismiss = { actionsExpanded = false },
                 onToggleFavorite = onToggleFavorite,
                 onToggleDownload = onToggleDownload,
+                onSleepTimerChange = onSleepTimerChange,
                 onGoToAlbum = onGoToAlbum,
                 onGoToArtist = onGoToArtist,
                 onStartRadio = onStartRadio,
@@ -11025,6 +11571,7 @@ private fun PlayerTitleActionsRow(
     track: MusicTrack,
     isFavorite: Boolean,
     onToggleFavorite: () -> Unit,
+    onEqualizerClick: () -> Unit,
     onOptionsClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -11052,6 +11599,17 @@ private fun PlayerTitleActionsRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.fillMaxWidth()
+            )
+        }
+        IconButton(
+            onClick = onEqualizerClick,
+            modifier = Modifier.size(42.dp)
+        ) {
+            Icon(
+                imageVector = PlayerIconVectors.Equalizer,
+                contentDescription = "Open equalizer",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(24.dp)
             )
         }
         FavoriteHeartButton(
@@ -11171,10 +11729,12 @@ private fun PlayerOptionsBottomSheet(
     isFavorite: Boolean,
     isDownloaded: Boolean,
     downloadProgress: OfflineDownloadProgress?,
+    sleepTimerMinutes: Int,
     playlists: List<LocalPlaylist>,
     onDismiss: () -> Unit,
     onToggleFavorite: () -> Unit,
     onToggleDownload: () -> Unit,
+    onSleepTimerChange: (Int) -> Unit,
     onGoToAlbum: () -> Unit,
     onGoToArtist: () -> Unit,
     onStartRadio: () -> Unit,
@@ -11183,6 +11743,7 @@ private fun PlayerOptionsBottomSheet(
     modifier: Modifier = Modifier
 ) {
     val sortedPlaylists = remember(playlists) { playlists.sortedWith(LocalPlaylistSort).take(8) }
+    var showSleepTimerDialog by remember { mutableStateOf(false) }
     val downloadLabel = when {
         downloadProgress != null -> "Downloading ${downloadProgress.percentLabel()}"
         isDownloaded -> "Saved on this device"
@@ -11290,6 +11851,15 @@ private fun PlayerOptionsBottomSheet(
                 }
                 item {
                     PlayerOptionSheetRow(
+                        icon = PlayerIconVectors.SleepTimer,
+                        title = "Sleep timer",
+                        subtitle = sleepTimerStatusLabel(sleepTimerMinutes),
+                        selected = sleepTimerMinutes > 0,
+                        onClick = { showSleepTimerDialog = true }
+                    )
+                }
+                item {
+                    PlayerOptionSheetRow(
                         icon = if (isDownloaded) PlayerIconVectors.DownloadDone else PlayerIconVectors.Download,
                         title = if (isDownloaded) "Remove download" else "Download",
                         subtitle = downloadLabel,
@@ -11357,6 +11927,56 @@ private fun PlayerOptionsBottomSheet(
             }
         }
     }
+
+    if (showSleepTimerDialog) {
+        SleepTimerPickerDialog(
+            currentMinutes = sleepTimerMinutes,
+            onDismiss = { showSleepTimerDialog = false },
+            onTimerSelected = { minutes ->
+                onSleepTimerChange(minutes)
+                showSleepTimerDialog = false
+            }
+        )
+    }
+}
+
+@Composable
+private fun SleepTimerPickerDialog(
+    currentMinutes: Int,
+    onDismiss: () -> Unit,
+    onTimerSelected: (Int) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Sleep timer") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = if (currentMinutes > 0) {
+                        "Playback will stop after ${currentMinutes} minutes."
+                    } else {
+                        "Choose when playback should stop."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(SleepTimerMinuteOptions) { minutes ->
+                        FilterChip(
+                            selected = currentMinutes == minutes,
+                            onClick = { onTimerSelected(minutes) },
+                            label = { Text(sleepTimerOptionLabel(minutes)) }
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Done")
+            }
+        }
+    )
 }
 
 @Composable
@@ -12645,6 +13265,32 @@ private object PlayerIconVectors {
             horizontalLineTo(13.5f)
             moveTo(17.5f, 8f)
             horizontalLineTo(20.5f)
+        }
+    }.build()
+
+    val SleepTimer: ImageVector = ImageVector.Builder(
+        name = "SleepTimer",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(
+            fill = null,
+            stroke = stroke,
+            strokeLineWidth = 2f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round
+        ) {
+            moveTo(12f, 3.5f)
+            curveTo(7.31f, 3.5f, 3.5f, 7.31f, 3.5f, 12f)
+            curveTo(3.5f, 16.69f, 7.31f, 20.5f, 12f, 20.5f)
+            curveTo(16.69f, 20.5f, 20.5f, 16.69f, 20.5f, 12f)
+            curveTo(20.5f, 7.31f, 16.69f, 3.5f, 12f, 3.5f)
+            close()
+            moveTo(12f, 7.25f)
+            verticalLineTo(12.2f)
+            lineTo(15.25f, 14.1f)
         }
     }.build()
 
@@ -16883,6 +17529,80 @@ private fun buildHomeQuickTracks(
     return (listOfNotNull(activeTrack) + likedTracks + tracks.homeMix(seed = 4_209L))
         .distinctBy { it.id }
         .take(6)
+}
+
+private fun buildDailyMixCards(
+    tracks: List<MusicTrack>,
+    likedTrackIds: Set<String>,
+    recentTrackIds: List<String>,
+    activeTrack: MusicTrack?
+): List<DailyMixCardSpec> {
+    val libraryTracks = tracks.distinctBy { it.id }
+    if (libraryTracks.isEmpty()) return emptyList()
+
+    val seed = todayHomeSeed()
+    val recentTracks = recentTrackIds
+        .mapNotNull { id -> libraryTracks.firstOrNull { it.id == id } }
+        .distinctBy { it.id }
+    val likedTracks = libraryTracks.filter { it.id in likedTrackIds }
+    val newestTracks = libraryTracks
+        .filter { it.dateAddedMs > 0L }
+        .sortedByDescending { it.dateAddedMs }
+    val activeArtistTracks = activeTrack?.let { active ->
+        libraryTracks.filter { it.artist.equals(active.artist, ignoreCase = true) }
+    }.orEmpty()
+
+    fun card(
+        id: String,
+        title: String,
+        hint: String,
+        source: List<MusicTrack>,
+        fallbackSeed: Long
+    ): DailyMixCardSpec? {
+        val queue = (source + libraryTracks.homeMix(seed + fallbackSeed))
+            .distinctBy { it.id }
+            .take(32)
+        if (queue.isEmpty()) return null
+        val accentTrack = queue.firstOrNull { it.tint != Color.Unspecified } ?: queue.first()
+        return DailyMixCardSpec(
+            id = id,
+            title = title,
+            subtitle = "$hint - ${queue.size.countLabel("song")}",
+            tracks = queue,
+            accent = accentTrack.tint
+        )
+    }
+
+    return listOfNotNull(
+        card(
+            id = "daily",
+            title = "Daily Mix",
+            hint = "Fresh picks from your library",
+            source = listOfNotNull(activeTrack) + recentTracks + likedTracks,
+            fallbackSeed = 17L
+        ),
+        card(
+            id = "drive",
+            title = "Drive Mode",
+            hint = "Upbeat shuffle",
+            source = recentTracks + libraryTracks.filter { it.durationMs in 120_000L..360_000L },
+            fallbackSeed = 71L
+        ),
+        card(
+            id = "focus",
+            title = "Soft Focus",
+            hint = "Album-friendly flow",
+            source = activeArtistTracks + likedTracks + newestTracks,
+            fallbackSeed = 131L
+        ),
+        card(
+            id = "deep",
+            title = "Deep Cuts",
+            hint = "Less obvious pulls",
+            source = newestTracks.drop(8) + libraryTracks.asReversed(),
+            fallbackSeed = 211L
+        )
+    ).distinctBy { it.id }.take(4)
 }
 
 private fun todayHomeSeed(): Long =
