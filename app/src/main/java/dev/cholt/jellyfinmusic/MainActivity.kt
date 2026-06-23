@@ -246,6 +246,8 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.random.Random
+import ir.mahozad.multiplatform.wavyslider.WaveDirection.HEAD
+import ir.mahozad.multiplatform.wavyslider.material3.WavySlider
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -14054,6 +14056,16 @@ private fun CircularSeekRing(
             size = arcSize,
             style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
         )
+
+        val angleRadians = ((clampedProgress * 360f - 90f) * PI / 180f).toFloat()
+        val radius = diameter / 2f
+        val center = Offset(size.width / 2f, size.height / 2f)
+        val knobCenter = Offset(
+            x = center.x + cos(angleRadians) * radius,
+            y = center.y + sin(angleRadians) * radius
+        )
+        drawCircle(color = activeColor, radius = 8.dp.toPx(), center = knobCenter)
+        drawCircle(color = Color.White.copy(alpha = 0.86f), radius = 4.dp.toPx(), center = knobCenter)
     }
 }
 
@@ -15099,11 +15111,11 @@ private fun NowPlayingBar(
                     }
                 }
                 Spacer(Modifier.height(4.dp))
-                WavySeekBar(
+                MiniPlayerPillProgressBar(
                     progress = displayProgress,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(12.dp),
+                        .height(16.dp),
                     onSeek = onSeek
                 )
             }
@@ -15156,13 +15168,14 @@ private fun TopBarSineVisualizer(modifier: Modifier = Modifier, color: Color) {
 }
 
 @Composable
-private fun WavySeekBar(
+private fun MiniPlayerPillProgressBar(
     progress: Float,
     modifier: Modifier = Modifier,
     onSeek: (Float) -> Unit
 ) {
     val activeColor = MaterialTheme.colorScheme.primary
-    val inactiveColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.24f)
+    val inactiveColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.28f)
+    val thumbCenterColor = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.88f)
     val latestOnSeek by rememberUpdatedState(onSeek)
 
     Canvas(
@@ -15172,10 +15185,11 @@ private fun WavySeekBar(
 
                 fun fractionFor(x: Float): Float {
                     val width = size.width.toFloat().coerceAtLeast(1f)
-                    val waveWidth = minOf(56.dp.toPx(), width * 0.22f).coerceAtLeast(1f)
-                    val lineStart = minOf(waveWidth + 18.dp.toPx(), width * 0.42f)
-                    val usableWidth = (width - lineStart).coerceAtLeast(1f)
-                    return ((x - lineStart) / usableWidth).coerceIn(0f, 1f)
+                    val thumbRadius = 6.dp.toPx()
+                    val start = thumbRadius
+                    val end = width - thumbRadius
+                    val usableWidth = (end - start).coerceAtLeast(1f)
+                    return ((x - start) / usableWidth).coerceIn(0f, 1f)
                 }
 
                 down.consume()
@@ -15194,47 +15208,80 @@ private fun WavySeekBar(
         }
     ) {
         val clampedProgress = progress.coerceIn(0f, 1f)
-        val centerY = size.height / 2f
-        val strokeWidth = minOf(5.dp.toPx(), size.height * 0.45f)
-        val waveWidth = minOf(56.dp.toPx(), size.width * 0.22f).coerceAtLeast(1f)
-        val lineStart = minOf(waveWidth + 18.dp.toPx(), size.width * 0.42f)
-        val lineEnd = size.width
-        val activeEnd = lineStart + (lineEnd - lineStart) * clampedProgress
+        val thumbRadius = minOf(6.dp.toPx(), size.height * 0.48f)
+        val trackHeight = minOf(6.dp.toPx(), size.height * 0.52f)
+        val trackStart = thumbRadius
+        val trackEnd = size.width - thumbRadius
+        val trackWidth = (trackEnd - trackStart).coerceAtLeast(1f)
+        val top = (size.height - trackHeight) / 2f
+        val corner = CornerRadius(trackHeight / 2f, trackHeight / 2f)
+        val thumbX = trackStart + trackWidth * clampedProgress
 
-        drawLine(
+        drawRoundRect(
             color = inactiveColor,
-            start = Offset(lineStart, centerY),
-            end = Offset(lineEnd, centerY),
-            strokeWidth = strokeWidth,
-            cap = StrokeCap.Butt
+            topLeft = Offset(trackStart, top),
+            size = Size(trackWidth, trackHeight),
+            cornerRadius = corner
         )
-        if (activeEnd > lineStart) {
-            drawLine(
+        if (clampedProgress > 0f) {
+            drawRoundRect(
                 color = activeColor,
-                start = Offset(lineStart, centerY),
-                end = Offset(activeEnd, centerY),
-                strokeWidth = strokeWidth,
-                cap = StrokeCap.Butt
+                topLeft = Offset(trackStart, top),
+                size = Size(trackWidth * clampedProgress, trackHeight),
+                cornerRadius = corner
             )
         }
-
-        val wavePath = Path()
-        val amplitude = minOf(7.dp.toPx(), size.height * 0.3f)
-        val step = 2.dp.toPx().coerceAtLeast(1f)
-        var x = 0f
-        wavePath.moveTo(0f, centerY)
-        while (x <= waveWidth) {
-            val y = centerY + sin((x / waveWidth) * PI.toFloat() * 4f) * amplitude
-            wavePath.lineTo(x, y)
-            x += step
-        }
-        wavePath.lineTo(waveWidth, centerY)
-        drawPath(
-            path = wavePath,
+        drawCircle(
             color = activeColor,
-            style = Stroke(width = strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round)
+            radius = thumbRadius,
+            center = Offset(thumbX, size.height / 2f)
+        )
+        drawCircle(
+            color = thumbCenterColor,
+            radius = thumbRadius * 0.42f,
+            center = Offset(thumbX, size.height / 2f)
         )
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun WavySeekBar(
+    progress: Float,
+    modifier: Modifier = Modifier,
+    onSeek: (Float) -> Unit
+) {
+    WavySlider(
+        value = progress.coerceIn(0f, 1f),
+        onValueChange = onSeek,
+        modifier = modifier,
+        colors = SliderDefaults.colors(
+            activeTrackColor = MaterialTheme.colorScheme.primary,
+            inactiveTrackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.24f)
+        ),
+        waveLength = 18.dp,
+        waveHeight = 8.dp,
+        waveVelocity = 22.dp to HEAD,
+        waveThickness = 5.dp,
+        trackThickness = 5.dp,
+        incremental = false,
+        thumb = {
+            Box(
+                modifier = Modifier
+                    .size(24.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.onPrimary)
+                )
+            }
+        }
+    )
 }
 
 private class JellyfinPlayer(private val context: Context) {

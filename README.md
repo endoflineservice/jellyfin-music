@@ -48,6 +48,12 @@ The debug APK is written to:
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
+The current shareable release APK and icon images are tracked under:
+
+```text
+release-assets/0.1.3-v7/
+```
+
 ## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
