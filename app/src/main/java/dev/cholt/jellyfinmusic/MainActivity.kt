@@ -246,8 +246,6 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.random.Random
-import ir.mahozad.multiplatform.wavyslider.WaveDirection.HEAD
-import ir.mahozad.multiplatform.wavyslider.material3.WavySlider
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -379,6 +377,17 @@ private fun LaunchVisualizerSplash(modifier: Modifier = Modifier) {
                 )
             }
         }
+        Image(
+            painter = painterResource(R.drawable.splash_app_icon),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .statusBarsPadding()
+                .padding(start = 20.dp, top = 18.dp)
+                .size(58.dp)
+                .clip(CircleShape)
+        )
     }
 }
 
@@ -11824,6 +11833,7 @@ private fun PlayerTitleActionsRow(
                 text = track.title,
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.SemiBold,
+                color = Color.White.copy(alpha = 0.94f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.fillMaxWidth()
@@ -11831,7 +11841,7 @@ private fun PlayerTitleActionsRow(
             Text(
                 text = "${track.artist} - ${track.album}",
                 style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = Color.White.copy(alpha = 0.78f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.fillMaxWidth()
@@ -11890,12 +11900,12 @@ private fun PlayerProgressSection(
             Text(
                 text = formatDuration((track.durationMs * progress.coerceIn(0f, 1f)).toLong()),
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = Color.White.copy(alpha = 0.72f)
             )
             Text(
                 text = formatDuration(track.durationMs),
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = Color.White.copy(alpha = 0.72f)
             )
         }
     }
@@ -14044,16 +14054,6 @@ private fun CircularSeekRing(
             size = arcSize,
             style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
         )
-
-        val angleRadians = ((clampedProgress * 360f - 90f) * PI / 180f).toFloat()
-        val radius = diameter / 2f
-        val center = Offset(size.width / 2f, size.height / 2f)
-        val knobCenter = Offset(
-            x = center.x + cos(angleRadians) * radius,
-            y = center.y + sin(angleRadians) * radius
-        )
-        drawCircle(color = activeColor, radius = 8.dp.toPx(), center = knobCenter)
-        drawCircle(color = Color.White.copy(alpha = 0.86f), radius = 4.dp.toPx(), center = knobCenter)
     }
 }
 
@@ -15155,31 +15155,86 @@ private fun TopBarSineVisualizer(modifier: Modifier = Modifier, color: Color) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun WavySeekBar(
     progress: Float,
     modifier: Modifier = Modifier,
     onSeek: (Float) -> Unit
 ) {
-    WavySlider(
-        value = progress.coerceIn(0f, 1f),
-        onValueChange = onSeek,
-        modifier = modifier,
-        colors = SliderDefaults.colors(
-            activeTrackColor = MaterialTheme.colorScheme.primary,
-            inactiveTrackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.24f)
-        ),
-        waveLength = 18.dp,
-        waveHeight = 8.dp,
-        waveVelocity = 22.dp to HEAD,
-        waveThickness = 5.dp,
-        trackThickness = 5.dp,
-        incremental = false,
-        thumb = {
-            Spacer(Modifier.size(24.dp))
+    val activeColor = MaterialTheme.colorScheme.primary
+    val inactiveColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.24f)
+    val latestOnSeek by rememberUpdatedState(onSeek)
+
+    Canvas(
+        modifier = modifier.pointerInput(Unit) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+
+                fun fractionFor(x: Float): Float {
+                    val width = size.width.toFloat().coerceAtLeast(1f)
+                    val waveWidth = minOf(56.dp.toPx(), width * 0.22f).coerceAtLeast(1f)
+                    val lineStart = minOf(waveWidth + 18.dp.toPx(), width * 0.42f)
+                    val usableWidth = (width - lineStart).coerceAtLeast(1f)
+                    return ((x - lineStart) / usableWidth).coerceIn(0f, 1f)
+                }
+
+                down.consume()
+                latestOnSeek(fractionFor(down.position.x))
+                while (true) {
+                    val event = awaitPointerEvent()
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: return@awaitEachGesture
+                    if (!change.pressed) {
+                        change.consume()
+                        break
+                    }
+                    latestOnSeek(fractionFor(change.position.x))
+                    change.consume()
+                }
+            }
         }
-    )
+    ) {
+        val clampedProgress = progress.coerceIn(0f, 1f)
+        val centerY = size.height / 2f
+        val strokeWidth = minOf(5.dp.toPx(), size.height * 0.45f)
+        val waveWidth = minOf(56.dp.toPx(), size.width * 0.22f).coerceAtLeast(1f)
+        val lineStart = minOf(waveWidth + 18.dp.toPx(), size.width * 0.42f)
+        val lineEnd = size.width
+        val activeEnd = lineStart + (lineEnd - lineStart) * clampedProgress
+
+        drawLine(
+            color = inactiveColor,
+            start = Offset(lineStart, centerY),
+            end = Offset(lineEnd, centerY),
+            strokeWidth = strokeWidth,
+            cap = StrokeCap.Butt
+        )
+        if (activeEnd > lineStart) {
+            drawLine(
+                color = activeColor,
+                start = Offset(lineStart, centerY),
+                end = Offset(activeEnd, centerY),
+                strokeWidth = strokeWidth,
+                cap = StrokeCap.Butt
+            )
+        }
+
+        val wavePath = Path()
+        val amplitude = minOf(7.dp.toPx(), size.height * 0.3f)
+        val step = 2.dp.toPx().coerceAtLeast(1f)
+        var x = 0f
+        wavePath.moveTo(0f, centerY)
+        while (x <= waveWidth) {
+            val y = centerY + sin((x / waveWidth) * PI.toFloat() * 4f) * amplitude
+            wavePath.lineTo(x, y)
+            x += step
+        }
+        wavePath.lineTo(waveWidth, centerY)
+        drawPath(
+            path = wavePath,
+            color = activeColor,
+            style = Stroke(width = strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
+    }
 }
 
 private class JellyfinPlayer(private val context: Context) {
