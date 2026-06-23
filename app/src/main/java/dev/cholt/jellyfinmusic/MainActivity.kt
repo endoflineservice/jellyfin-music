@@ -435,6 +435,10 @@ private const val PREF_STARTUP_RESTORE_LAST_QUEUE = "startup_restore_last_queue"
 private const val PREF_LAST_DESTINATION = "last_destination"
 private const val PREF_QUEUE_TAP_ACTION = "queue_tap_action"
 private const val PREF_QUEUE_SHUFFLE_AFTER_CURRENT = "queue_shuffle_after_current"
+private const val PREF_QUEUE_SMART_SHUFFLE = "queue_smart_shuffle"
+private const val PREF_QUEUE_DJ_ENABLED = "queue_dj_enabled"
+private const val PREF_QUEUE_END_RECOMMENDATIONS = "queue_end_recommendations"
+private const val PREF_QUEUE_FEWER_REPEATS = "queue_fewer_repeats"
 private const val PREF_PLAYBACK_STOP_AFTER_CURRENT = "playback_stop_after_current"
 private const val PREF_PLAYBACK_SLEEP_TIMER_MINUTES = "playback_sleep_timer_minutes"
 private const val PREF_PLAYBACK_REMEMBER_SPEED = "playback_remember_speed"
@@ -2026,7 +2030,11 @@ private data class LastPlaybackState(
 
 private data class QueueBehaviorSettings(
     val tapAction: TrackTapAction = TrackTapAction.VisibleList,
-    val shuffleAfterCurrent: Boolean = false
+    val shuffleAfterCurrent: Boolean = false,
+    val smartShuffleEnabled: Boolean = true,
+    val djEnabled: Boolean = true,
+    val queueEndRecommendationsEnabled: Boolean = true,
+    val fewerRepeatsEnabled: Boolean = true
 )
 
 private data class PlaybackBehaviorSettings(
@@ -2146,8 +2154,14 @@ private data class DailyMixCardSpec(
     val title: String,
     val subtitle: String,
     val tracks: List<MusicTrack>,
-    val accent: Color
+    val accent: Color,
+    val family: DailyMixFamily = DailyMixFamily.MadeForYou
 )
+
+private enum class DailyMixFamily {
+    MadeForYou,
+    Mood
+}
 
 private data class PinnedLibraryItem(
     val type: LibraryCollectionType,
@@ -2887,6 +2901,18 @@ private fun JellyfinMusicApp() {
         rememberPlaybackSelection(track, activeSession)
     }
 
+    fun shuffledPlaybackQueue(source: List<MusicTrack>): List<MusicTrack> =
+        if (queueBehaviorSettings.smartShuffleEnabled) {
+            source.smartShufflePlaybackQueue(
+                likedTrackIds = likedTrackIds,
+                recentTrackIds = recentTrackIds,
+                queueHistoryTrackIds = queueHistoryTrackIds,
+                fewerRepeatsEnabled = queueBehaviorSettings.fewerRepeatsEnabled
+            )
+        } else {
+            source.randomizedPlaybackQueue()
+        }
+
     fun playTrack(track: MusicTrack, openPlayer: Boolean = false, source: List<MusicTrack> = tracks) {
         session?.let { activeSession ->
             val queueSource = when (queueBehaviorSettings.tapAction) {
@@ -2900,7 +2926,7 @@ private fun JellyfinMusicApp() {
             }
             val baseQueue = queueSource.queueStartingAt(track).ifEmpty { listOf(track) }
             val nextQueue = if (queueBehaviorSettings.shuffleAfterCurrent && baseQueue.size > 2) {
-                listOf(baseQueue.first()) + baseQueue.drop(1).randomizedPlaybackQueue()
+                listOf(baseQueue.first()) + shuffledPlaybackQueue(baseQueue.drop(1))
             } else {
                 baseQueue
             }
@@ -2910,11 +2936,11 @@ private fun JellyfinMusicApp() {
 
     fun playRandom(source: List<MusicTrack>) {
         session?.let { activeSession ->
-            val randomizedQueue = source.randomizedPlaybackQueue()
+            val randomizedQueue = shuffledPlaybackQueue(source)
             val firstTrack = randomizedQueue.firstOrNull() ?: return
             shuffleEnabled = true
             playTrackFromQueue(firstTrack, randomizedQueue, activeSession, openPlayer = true)
-            statusText = "Shuffle started"
+            statusText = if (queueBehaviorSettings.smartShuffleEnabled) "Smart Shuffle started" else "Shuffle started"
         }
     }
 
@@ -2926,11 +2952,7 @@ private fun JellyfinMusicApp() {
             .ifEmpty { listOf(activeTrack) }
             .queueStartingAt(activeTrack)
         if (baseQueue.isEmpty()) return
-        val nextIndex = if (shuffleEnabled && baseQueue.size > 1 && offset > 0) {
-            Random.nextInt(1, baseQueue.size)
-        } else {
-            (offset + baseQueue.size) % baseQueue.size
-        }
+        val nextIndex = (offset + baseQueue.size) % baseQueue.size
         playTrackFromQueue(baseQueue[nextIndex], baseQueue, activeSession, openPlayer = openPlayer)
     }
 
@@ -2963,9 +2985,9 @@ private fun JellyfinMusicApp() {
         val activeTrack = player.currentTrack ?: return
         val baseQueue = playQueue.ifEmpty { tracks.queueStartingAt(activeTrack) }.queueStartingAt(activeTrack)
         if (baseQueue.size <= 2) return
-        val shuffledRest = baseQueue.drop(1).randomizedPlaybackQueue()
+        val shuffledRest = shuffledPlaybackQueue(baseQueue.drop(1))
         playQueue = listOf(activeTrack) + shuffledRest
-        statusText = "Queue reshuffled"
+        statusText = if (queueBehaviorSettings.smartShuffleEnabled) "Smart queue reshuffled" else "Queue reshuffled"
     }
 
     fun playTrackNext(track: MusicTrack) {
@@ -3156,18 +3178,22 @@ private fun JellyfinMusicApp() {
         showPlayer = false
     }
 
-    fun startRadioFrom(source: List<MusicTrack>, seed: MusicTrack) {
-        val sameArtist = tracks.filter { it.artist.equals(seed.artist, ignoreCase = true) }
-        val sameAlbum = tracks.filter { it.album.equals(seed.album, ignoreCase = true) }
-        val liked = tracks.filter { it.id in likedTrackIds }
-        val queue = (listOf(seed) + source + sameArtist + sameAlbum + liked + tracks.homeMix(seed.id.hashCode().toLong()))
-            .distinctBy { it.id }
-            .take(50)
+    fun startSongRadioFrom(source: List<MusicTrack>, seed: MusicTrack) {
+        val queue = buildSongRadioQueue(
+            tracks = tracks,
+            source = source,
+            seed = seed,
+            likedTrackIds = likedTrackIds,
+            recentTrackIds = recentTrackIds,
+            smartShuffleEnabled = queueBehaviorSettings.smartShuffleEnabled
+        )
         val firstTrack = queue.firstOrNull() ?: return
         session?.let { activeSession ->
             playQueue = queue
             player.play(firstTrack, activeSession)
             showNowPlayingPlayer()
+            rememberPlaybackSelection(firstTrack, activeSession)
+            statusText = "Song Radio started"
         }
     }
 
@@ -3292,7 +3318,45 @@ private fun JellyfinMusicApp() {
                 showPlayer = false
                 statusText = "Stopped after current track"
             } else {
-                playAdjacent(1, openPlayer = false)
+                val queueForEnded = playQueue
+                    .ifEmpty { tracks.queueStartingAt(endedTrack) }
+                    .ifEmpty { listOf(endedTrack) }
+                    .queueStartingAt(endedTrack)
+                val remainingQueue = queueForEnded
+                    .drop(1)
+                    .filterNot { it.id == endedTrack.id }
+                val nextTrack = remainingQueue.firstOrNull()
+                if (nextTrack != null) {
+                    playTrackFromQueue(nextTrack, remainingQueue, activeSession, openPlayer = false)
+                } else if (queueBehaviorSettings.queueEndRecommendationsEnabled) {
+                    val recommendedQueue = buildQueueEndRecommendations(
+                        tracks = tracks,
+                        seed = endedTrack,
+                        likedTrackIds = likedTrackIds,
+                        recentTrackIds = recentTrackIds,
+                        queueHistoryTrackIds = queueHistoryTrackIds,
+                        smartShuffleEnabled = queueBehaviorSettings.smartShuffleEnabled,
+                        fewerRepeatsEnabled = queueBehaviorSettings.fewerRepeatsEnabled,
+                        djEnabled = queueBehaviorSettings.djEnabled
+                    )
+                    val recommendedTrack = recommendedQueue.firstOrNull()
+                    if (recommendedTrack != null) {
+                        statusText = if (queueBehaviorSettings.djEnabled) {
+                            djRecommendationMessage(endedTrack, recommendedTrack)
+                        } else {
+                            "Recommended queue started"
+                        }
+                        playTrackFromQueue(recommendedTrack, recommendedQueue, activeSession, openPlayer = false)
+                    } else {
+                        player.release()
+                        showPlayer = false
+                        statusText = "Queue finished"
+                    }
+                } else {
+                    player.release()
+                    showPlayer = false
+                    statusText = "Queue finished"
+                }
             }
             true
         }
@@ -3701,6 +3765,12 @@ private fun JellyfinMusicApp() {
                     activeTrack = activeTrack
                 )
             }
+            val madeForYouCards = remember(dailyMixCards) {
+                dailyMixCards.filter { it.family == DailyMixFamily.MadeForYou }
+            }
+            val moodMixCards = remember(dailyMixCards) {
+                dailyMixCards.filter { it.family == DailyMixFamily.Mood }
+            }
             val displayedTracks = remember(visibleTracks, searchQuery, isSearchDestination) {
                 if (isSearchDestination) visibleTracks.filterBy(searchQuery) else visibleTracks
             }
@@ -3904,15 +3974,6 @@ private fun JellyfinMusicApp() {
                                     TabPageHeader(
                                         title = "Settings",
                                         icon = PlayerIconVectors.SettingsFilled
-                                    )
-                                }
-                                item {
-                                    SettingsSummaryCard(
-                                        session = connectedSession,
-                                        syncedTrackCount = tracks.size,
-                                        lastLibrarySyncAt = lastLibrarySyncAt,
-                                        downloadedTrackCount = offlineDownloads.size,
-                                        activeDownloadCount = downloadProgressById.size
                                     )
                                 }
                                 item {
@@ -4366,6 +4427,14 @@ private fun JellyfinMusicApp() {
                                     recentTrackIds = recentTrackIds,
                                     activeTrack = activeTrack
                                 ).take(12)
+                                val becauseYouPlayedTracks = activeTrack?.let { seedTrack ->
+                                    buildBecauseYouPlayedTracks(
+                                        tracks = visibleTracks,
+                                        seed = seedTrack,
+                                        likedTrackIds = likedTrackIds,
+                                        recentTrackIds = recentTrackIds
+                                    )
+                                }.orEmpty()
                                 val newHomeAlbumGroups = displayedAlbumGroups
                                     .sortedByDescending { group -> group.tracks.maxOfOrNull { it.dateAddedMs } ?: 0L }
                                     .take(12)
@@ -4408,16 +4477,16 @@ private fun JellyfinMusicApp() {
                                                 openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, track.artist))
                                             },
                                             onPlayNext = { track -> playTrackNext(track) },
-                                            onStartRadio = { track -> startRadioFrom(visibleTracks, track) },
+                                            onStartRadio = { track -> startSongRadioFrom(visibleTracks, track) },
                                             playlists = localPlaylists,
                                             onAddToPlaylist = { playlist, track -> addTrackToPlaylist(playlist, track) }
                                         )
                                     }
-                                    if (dailyMixCards.isNotEmpty()) {
+                                    if (madeForYouCards.isNotEmpty()) {
                                         item {
                                             DailyMixCardRow(
-                                                title = "Daily cards",
-                                                cards = dailyMixCards,
+                                                title = "Made For You",
+                                                cards = madeForYouCards,
                                                 session = connectedSession,
                                                 onCardClick = { card ->
                                                     connectedSession?.let { activeSession ->
@@ -4426,6 +4495,43 @@ private fun JellyfinMusicApp() {
                                                         }
                                                     }
                                                 }
+                                            )
+                                        }
+                                    }
+                                    if (moodMixCards.isNotEmpty()) {
+                                        item {
+                                            DailyMixCardRow(
+                                                title = "Mood Mixes",
+                                                cards = moodMixCards,
+                                                session = connectedSession,
+                                                onCardClick = { card ->
+                                                    connectedSession?.let { activeSession ->
+                                                        card.tracks.firstOrNull()?.let { firstTrack ->
+                                                            playTrackFromQueue(firstTrack, card.tracks, activeSession, openPlayer = true)
+                                                        }
+                                                    }
+                                                }
+                                            )
+                                        }
+                                    }
+                                    if (homePageSettings.showSmartMixes && becauseYouPlayedTracks.isNotEmpty()) {
+                                        item {
+                                            HomeTrackShelf(
+                                                title = "Because you played ${activeTrack?.title.orEmpty()}",
+                                                tracks = becauseYouPlayedTracks,
+                                                session = connectedSession,
+                                                onTrackClick = { track -> playTrack(track, openPlayer = true, source = becauseYouPlayedTracks) },
+                                                isTrackLiked = { track -> track.id in likedTrackIds },
+                                                isTrackDownloaded = { track -> track.id in offlineDownloads },
+                                                downloadProgressForTrack = { track -> downloadProgressById[track.id] },
+                                                onToggleLiked = { track -> toggleLiked(track) },
+                                                onToggleDownload = { track -> toggleOfflineDownload(track) },
+                                                onGoToAlbum = { track -> openLibraryDetail(LibraryDetail(LibraryCollectionType.Album, track.album)) },
+                                                onGoToArtist = { track -> openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, track.artist)) },
+                                                onPlayNext = { track -> playTrackNext(track) },
+                                                onStartRadio = { track -> startSongRadioFrom(becauseYouPlayedTracks, track) },
+                                                playlists = localPlaylists,
+                                                onAddToPlaylist = { playlist, track -> addTrackToPlaylist(playlist, track) }
                                             )
                                         }
                                     }
@@ -4446,7 +4552,7 @@ private fun JellyfinMusicApp() {
                                                         onGoToAlbum = { track -> openLibraryDetail(LibraryDetail(LibraryCollectionType.Album, track.album)) },
                                                         onGoToArtist = { track -> openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, track.artist)) },
                                                         onPlayNext = { track -> playTrackNext(track) },
-                                                        onStartRadio = { track -> startRadioFrom(trendingTracks, track) },
+                                                        onStartRadio = { track -> startSongRadioFrom(trendingTracks, track) },
                                                         playlists = localPlaylists,
                                                         onAddToPlaylist = { playlist, track -> addTrackToPlaylist(playlist, track) }
                                                     )
@@ -4468,7 +4574,7 @@ private fun JellyfinMusicApp() {
                                                         onGoToAlbum = { track -> openLibraryDetail(LibraryDetail(LibraryCollectionType.Album, track.album)) },
                                                         onGoToArtist = { track -> openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, track.artist)) },
                                                         onPlayNext = { track -> playTrackNext(track) },
-                                                        onStartRadio = { track -> startRadioFrom(recentTracks, track) },
+                                                        onStartRadio = { track -> startSongRadioFrom(recentTracks, track) },
                                                         playlists = localPlaylists,
                                                         onAddToPlaylist = { playlist, track -> addTrackToPlaylist(playlist, track) }
                                                     )
@@ -4490,7 +4596,7 @@ private fun JellyfinMusicApp() {
                                                         onGoToAlbum = { track -> openLibraryDetail(LibraryDetail(LibraryCollectionType.Album, track.album)) },
                                                         onGoToArtist = { track -> openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, track.artist)) },
                                                         onPlayNext = { track -> playTrackNext(track) },
-                                                        onStartRadio = { track -> startRadioFrom(likedHomeTracks, track) },
+                                                        onStartRadio = { track -> startSongRadioFrom(likedHomeTracks, track) },
                                                         playlists = localPlaylists,
                                                         onAddToPlaylist = { playlist, track -> addTrackToPlaylist(playlist, track) }
                                                     )
@@ -4567,7 +4673,7 @@ private fun JellyfinMusicApp() {
                                                         onGoToAlbum = { track -> openLibraryDetail(LibraryDetail(LibraryCollectionType.Album, track.album)) },
                                                         onGoToArtist = { track -> openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, track.artist)) },
                                                         onPlayNext = { track -> playTrackNext(track) },
-                                                        onStartRadio = { track -> startRadioFrom(homeMix, track) },
+                                                        onStartRadio = { track -> startSongRadioFrom(homeMix, track) },
                                                         playlists = localPlaylists,
                                                         onAddToPlaylist = { playlist, track -> addTrackToPlaylist(playlist, track) }
                                                     )
@@ -4654,7 +4760,7 @@ private fun JellyfinMusicApp() {
                                                     )
                                                 },
                                                 onPlayNext = { playTrackNext(track) },
-                                                onStartRadio = { startRadioFrom(detailTracks, track) },
+                                                onStartRadio = { startSongRadioFrom(detailTracks, track) },
                                                 playlists = localPlaylists,
                                                 onAddToPlaylist = { playlist -> addTrackToPlaylist(playlist, track) },
                                                 onRemoveFromPlaylist = if (detail.type == LibraryCollectionType.Playlist) {
@@ -4863,7 +4969,7 @@ private fun JellyfinMusicApp() {
                                                 openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, track.artist))
                                             },
                                             onPlayNext = { playTrackNext(track) },
-                                            onStartRadio = { startRadioFrom(libraryStackedTracks, track) },
+                                            onStartRadio = { startSongRadioFrom(libraryStackedTracks, track) },
                                             playlists = localPlaylists,
                                             onAddToPlaylist = { playlist -> addTrackToPlaylist(playlist, track) }
                                         )
@@ -4935,7 +5041,7 @@ private fun JellyfinMusicApp() {
                                                             openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, track.artist))
                                                         },
                                                         onPlayNext = { playTrackNext(track) },
-                                                        onStartRadio = { startRadioFrom(libraryTracks, track) },
+                                                        onStartRadio = { startSongRadioFrom(libraryTracks, track) },
                                                         playlists = localPlaylists,
                                                         onAddToPlaylist = { playlist -> addTrackToPlaylist(playlist, track) },
                                                         onClick = {
@@ -5184,11 +5290,27 @@ private fun JellyfinMusicApp() {
                                 }
 
                                 if (queryIsBlank) {
-                                    if (dailyMixCards.isNotEmpty()) {
+                                    if (madeForYouCards.isNotEmpty()) {
                                         item {
                                             DailyMixCardRow(
-                                                title = "Daily cards",
-                                                cards = dailyMixCards,
+                                                title = "Made For You",
+                                                cards = madeForYouCards,
+                                                session = connectedSession,
+                                                onCardClick = { card ->
+                                                    connectedSession?.let { activeSession ->
+                                                        card.tracks.firstOrNull()?.let { firstTrack ->
+                                                            playTrackFromQueue(firstTrack, card.tracks, activeSession, openPlayer = true)
+                                                        }
+                                                    }
+                                                }
+                                            )
+                                        }
+                                    }
+                                    if (moodMixCards.isNotEmpty()) {
+                                        item {
+                                            DailyMixCardRow(
+                                                title = "Mood Mixes",
+                                                cards = moodMixCards,
                                                 session = connectedSession,
                                                 onCardClick = { card ->
                                                     connectedSession?.let { activeSession ->
@@ -5227,7 +5349,7 @@ private fun JellyfinMusicApp() {
                                                     openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, track.artist))
                                                 },
                                                 onPlayNext = { playTrackNext(track) },
-                                                onStartRadio = { startRadioFrom(recentTracks, track) },
+                                                onStartRadio = { startSongRadioFrom(recentTracks, track) },
                                                 playlists = localPlaylists,
                                                 onAddToPlaylist = { playlist -> addTrackToPlaylist(playlist, track) }
                                             )
@@ -5350,7 +5472,7 @@ private fun JellyfinMusicApp() {
                                                         openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, track.artist))
                                                     },
                                                     onPlayNext = { playTrackNext(track) },
-                                                    onStartRadio = { startRadioFrom(displayedTracks, track) },
+                                                    onStartRadio = { startSongRadioFrom(displayedTracks, track) },
                                                     playlists = localPlaylists,
                                                     onAddToPlaylist = { playlist -> addTrackToPlaylist(playlist, track) }
                                                 )
@@ -5564,7 +5686,7 @@ private fun JellyfinMusicApp() {
                     onGoToArtist = {
                         openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, activeTrack.artist))
                     },
-                    onStartRadio = { startRadioFrom(fullPlayerQueue, activeTrack) },
+                    onStartRadio = { startSongRadioFrom(fullPlayerQueue, activeTrack) },
                     onAddToPlaylist = { playlist -> addTrackToPlaylist(playlist, activeTrack) },
                     onQueueTrackClick = ::playQueuedTrack,
                     onQueueMove = ::moveQueueTrack,
@@ -5765,7 +5887,10 @@ private fun settingsCategoryDetail(
         ).filterNotNull().joinToString(" - ")
         SettingsPage.Queue -> listOf(
             queueBehaviorSettings.tapAction.label,
-            if (queueBehaviorSettings.shuffleAfterCurrent) "Shuffle rest" else null
+            if (queueBehaviorSettings.shuffleAfterCurrent) "Shuffle rest" else null,
+            if (queueBehaviorSettings.smartShuffleEnabled) "Smart shuffle" else "Plain shuffle",
+            if (queueBehaviorSettings.djEnabled) "DJ on" else null,
+            if (queueBehaviorSettings.queueEndRecommendationsEnabled) "Queue recommendations" else null
         ).filterNotNull().joinToString(" - ")
         SettingsPage.Library -> "${syncedTrackCount.countLabel("song")} - Songs ${libraryDensitySettings.songsViewMode.label} - Collections ${libraryDensitySettings.albumsViewMode.label}"
         SettingsPage.Home -> listOf(
@@ -5973,102 +6098,6 @@ private fun AboutCard() {
 }
 
 @Composable
-private fun SettingsSummaryCard(
-    session: JellyfinSession,
-    lastLibrarySyncAt: Long?,
-    syncedTrackCount: Int,
-    downloadedTrackCount: Int,
-    activeDownloadCount: Int
-) {
-    Card(
-        shape = RoundedCornerShape(26.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(
-            modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Text(
-                text = session.username,
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = session.serverUrl.toHostLabel(),
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.76f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = "${syncedTrackCount.countLabel("song")} synced - ${formatLastLibrarySync(lastLibrarySyncAt)}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.72f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                SettingsStatusPill(
-                    label = "Library",
-                    value = syncedTrackCount.toString(),
-                    modifier = Modifier.weight(1f)
-                )
-                SettingsStatusPill(
-                    label = "Offline",
-                    value = downloadedTrackCount.toString(),
-                    modifier = Modifier.weight(1f)
-                )
-                SettingsStatusPill(
-                    label = "Active",
-                    value = activeDownloadCount.toString(),
-                    modifier = Modifier.weight(1f)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SettingsStatusPill(
-    label: String,
-    value: String,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.08f)
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                text = value,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                maxLines = 1
-            )
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.72f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-    }
-}
-
-@Composable
 private fun AccountCard(
     session: JellyfinSession,
     onSignOut: () -> Unit
@@ -6263,6 +6292,46 @@ private fun QueueBehaviorCard(
                 description = if (settings.shuffleAfterCurrent) "Keeps the tapped song first and shuffles the rest" else "Keeps the source order",
                 checked = settings.shuffleAfterCurrent,
                 onCheckedChange = { onSettingsChange(settings.copy(shuffleAfterCurrent = it)) }
+            )
+            SettingsSwitchRow(
+                title = "Smart Shuffle",
+                description = if (settings.smartShuffleEnabled) {
+                    "Avoids artist repeats, prefers less-recent songs, and sprinkles in favorites"
+                } else {
+                    "Uses plain random shuffle with no algorithm"
+                },
+                checked = settings.smartShuffleEnabled,
+                onCheckedChange = { onSettingsChange(settings.copy(smartShuffleEnabled = it)) }
+            )
+            SettingsSwitchRow(
+                title = "AI DJ",
+                description = if (settings.djEnabled) {
+                    "Adds guided queue picks and vibe changes when recommendations take over"
+                } else {
+                    "Keeps smart playback quiet with no DJ layer"
+                },
+                checked = settings.djEnabled,
+                onCheckedChange = { onSettingsChange(settings.copy(djEnabled = it)) }
+            )
+            SettingsSwitchRow(
+                title = "After-queue recommendations",
+                description = if (settings.queueEndRecommendationsEnabled) {
+                    "Starts a small recommended queue instead of looping when up next runs out"
+                } else {
+                    "Stops when the current queue finishes"
+                },
+                checked = settings.queueEndRecommendationsEnabled,
+                onCheckedChange = { onSettingsChange(settings.copy(queueEndRecommendationsEnabled = it)) }
+            )
+            SettingsSwitchRow(
+                title = "Fewer repeats",
+                description = if (settings.fewerRepeatsEnabled) {
+                    "Uses recent plays and queue history to keep shuffle fresher"
+                } else {
+                    "Only avoids the most obvious back-to-back repeats"
+                },
+                checked = settings.fewerRepeatsEnabled,
+                onCheckedChange = { onSettingsChange(settings.copy(fewerRepeatsEnabled = it)) }
             )
         }
     }
@@ -10836,7 +10905,7 @@ private fun TrackActionsMenu(
         )
         if (onStartRadio != null) {
             DropdownMenuItem(
-                text = { Text("Start radio") },
+                text = { Text("Song Radio") },
                 onClick = {
                     onDismiss()
                     onStartRadio()
@@ -12089,7 +12158,7 @@ private fun PlayerOptionsBottomSheet(
                 item {
                     PlayerOptionSheetRow(
                         icon = PlayerGlyph.Shuffle.imageVector(),
-                        title = "Start radio",
+                        title = "Song Radio",
                         subtitle = "Make a queue from this song",
                         onClick = {
                             onDismiss()
@@ -15111,11 +15180,11 @@ private fun NowPlayingBar(
                     }
                 }
                 Spacer(Modifier.height(4.dp))
-                MiniPlayerPillProgressBar(
+                WavySeekBar(
                     progress = displayProgress,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(16.dp),
+                        .height(24.dp),
                     onSeek = onSeek
                 )
             }
@@ -15163,83 +15232,6 @@ private fun TopBarSineVisualizer(modifier: Modifier = Modifier, color: Color) {
             path = path,
             color = Color.White.copy(alpha = 0.92f),
             style = Stroke(width = 3.8.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
-        )
-    }
-}
-
-@Composable
-private fun MiniPlayerPillProgressBar(
-    progress: Float,
-    modifier: Modifier = Modifier,
-    onSeek: (Float) -> Unit
-) {
-    val activeColor = MaterialTheme.colorScheme.primary
-    val inactiveColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.28f)
-    val thumbCenterColor = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.88f)
-    val latestOnSeek by rememberUpdatedState(onSeek)
-
-    Canvas(
-        modifier = modifier.pointerInput(Unit) {
-            awaitEachGesture {
-                val down = awaitFirstDown(requireUnconsumed = false)
-
-                fun fractionFor(x: Float): Float {
-                    val width = size.width.toFloat().coerceAtLeast(1f)
-                    val thumbRadius = 6.dp.toPx()
-                    val start = thumbRadius
-                    val end = width - thumbRadius
-                    val usableWidth = (end - start).coerceAtLeast(1f)
-                    return ((x - start) / usableWidth).coerceIn(0f, 1f)
-                }
-
-                down.consume()
-                latestOnSeek(fractionFor(down.position.x))
-                while (true) {
-                    val event = awaitPointerEvent()
-                    val change = event.changes.firstOrNull { it.id == down.id } ?: return@awaitEachGesture
-                    if (!change.pressed) {
-                        change.consume()
-                        break
-                    }
-                    latestOnSeek(fractionFor(change.position.x))
-                    change.consume()
-                }
-            }
-        }
-    ) {
-        val clampedProgress = progress.coerceIn(0f, 1f)
-        val thumbRadius = minOf(6.dp.toPx(), size.height * 0.48f)
-        val trackHeight = minOf(6.dp.toPx(), size.height * 0.52f)
-        val trackStart = thumbRadius
-        val trackEnd = size.width - thumbRadius
-        val trackWidth = (trackEnd - trackStart).coerceAtLeast(1f)
-        val top = (size.height - trackHeight) / 2f
-        val corner = CornerRadius(trackHeight / 2f, trackHeight / 2f)
-        val thumbX = trackStart + trackWidth * clampedProgress
-
-        drawRoundRect(
-            color = inactiveColor,
-            topLeft = Offset(trackStart, top),
-            size = Size(trackWidth, trackHeight),
-            cornerRadius = corner
-        )
-        if (clampedProgress > 0f) {
-            drawRoundRect(
-                color = activeColor,
-                topLeft = Offset(trackStart, top),
-                size = Size(trackWidth * clampedProgress, trackHeight),
-                cornerRadius = corner
-            )
-        }
-        drawCircle(
-            color = activeColor,
-            radius = thumbRadius,
-            center = Offset(thumbX, size.height / 2f)
-        )
-        drawCircle(
-            color = thumbCenterColor,
-            radius = thumbRadius * 0.42f,
-            center = Offset(thumbX, size.height / 2f)
         )
     }
 }
@@ -17116,7 +17108,11 @@ private fun loadQueueBehaviorSettings(context: Context): QueueBehaviorSettings {
     }.getOrDefault(TrackTapAction.VisibleList)
     return QueueBehaviorSettings(
         tapAction = tapAction,
-        shuffleAfterCurrent = prefs.getBoolean(PREF_QUEUE_SHUFFLE_AFTER_CURRENT, false)
+        shuffleAfterCurrent = prefs.getBoolean(PREF_QUEUE_SHUFFLE_AFTER_CURRENT, false),
+        smartShuffleEnabled = prefs.getBoolean(PREF_QUEUE_SMART_SHUFFLE, true),
+        djEnabled = prefs.getBoolean(PREF_QUEUE_DJ_ENABLED, true),
+        queueEndRecommendationsEnabled = prefs.getBoolean(PREF_QUEUE_END_RECOMMENDATIONS, true),
+        fewerRepeatsEnabled = prefs.getBoolean(PREF_QUEUE_FEWER_REPEATS, true)
     )
 }
 
@@ -17125,6 +17121,10 @@ private fun saveQueueBehaviorSettings(context: Context, settings: QueueBehaviorS
         .edit()
         .putString(PREF_QUEUE_TAP_ACTION, settings.tapAction.name)
         .putBoolean(PREF_QUEUE_SHUFFLE_AFTER_CURRENT, settings.shuffleAfterCurrent)
+        .putBoolean(PREF_QUEUE_SMART_SHUFFLE, settings.smartShuffleEnabled)
+        .putBoolean(PREF_QUEUE_DJ_ENABLED, settings.djEnabled)
+        .putBoolean(PREF_QUEUE_END_RECOMMENDATIONS, settings.queueEndRecommendationsEnabled)
+        .putBoolean(PREF_QUEUE_FEWER_REPEATS, settings.fewerRepeatsEnabled)
         .apply()
 }
 
@@ -17928,22 +17928,42 @@ private fun buildDailyMixCards(
         .mapNotNull { id -> libraryTracks.firstOrNull { it.id == id } }
         .distinctBy { it.id }
     val likedTracks = libraryTracks.filter { it.id in likedTrackIds }
+    val recentSet = recentTrackIds.take(80).toSet()
+    val lessRecentTracks = libraryTracks.filter { it.id !in recentSet }
+    val likedArtists = likedTracks.map { it.artist.lowercase(Locale.getDefault()) }.toSet()
     val newestTracks = libraryTracks
         .filter { it.dateAddedMs > 0L }
         .sortedByDescending { it.dateAddedMs }
     val activeArtistTracks = activeTrack?.let { active ->
         libraryTracks.filter { it.artist.equals(active.artist, ignoreCase = true) }
     }.orEmpty()
+    val activeRelatedTracks = activeTrack?.let { active ->
+        buildBecauseYouPlayedTracks(libraryTracks, active, likedTrackIds, recentTrackIds)
+    }.orEmpty()
+    val shortTracks = libraryTracks.filter { it.durationMs in 110_000L..250_000L }
+    val longTracks = libraryTracks.filter { it.durationMs >= 260_000L }
+    val calmTracks = libraryTracks.filter { track ->
+        track.searchText().containsAnyToken("acoustic", "soft", "slow", "night", "rain", "dream", "ambient", "chill", "love")
+    }
+    val energyTracks = libraryTracks.filter { track ->
+        track.searchText().containsAnyToken("dance", "party", "rock", "remix", "club", "fire", "power", "fast", "high")
+    }
 
     fun card(
         id: String,
         title: String,
         hint: String,
         source: List<MusicTrack>,
-        fallbackSeed: Long
+        fallbackSeed: Long,
+        family: DailyMixFamily = DailyMixFamily.MadeForYou
     ): DailyMixCardSpec? {
         val queue = (source + libraryTracks.homeMix(seed + fallbackSeed))
             .distinctBy { it.id }
+            .smartShufflePlaybackQueue(
+                likedTrackIds = likedTrackIds,
+                recentTrackIds = recentTrackIds,
+                seed = seed + fallbackSeed
+            )
             .take(32)
         if (queue.isEmpty()) return null
         val accentTrack = queue.firstOrNull { it.tint != Color.Unspecified } ?: queue.first()
@@ -17952,7 +17972,8 @@ private fun buildDailyMixCards(
             title = title,
             subtitle = "$hint - ${queue.size.countLabel("song")}",
             tracks = queue,
-            accent = accentTrack.tint
+            accent = accentTrack.tint,
+            family = family
         )
     }
 
@@ -17960,32 +17981,215 @@ private fun buildDailyMixCards(
         card(
             id = "daily",
             title = "Daily Mix",
-            hint = "Fresh picks from your library",
+            hint = "Fresh picks today",
             source = listOfNotNull(activeTrack) + recentTracks + likedTracks,
             fallbackSeed = 17L
+        ),
+        card(
+            id = "familiar",
+            title = "Familiar Mix",
+            hint = "Favorites and recent plays",
+            source = likedTracks + recentTracks + activeArtistTracks,
+            fallbackSeed = 31L
+        ),
+        card(
+            id = "discovery",
+            title = "Discovery Mix",
+            hint = "Less-recent library pulls",
+            source = lessRecentTracks + newestTracks.drop(10),
+            fallbackSeed = 47L
+        ),
+        card(
+            id = "favorites",
+            title = "Favorites Mix",
+            hint = "Liked songs reshaped",
+            source = likedTracks + lessRecentTracks.filter { it.artist.lowercase(Locale.getDefault()) in likedArtists },
+            fallbackSeed = 59L
+        ),
+        card(
+            id = "fresh",
+            title = "Fresh Finds",
+            hint = "Newer and less-played",
+            source = newestTracks + lessRecentTracks,
+            fallbackSeed = 67L
         ),
         card(
             id = "drive",
             title = "Drive Mode",
             hint = "Upbeat shuffle",
-            source = recentTracks + libraryTracks.filter { it.durationMs in 120_000L..360_000L },
-            fallbackSeed = 71L
+            source = energyTracks + shortTracks + recentTracks,
+            fallbackSeed = 71L,
+            family = DailyMixFamily.Mood
+        ),
+        card(
+            id = "late",
+            title = "Late Night",
+            hint = "Darker, softer flow",
+            source = calmTracks + longTracks + likedTracks,
+            fallbackSeed = 97L,
+            family = DailyMixFamily.Mood
         ),
         card(
             id = "focus",
             title = "Soft Focus",
             hint = "Album-friendly flow",
-            source = activeArtistTracks + likedTracks + newestTracks,
-            fallbackSeed = 131L
+            source = calmTracks + activeArtistTracks + likedTracks + newestTracks,
+            fallbackSeed = 131L,
+            family = DailyMixFamily.Mood
         ),
         card(
-            id = "deep",
-            title = "Deep Cuts",
-            hint = "Less obvious pulls",
-            source = newestTracks.drop(8) + libraryTracks.asReversed(),
-            fallbackSeed = 211L
+            id = "energy",
+            title = "High Energy",
+            hint = "Fast, loud, and bright",
+            source = energyTracks + shortTracks + likedTracks,
+            fallbackSeed = 173L,
+            family = DailyMixFamily.Mood
+        ),
+        card(
+            id = "rain",
+            title = "Rainy Day",
+            hint = "Moody library drift",
+            source = calmTracks + lessRecentTracks + activeRelatedTracks,
+            fallbackSeed = 211L,
+            family = DailyMixFamily.Mood
+        ),
+        card(
+            id = "chaos",
+            title = "Chaos Shuffle",
+            hint = "Anything can happen",
+            source = libraryTracks.homeMix(seed + 313L),
+            fallbackSeed = 313L,
+            family = DailyMixFamily.Mood
         )
-    ).distinctBy { it.id }.take(4)
+    ).distinctBy { it.id }
+}
+
+private fun buildBecauseYouPlayedTracks(
+    tracks: List<MusicTrack>,
+    seed: MusicTrack,
+    likedTrackIds: Set<String>,
+    recentTrackIds: List<String>
+): List<MusicTrack> =
+    tracks.relatedToSeed(seed, likedTrackIds, recentTrackIds)
+        .take(14)
+
+private fun buildSongRadioQueue(
+    tracks: List<MusicTrack>,
+    source: List<MusicTrack>,
+    seed: MusicTrack,
+    likedTrackIds: Set<String>,
+    recentTrackIds: List<String>,
+    smartShuffleEnabled: Boolean
+): List<MusicTrack> {
+    val ranked = (source + tracks)
+        .distinctBy { it.id }
+        .relatedToSeed(seed, likedTrackIds, recentTrackIds)
+        .take(80)
+    val fallback = tracks
+        .filterNot { it.id == seed.id }
+        .homeMix(seed.id.hashCode().toLong() + todayHomeSeed())
+    val tailSource = (ranked + fallback).distinctBy { it.id }.filterNot { it.id == seed.id }
+    val tail = if (smartShuffleEnabled) {
+        tailSource.smartShufflePlaybackQueue(
+            likedTrackIds = likedTrackIds,
+            recentTrackIds = recentTrackIds,
+            seed = seed.id.hashCode().toLong() + 404L
+        )
+    } else {
+        tailSource.randomizedPlaybackQueue()
+    }
+    return (listOf(seed) + tail).distinctBy { it.id }.take(50)
+}
+
+private fun buildQueueEndRecommendations(
+    tracks: List<MusicTrack>,
+    seed: MusicTrack,
+    likedTrackIds: Set<String>,
+    recentTrackIds: List<String>,
+    queueHistoryTrackIds: List<String>,
+    smartShuffleEnabled: Boolean,
+    fewerRepeatsEnabled: Boolean,
+    djEnabled: Boolean
+): List<MusicTrack> {
+    val libraryTracks = tracks.distinctBy { it.id }.filterNot { it.id == seed.id }
+    if (libraryTracks.isEmpty()) return emptyList()
+    val repeatMemory = if (fewerRepeatsEnabled) {
+        (recentTrackIds.take(80) + queueHistoryTrackIds.take(140)).toSet()
+    } else {
+        recentTrackIds.take(12).toSet()
+    }
+    val relatedTracks = libraryTracks
+        .relatedToSeed(seed, likedTrackIds, recentTrackIds + queueHistoryTrackIds)
+        .filterNot { it.id in repeatMemory }
+    val favoriteTracks = libraryTracks
+        .filter { it.id in likedTrackIds && it.id !in repeatMemory }
+    val discoveryTracks = libraryTracks
+        .filterNot { it.id in repeatMemory || it.artist.equals(seed.artist, ignoreCase = true) }
+        .homeMix(seed.id.hashCode().toLong() + todayHomeSeed() + 991L)
+    val source = (relatedTracks + favoriteTracks + discoveryTracks)
+        .distinctBy { it.id }
+        .ifEmpty {
+            libraryTracks
+                .filterNot { it.id in recentTrackIds.take(10) }
+                .ifEmpty { libraryTracks }
+        }
+    val queue = if (smartShuffleEnabled) {
+        source.smartShufflePlaybackQueue(
+            likedTrackIds = likedTrackIds,
+            recentTrackIds = recentTrackIds,
+            queueHistoryTrackIds = queueHistoryTrackIds,
+            fewerRepeatsEnabled = fewerRepeatsEnabled,
+            seed = seed.id.hashCode().toLong() + todayHomeSeed() + if (djEnabled) 1_503L else 1_157L
+        )
+    } else {
+        source.randomizedPlaybackQueue()
+    }
+    return queue.take(if (djEnabled) 32 else 20)
+}
+
+private fun djRecommendationMessage(seed: MusicTrack, nextTrack: MusicTrack): String {
+    val nextArtist = nextTrack.artist.takeIf { it.isNotBlank() } ?: "your library"
+    return when (abs(seed.id.hashCode() xor nextTrack.id.hashCode()) % 4) {
+        0 -> "DJ picked a new lane with $nextArtist"
+        1 -> "DJ is keeping it close to ${seed.artist.ifBlank { seed.title }}"
+        2 -> "DJ found a fresher queue"
+        else -> "DJ switched the vibe to $nextArtist"
+    }
+}
+
+private fun List<MusicTrack>.relatedToSeed(
+    seed: MusicTrack,
+    likedTrackIds: Set<String>,
+    recentTrackIds: List<String>
+): List<MusicTrack> {
+    val seedTokens = seed.similarityTokens()
+    val recentRank = recentTrackIds.distinct().take(100).withIndex().associate { it.value to it.index }
+    return distinctBy { it.id }
+        .filterNot { it.id == seed.id }
+        .map { track ->
+            val sharedTokens = track.similarityTokens().intersect(seedTokens).size
+            var score = 0f
+            if (track.artist.equals(seed.artist, ignoreCase = true)) score += 60f
+            if (track.album.equals(seed.album, ignoreCase = true)) score += 44f
+            score += sharedTokens * 9f
+            if (track.id in likedTrackIds) score += 12f
+            recentRank[track.id]?.let { index -> score += (18f - index * 0.3f).coerceAtLeast(1f) }
+            if (track.durationMs > 0L && seed.durationMs > 0L) {
+                val ratio = (minOf(track.durationMs, seed.durationMs).toFloat() / maxOf(track.durationMs, seed.durationMs).toFloat())
+                score += ratio * 8f
+            }
+            if (score <= 0f) {
+                score = (track.id.hashCode() and 0xFF) / 255f
+            }
+            track to score
+        }
+        .sortedWith(
+            compareByDescending<Pair<MusicTrack, Float>> { it.second }
+                .thenBy { it.first.artist.lowercase(Locale.getDefault()) }
+                .thenBy { it.first.album.lowercase(Locale.getDefault()) }
+                .thenBy { it.first.title.lowercase(Locale.getDefault()) }
+        )
+        .map { it.first }
 }
 
 private fun todayHomeSeed(): Long =
@@ -18258,6 +18462,103 @@ private fun List<MusicTrack>.randomizedPlaybackQueue(): List<MusicTrack> {
     Collections.shuffle(queue, java.util.Random(seed))
     return queue
 }
+
+private fun List<MusicTrack>.smartShufflePlaybackQueue(
+    likedTrackIds: Set<String>,
+    recentTrackIds: List<String>,
+    queueHistoryTrackIds: List<String> = emptyList(),
+    fewerRepeatsEnabled: Boolean = true,
+    seed: Long = SystemClock.elapsedRealtimeNanos() xor java.lang.System.nanoTime()
+): List<MusicTrack> {
+    val remaining = distinctBy { it.id }.toMutableList()
+    if (remaining.size <= 2) return remaining.randomizedPlaybackQueue()
+
+    val random = java.util.Random(seed)
+    val repeatMemoryIds = if (fewerRepeatsEnabled) {
+        (recentTrackIds.take(120) + queueHistoryTrackIds.take(180)).distinct()
+    } else {
+        recentTrackIds.take(24).distinct()
+    }
+    val recentRank = repeatMemoryIds.withIndex().associate { it.value to it.index }
+    val recentArtists = if (fewerRepeatsEnabled) {
+        repeatMemoryIds
+            .mapNotNull { id -> remaining.firstOrNull { it.id == id }?.artist?.lowercase(Locale.getDefault()) }
+            .groupingBy { it }
+            .eachCount()
+    } else {
+        emptyMap()
+    }
+    val result = mutableListOf<MusicTrack>()
+
+    fun MusicTrack.smartScore(previous: MusicTrack?): Float {
+        var score = random.nextFloat() * 18f
+        if (id in likedTrackIds) score += 12f
+        recentRank[id]?.let { index ->
+            val repeatPenalty = if (fewerRepeatsEnabled) 34f - index * 0.16f else 18f - index * 0.22f
+            score -= repeatPenalty.coerceAtLeast(1f)
+        }
+        if (fewerRepeatsEnabled) {
+            score -= (recentArtists[artist.lowercase(Locale.getDefault())] ?: 0) * 2.8f
+        }
+        if (previous != null && artist.equals(previous.artist, ignoreCase = true)) score -= 36f
+        if (previous != null && album.equals(previous.album, ignoreCase = true)) score += 7f
+        if (dateAddedMs > 0L) {
+            val ageDays = ((System.currentTimeMillis() - dateAddedMs).coerceAtLeast(0L) / 86_400_000L).toInt()
+            if (ageDays <= 45) score += 3f
+        }
+        return score
+    }
+
+    while (remaining.isNotEmpty()) {
+        val previous = result.lastOrNull()
+        val next = remaining
+            .sortedByDescending { it.smartScore(previous) }
+            .take(10)
+            .let { topChoices -> topChoices[random.nextInt(topChoices.size)] }
+        result += next
+        remaining.removeAll { it.id == next.id }
+
+        val albumNeighbor = remaining.firstOrNull {
+            result.size > 1 &&
+                it.album.equals(next.album, ignoreCase = true) &&
+                !it.artist.equals(previous?.artist.orEmpty(), ignoreCase = true)
+        }
+        if (albumNeighbor != null && random.nextFloat() < 0.24f) {
+            result += albumNeighbor
+            remaining.removeAll { it.id == albumNeighbor.id }
+        }
+    }
+    return result
+}
+
+private fun MusicTrack.searchText(): String =
+    "$title $artist $album".lowercase(Locale.getDefault())
+
+private fun String.containsAnyToken(vararg tokens: String): Boolean =
+    tokens.any { contains(it, ignoreCase = true) }
+
+private fun MusicTrack.similarityTokens(): Set<String> =
+    searchText()
+        .split(Regex("[^a-z0-9]+"))
+        .filter { token -> token.length >= 4 && token !in CommonSimilarityTokens }
+        .toSet()
+
+private val CommonSimilarityTokens = setOf(
+    "feat",
+    "with",
+    "from",
+    "official",
+    "remaster",
+    "remastered",
+    "version",
+    "edit",
+    "explicit",
+    "album",
+    "single",
+    "music",
+    "audio",
+    "original"
+)
 
 private fun List<MusicTrack>.queueStartingAt(track: MusicTrack): List<MusicTrack> {
     if (isEmpty()) return emptyList()
