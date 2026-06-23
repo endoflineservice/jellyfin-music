@@ -671,6 +671,8 @@ private const val AUTO_ALBUM_PREFIX = "auto:album:"
 private const val AUTO_ARTIST_PREFIX = "auto:artist:"
 private const val AUTO_PLAYLIST_PREFIX = "auto:playlist:"
 private const val AUTO_MAX_TOP_LEVEL_ITEMS = 500
+private const val AUTO_NOW_PLAYING_ART_SIZE = 320
+private const val AUTO_BROWSE_ART_SIZE = 256
 
 private data class PlaybackActionHandlers(
     val onPlay: () -> Unit,
@@ -999,14 +1001,14 @@ class AutoMediaBrowserService : MediaBrowserService() {
             parentId == AUTO_ROOT_ID -> buildAutoRootItems(session, tracks)
             parentId == AUTO_SONGS_ID -> tracks
                 .take(AUTO_MAX_TOP_LEVEL_ITEMS)
-                .map { it.toAutoTrackItem(session) }
+                .map { it.toAutoTrackItem(applicationContext, session) }
             parentId == AUTO_FAVORITES_ID -> {
                 val activeSession = session ?: return emptyList()
                 val tracksById = tracks.associateBy { it.id }
                 loadLikedTrackIds(applicationContext, activeSession)
                     .mapNotNull { tracksById[it] }
                     .take(AUTO_MAX_TOP_LEVEL_ITEMS)
-                    .map { it.toAutoTrackItem(session) }
+                    .map { it.toAutoTrackItem(applicationContext, session) }
             }
             parentId == AUTO_RECENT_ID -> {
                 val activeSession = session ?: return emptyList()
@@ -1014,43 +1016,43 @@ class AutoMediaBrowserService : MediaBrowserService() {
                 loadRecentTrackIds(applicationContext, activeSession)
                     .mapNotNull { tracksById[it] }
                     .take(AUTO_MAX_TOP_LEVEL_ITEMS)
-                    .map { it.toAutoTrackItem(session) }
+                    .map { it.toAutoTrackItem(applicationContext, session) }
             }
             parentId == AUTO_RECENTLY_ADDED_ID -> tracks
                 .filter { it.dateAddedMs > 0L }
                 .sortedByDescending { it.dateAddedMs }
                 .take(AUTO_MAX_TOP_LEVEL_ITEMS)
-                .map { it.toAutoTrackItem(session) }
+                .map { it.toAutoTrackItem(applicationContext, session) }
             parentId == AUTO_OFFLINE_ID -> {
                 val activeSession = session ?: return emptyList()
                 val offlineTrackIds = loadOfflineDownloads(applicationContext, activeSession).keys
                 tracks
                     .filter { it.id in offlineTrackIds }
                     .take(AUTO_MAX_TOP_LEVEL_ITEMS)
-                    .map { it.toAutoTrackItem(session) }
+                    .map { it.toAutoTrackItem(applicationContext, session) }
             }
             parentId == AUTO_ALBUMS_ID -> tracks
                 .groupByAlbum()
                 .take(AUTO_MAX_TOP_LEVEL_ITEMS)
-                .map { it.toAutoGroupItem(AUTO_ALBUM_PREFIX, MediaBrowser.MediaItem.FLAG_BROWSABLE, session) }
+                .map { it.toAutoGroupItem(applicationContext, AUTO_ALBUM_PREFIX, MediaBrowser.MediaItem.FLAG_BROWSABLE, session) }
             parentId == AUTO_ARTISTS_ID -> tracks
                 .groupByArtist()
                 .take(AUTO_MAX_TOP_LEVEL_ITEMS)
-                .map { it.toAutoGroupItem(AUTO_ARTIST_PREFIX, MediaBrowser.MediaItem.FLAG_BROWSABLE, session) }
+                .map { it.toAutoGroupItem(applicationContext, AUTO_ARTIST_PREFIX, MediaBrowser.MediaItem.FLAG_BROWSABLE, session) }
             parentId == AUTO_PLAYLISTS_ID -> {
                 val activeSession = session ?: return emptyList()
                 loadLocalPlaylists(applicationContext, activeSession)
                     .withGeneratedFavoritesPlaylist(loadLikedTrackIds(applicationContext, activeSession))
                     .toLibraryGroups(tracks)
                     .take(AUTO_MAX_TOP_LEVEL_ITEMS)
-                    .map { it.toAutoGroupItem(AUTO_PLAYLIST_PREFIX, MediaBrowser.MediaItem.FLAG_BROWSABLE, session) }
+                    .map { it.toAutoGroupItem(applicationContext, AUTO_PLAYLIST_PREFIX, MediaBrowser.MediaItem.FLAG_BROWSABLE, session) }
             }
             parentId.startsWith(AUTO_ALBUM_PREFIX) -> {
                 val album = Uri.decode(parentId.removePrefix(AUTO_ALBUM_PREFIX))
                 tracks
                     .filter { it.album.equals(album, ignoreCase = true) }
                     .sortedWith(MusicTrackSort)
-                    .map { it.toAutoTrackItem(session) }
+                    .map { it.toAutoTrackItem(applicationContext, session) }
             }
             parentId.startsWith(AUTO_ARTIST_PREFIX) -> {
                 val artist = Uri.decode(parentId.removePrefix(AUTO_ARTIST_PREFIX))
@@ -1062,7 +1064,7 @@ class AutoMediaBrowserService : MediaBrowserService() {
                             { it.title.lowercase(Locale.getDefault()) }
                         )
                     )
-                    .map { it.toAutoTrackItem(session) }
+                    .map { it.toAutoTrackItem(applicationContext, session) }
             }
             parentId.startsWith(AUTO_PLAYLIST_PREFIX) -> {
                 val activeSession = session ?: return emptyList()
@@ -1074,7 +1076,7 @@ class AutoMediaBrowserService : MediaBrowserService() {
                 val tracksById = tracks.associateBy { it.id }
                 playlist.trackIds
                     .mapNotNull { tracksById[it] }
-                    .map { it.toAutoTrackItem(session) }
+                    .map { it.toAutoTrackItem(applicationContext, session) }
             }
             else -> emptyList()
         }
@@ -1321,8 +1323,8 @@ class AutoMediaBrowserService : MediaBrowserService() {
         val snapshot = player.playbackSnapshot
         val track = snapshot.track
         if (track != null) {
-            val imageUrl = track.imageUrl(snapshot.session, size = 512, quality = 84)
-            val cachedArt = imageUrl?.let { AlbumArtCache[it] }
+            val imageUrl = track.imageUrl(snapshot.session, size = AUTO_NOW_PLAYING_ART_SIZE, quality = 82)
+            val cachedArt = cachedAutoAlbumArt(applicationContext, imageUrl, AUTO_NOW_PLAYING_ART_SIZE)
             if (cachedArt != null && autoAlbumArtTrackId != track.id) {
                 autoAlbumArt = cachedArt
                 autoAlbumArtTrackId = track.id
@@ -1334,6 +1336,9 @@ class AutoMediaBrowserService : MediaBrowserService() {
                     .putString(MediaMetadata.METADATA_KEY_TITLE, track.title)
                     .putString(MediaMetadata.METADATA_KEY_ARTIST, track.artist)
                     .putString(MediaMetadata.METADATA_KEY_ALBUM, track.album)
+                    .putString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE, track.title)
+                    .putString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE, track.artist)
+                    .putString(MediaMetadata.METADATA_KEY_DISPLAY_DESCRIPTION, track.album)
                     .putLong(MediaMetadata.METADATA_KEY_DURATION, track.durationMs.coerceAtLeast(0L))
                     .apply {
                         imageUrl?.let { imageUrl ->
@@ -1397,8 +1402,8 @@ class AutoMediaBrowserService : MediaBrowserService() {
     private fun loadAutoAlbumArtIfNeeded(track: MusicTrack, session: JellyfinSession?) {
         val activeSession = session ?: return
         if (autoAlbumArtTrackId == track.id || loadingAutoAlbumArtTrackId == track.id) return
-        val imageUrl = track.imageUrl(activeSession, size = 512, quality = 84) ?: return
-        AlbumArtCache[imageUrl]?.let { cached ->
+        val imageUrl = track.imageUrl(activeSession, size = AUTO_NOW_PLAYING_ART_SIZE, quality = 82) ?: return
+        cachedAutoAlbumArt(applicationContext, imageUrl, AUTO_NOW_PLAYING_ART_SIZE)?.let { cached ->
             autoAlbumArt = cached
             autoAlbumArtTrackId = track.id
             return
@@ -1411,7 +1416,7 @@ class AutoMediaBrowserService : MediaBrowserService() {
                 token = activeSession.token,
                 connectTimeoutMs = 2_500,
                 readTimeoutMs = 4_000
-            )
+            )?.scaledForMediaSession(AUTO_NOW_PLAYING_ART_SIZE)
             serviceHandler.post {
                 loadingAutoAlbumArtTrackId = null
                 val currentTrack = autoPlayer().currentTrack
@@ -15172,20 +15177,7 @@ private fun WavySeekBar(
         trackThickness = 5.dp,
         incremental = false,
         thumb = {
-            Box(
-                modifier = Modifier
-                    .size(24.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary),
-                contentAlignment = Alignment.Center
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.onPrimary)
-                )
-            }
+            Spacer(Modifier.size(24.dp))
         }
     )
 }
@@ -18537,16 +18529,47 @@ private fun LocalPlaylist.resolveTracks(tracks: List<MusicTrack>): List<MusicTra
     return trackIds.mapNotNull { tracksById[it] }
 }
 
-private fun MusicTrack.toAutoTrackItem(session: JellyfinSession?): MediaBrowser.MediaItem =
+private fun cachedAutoAlbumArt(context: Context, imageUrl: String?, maxEdge: Int): Bitmap? {
+    if (imageUrl.isNullOrBlank()) return null
+    val cached = AlbumArtCache[imageUrl]
+        ?: loadAlbumBitmapFromDisk(context, imageUrl)?.also { AlbumArtCache[imageUrl] = it }
+    val normalized = cached?.scaledForMediaSession(maxEdge) ?: return null
+    if (normalized !== cached) {
+        AlbumArtCache[imageUrl] = normalized
+    }
+    return normalized
+}
+
+private fun Bitmap.scaledForMediaSession(maxEdge: Int): Bitmap {
+    val largestEdge = maxOf(width, height)
+    val scaled = if (largestEdge > maxEdge && largestEdge > 0) {
+        val scale = maxEdge.toFloat() / largestEdge.toFloat()
+        Bitmap.createScaledBitmap(
+            this,
+            (width * scale).roundToInt().coerceAtLeast(1),
+            (height * scale).roundToInt().coerceAtLeast(1),
+            true
+        )
+    } else {
+        this
+    }
+    return if (scaled.config == Bitmap.Config.ARGB_8888) {
+        scaled
+    } else {
+        scaled.copy(Bitmap.Config.ARGB_8888, false) ?: scaled
+    }
+}
+
+private fun MusicTrack.toAutoTrackItem(context: Context, session: JellyfinSession?): MediaBrowser.MediaItem =
     MediaBrowser.MediaItem(
         MediaDescription.Builder()
             .setMediaId("$AUTO_TRACK_PREFIX$id")
             .setTitle(title)
             .setSubtitle(notificationSubtitle())
             .apply {
-                imageUrl(session, size = 256, quality = 78)?.let { imageUrl ->
+                imageUrl(session, size = AUTO_BROWSE_ART_SIZE, quality = 78)?.let { imageUrl ->
                     setIconUri(Uri.parse(imageUrl))
-                    AlbumArtCache[imageUrl]?.let { setIconBitmap(it) }
+                    cachedAutoAlbumArt(context, imageUrl, AUTO_BROWSE_ART_SIZE)?.let { setIconBitmap(it) }
                 }
             }
             .build(),
@@ -18554,6 +18577,7 @@ private fun MusicTrack.toAutoTrackItem(session: JellyfinSession?): MediaBrowser.
     )
 
 private fun LibraryGroup.toAutoGroupItem(
+    context: Context,
     prefix: String,
     flags: Int,
     session: JellyfinSession?
@@ -18565,10 +18589,10 @@ private fun LibraryGroup.toAutoGroupItem(
             .setSubtitle(subtitle)
             .apply {
                 tracks.firstOrNull()
-                    ?.imageUrl(session, size = 256, quality = 78)
+                    ?.imageUrl(session, size = AUTO_BROWSE_ART_SIZE, quality = 78)
                     ?.let { imageUrl ->
                         setIconUri(Uri.parse(imageUrl))
-                        AlbumArtCache[imageUrl]?.let { setIconBitmap(it) }
+                        cachedAutoAlbumArt(context, imageUrl, AUTO_BROWSE_ART_SIZE)?.let { setIconBitmap(it) }
                     }
             }
             .build(),
