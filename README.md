@@ -65,7 +65,7 @@ app/build/outputs/apk/debug/app-debug.apk
 The current shareable release APK, icon images, and release screenshots are tracked under:
 
 ```text
-release-assets/0.1.4-v8/
+release-assets/0.1.5-v9/
 ```
 
 ## Contributing

@@ -501,6 +501,9 @@ private const val ALBUM_ART_CACHE_DIR = "album_art_cache"
 private const val OFFLINE_DOWNLOAD_DIR = "offline_audio"
 private const val MAX_ALBUM_ART_CACHE_FILES = 128
 private const val DEFAULT_OFFLINE_STORAGE_LIMIT_MB = 1024
+private const val DAILY_MIX_MAX_SOURCE_TRACKS = 180
+private const val SMART_SHUFFLE_CANDIDATE_SAMPLE_SIZE = 48
+private const val SMART_SHUFFLE_TOP_CHOICE_COUNT = 8
 private const val DEFAULT_CROSSFADE_DURATION_SECONDS = 5
 private const val MIN_CROSSFADE_DURATION_SECONDS = 1
 private const val MAX_CROSSFADE_DURATION_SECONDS = 12
@@ -17949,6 +17952,24 @@ private fun buildDailyMixCards(
         track.searchText().containsAnyToken("dance", "party", "rock", "remix", "club", "fire", "power", "fast", "high")
     }
 
+    fun limitedMixSource(source: List<MusicTrack>, fallbackSeed: Long): List<MusicTrack> {
+        val sourceSample = source
+            .distinctBy { it.id }
+            .let { uniqueSource ->
+                if (uniqueSource.size <= DAILY_MIX_MAX_SOURCE_TRACKS) {
+                    uniqueSource
+                } else {
+                    uniqueSource.homeMix(seed + fallbackSeed * 37L).take(DAILY_MIX_MAX_SOURCE_TRACKS)
+                }
+            }
+        val fallbackSample = libraryTracks
+            .homeMix(seed + fallbackSeed)
+            .take(DAILY_MIX_MAX_SOURCE_TRACKS)
+        return (sourceSample + fallbackSample)
+            .distinctBy { it.id }
+            .take(DAILY_MIX_MAX_SOURCE_TRACKS * 2)
+    }
+
     fun card(
         id: String,
         title: String,
@@ -17957,8 +17978,7 @@ private fun buildDailyMixCards(
         fallbackSeed: Long,
         family: DailyMixFamily = DailyMixFamily.MadeForYou
     ): DailyMixCardSpec? {
-        val queue = (source + libraryTracks.homeMix(seed + fallbackSeed))
-            .distinctBy { it.id }
+        val queue = limitedMixSource(source, fallbackSeed)
             .smartShufflePlaybackQueue(
                 likedTrackIds = likedTrackIds,
                 recentTrackIds = recentTrackIds,
@@ -18490,6 +18510,19 @@ private fun List<MusicTrack>.smartShufflePlaybackQueue(
     }
     val result = mutableListOf<MusicTrack>()
 
+    fun candidateSample(): List<MusicTrack> {
+        if (remaining.size <= SMART_SHUFFLE_CANDIDATE_SAMPLE_SIZE) return remaining
+        val usedIndexes = HashSet<Int>(SMART_SHUFFLE_CANDIDATE_SAMPLE_SIZE)
+        val candidates = ArrayList<MusicTrack>(SMART_SHUFFLE_CANDIDATE_SAMPLE_SIZE)
+        while (candidates.size < SMART_SHUFFLE_CANDIDATE_SAMPLE_SIZE) {
+            val index = random.nextInt(remaining.size)
+            if (usedIndexes.add(index)) {
+                candidates += remaining[index]
+            }
+        }
+        return candidates
+    }
+
     fun MusicTrack.smartScore(previous: MusicTrack?): Float {
         var score = random.nextFloat() * 18f
         if (id in likedTrackIds) score += 12f
@@ -18511,9 +18544,9 @@ private fun List<MusicTrack>.smartShufflePlaybackQueue(
 
     while (remaining.isNotEmpty()) {
         val previous = result.lastOrNull()
-        val next = remaining
+        val next = candidateSample()
             .sortedByDescending { it.smartScore(previous) }
-            .take(10)
+            .take(SMART_SHUFFLE_TOP_CHOICE_COUNT)
             .let { topChoices -> topChoices[random.nextInt(topChoices.size)] }
         result += next
         remaining.removeAll { it.id == next.id }
