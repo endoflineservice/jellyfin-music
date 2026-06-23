@@ -254,10 +254,30 @@ class MainActivity : ComponentActivity() {
         setTheme(R.style.AppTheme)
         applySystemBarStyle(isSystemDarkMode())
         super.onCreate(savedInstanceState)
-        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        allowScreenTimeout()
         setContent {
+            SideEffect {
+                allowScreenTimeout()
+            }
             JellyfinMusicRoot()
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        allowScreenTimeout()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            allowScreenTimeout()
+        }
+    }
+
+    private fun allowScreenTimeout() {
+        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window.decorView.keepScreenOn = false
     }
 
     fun applySystemBarStyle(darkTheme: Boolean) {
@@ -497,7 +517,7 @@ private const val PLAYBACK_DISPLAY_PROGRESS_SMOOTH_MS = 620
 private const val ALBUM_THEME_COLOR_TRANSITION_MS = 850
 private const val VISUALIZER_BAR_COUNT = 32
 private const val VISUALIZER_FALLBACK_FRAME_MS = 48L
-private const val WIDGET_PROGRESS_UPDATE_MS = 1_000L
+private const val WIDGET_PROGRESS_UPDATE_MS = 30_000L
 private const val EQUALIZER_BAND_COUNT = 5
 private const val DEFAULT_CONNECT_TIMEOUT_MS = 8_000
 private const val DEFAULT_READ_TIMEOUT_MS = 15_000
@@ -880,6 +900,9 @@ class AutoMediaBrowserService : MediaBrowserService() {
     private var autoQueue: List<MusicTrack> = emptyList()
     private var autoShuffleEnabled = false
     private var autoRepeatEnabled = false
+    private var autoAlbumArt: Bitmap? = null
+    private var autoAlbumArtTrackId: String? = null
+    private var loadingAutoAlbumArtTrackId: String? = null
     private var statePumpRunning = false
     private val statePump = object : Runnable {
         override fun run() {
@@ -1158,6 +1181,9 @@ class AutoMediaBrowserService : MediaBrowserService() {
     private fun playFromAutoMediaId(mediaId: String?) {
         val (session, tracks) = loadAutoTracks()
         if (session == null || tracks.isEmpty() || mediaId.isNullOrBlank()) return
+        if (mediaId == AUTO_SHUFFLE_ALL_ID) {
+            autoShuffleEnabled = true
+        }
         val queue = when {
             mediaId.startsWith(AUTO_TRACK_PREFIX) -> {
                 val trackId = mediaId.removePrefix(AUTO_TRACK_PREFIX)
@@ -1295,6 +1321,13 @@ class AutoMediaBrowserService : MediaBrowserService() {
         val snapshot = player.playbackSnapshot
         val track = snapshot.track
         if (track != null) {
+            val imageUrl = track.imageUrl(snapshot.session, size = 512, quality = 84)
+            val cachedArt = imageUrl?.let { AlbumArtCache[it] }
+            if (cachedArt != null && autoAlbumArtTrackId != track.id) {
+                autoAlbumArt = cachedArt
+                autoAlbumArtTrackId = track.id
+            }
+            val currentArt = autoAlbumArt.takeIf { autoAlbumArtTrackId == track.id } ?: cachedArt
             autoSession.setMetadata(
                 MediaMetadata.Builder()
                     .putString(MediaMetadata.METADATA_KEY_MEDIA_ID, "$AUTO_TRACK_PREFIX${track.id}")
@@ -1303,13 +1336,20 @@ class AutoMediaBrowserService : MediaBrowserService() {
                     .putString(MediaMetadata.METADATA_KEY_ALBUM, track.album)
                     .putLong(MediaMetadata.METADATA_KEY_DURATION, track.durationMs.coerceAtLeast(0L))
                     .apply {
-                        track.imageUrl(snapshot.session, size = 512, quality = 84)?.let { imageUrl ->
+                        imageUrl?.let { imageUrl ->
                             putString(MediaMetadata.METADATA_KEY_ART_URI, imageUrl)
                             putString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI, imageUrl)
+                            putString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI, imageUrl)
+                        }
+                        currentArt?.let { bitmap ->
+                            putBitmap(MediaMetadata.METADATA_KEY_ART, bitmap)
+                            putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, bitmap)
+                            putBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON, bitmap)
                         }
                     }
                     .build()
             )
+            loadAutoAlbumArtIfNeeded(track, snapshot.session)
         }
         val position = track?.let { snapshot.livePositionMs } ?: PlaybackState.PLAYBACK_POSITION_UNKNOWN
         val trackIsFavorite = track != null &&
@@ -1329,29 +1369,59 @@ class AutoMediaBrowserService : MediaBrowserService() {
                 )
                 .addCustomAction(
                     PlaybackState.CustomAction.Builder(
+                        PLAYBACK_ACTION_FAVORITE,
+                        if (trackIsFavorite) "Unfavorite" else "Favorite",
+                        if (trackIsFavorite) R.drawable.auto_icon_favorite_filled else R.drawable.auto_icon_favorite_outline
+                    ).build()
+                )
+                .addCustomAction(
+                    PlaybackState.CustomAction.Builder(
                         PLAYBACK_ACTION_SHUFFLE,
                         if (autoShuffleEnabled) "Shuffle on" else "Shuffle off",
-                        android.R.drawable.ic_menu_rotate
+                        R.drawable.auto_icon_shuffle
                     ).build()
                 )
                 .addCustomAction(
                     PlaybackState.CustomAction.Builder(
                         PLAYBACK_ACTION_REPEAT,
                         if (autoRepeatEnabled) "Repeat on" else "Repeat off",
-                        android.R.drawable.ic_menu_revert
-                    ).build()
-                )
-                .addCustomAction(
-                    PlaybackState.CustomAction.Builder(
-                        PLAYBACK_ACTION_FAVORITE,
-                        if (trackIsFavorite) "Unfavorite" else "Favorite",
-                        if (trackIsFavorite) android.R.drawable.star_big_on else android.R.drawable.star_big_off
+                        R.drawable.auto_icon_repeat
                     ).build()
                 )
                 .setState(snapshot.androidPlaybackState(), position, if (snapshot.isPlaying) 1f else 0f, snapshot.updatedAtMs)
                 .build()
         )
         autoSession.isActive = true
+    }
+
+    private fun loadAutoAlbumArtIfNeeded(track: MusicTrack, session: JellyfinSession?) {
+        val activeSession = session ?: return
+        if (autoAlbumArtTrackId == track.id || loadingAutoAlbumArtTrackId == track.id) return
+        val imageUrl = track.imageUrl(activeSession, size = 512, quality = 84) ?: return
+        AlbumArtCache[imageUrl]?.let { cached ->
+            autoAlbumArt = cached
+            autoAlbumArtTrackId = track.id
+            return
+        }
+        loadingAutoAlbumArtTrackId = track.id
+        thread(name = "jellyfin-auto-art", isDaemon = true) {
+            val bitmap = loadAlbumBitmapBlocking(
+                context = applicationContext,
+                imageUrl = imageUrl,
+                token = activeSession.token,
+                connectTimeoutMs = 2_500,
+                readTimeoutMs = 4_000
+            )
+            serviceHandler.post {
+                loadingAutoAlbumArtTrackId = null
+                val currentTrack = autoPlayer().currentTrack
+                if (bitmap != null && currentTrack?.id == track.id) {
+                    autoAlbumArt = bitmap
+                    autoAlbumArtTrackId = track.id
+                    publishAutoSessionState()
+                }
+            }
+        }
     }
 
     private fun startStatePump() {
@@ -1581,13 +1651,13 @@ private class PlaybackNotificationController(context: Context) {
             )
         }
         if (actionSettings.showFavorite) {
-            addNotificationAction(android.R.drawable.star_big_off, "Favorite", PLAYBACK_ACTION_FAVORITE, 6)
+            addNotificationAction(R.drawable.auto_icon_favorite_outline, "Favorite", PLAYBACK_ACTION_FAVORITE, 6)
         }
         if (actionSettings.showShuffle) {
-            addNotificationAction(android.R.drawable.ic_menu_rotate, "Shuffle", PLAYBACK_ACTION_SHUFFLE, 7)
+            addNotificationAction(R.drawable.auto_icon_shuffle, "Shuffle", PLAYBACK_ACTION_SHUFFLE, 7)
         }
         if (actionSettings.showRepeat) {
-            addNotificationAction(android.R.drawable.ic_menu_revert, "Repeat", PLAYBACK_ACTION_REPEAT, 8)
+            addNotificationAction(R.drawable.auto_icon_repeat, "Repeat", PLAYBACK_ACTION_REPEAT, 8)
         }
         if (actionSettings.showDownload) {
             addNotificationAction(android.R.drawable.stat_sys_download_done, "Download", PLAYBACK_ACTION_DOWNLOAD, 9)
@@ -1645,21 +1715,21 @@ private class PlaybackNotificationController(context: Context) {
                     PlaybackState.CustomAction.Builder(
                         PLAYBACK_ACTION_SHUFFLE,
                         "Shuffle",
-                        android.R.drawable.ic_menu_rotate
+                        R.drawable.auto_icon_shuffle
                     ).build()
                 )
                 .addCustomAction(
                     PlaybackState.CustomAction.Builder(
                         PLAYBACK_ACTION_REPEAT,
                         "Repeat",
-                        android.R.drawable.ic_menu_revert
+                        R.drawable.auto_icon_repeat
                     ).build()
                 )
                 .addCustomAction(
                     PlaybackState.CustomAction.Builder(
                         PLAYBACK_ACTION_FAVORITE,
                         "Favorite",
-                        android.R.drawable.star_big_off
+                        R.drawable.auto_icon_favorite_outline
                     ).build()
                 )
                 .setState(
@@ -2826,11 +2896,13 @@ private fun JellyfinMusicApp() {
         session?.let { activeSession ->
             val randomizedQueue = source.randomizedPlaybackQueue()
             val firstTrack = randomizedQueue.firstOrNull() ?: return
+            shuffleEnabled = true
             playTrackFromQueue(firstTrack, randomizedQueue, activeSession, openPlayer = true)
+            statusText = "Shuffle started"
         }
     }
 
-    fun playAdjacent(offset: Int) {
+    fun playAdjacent(offset: Int, openPlayer: Boolean = true) {
         val activeTrack = player.currentTrack ?: return
         val activeSession = session ?: return
         val baseQueue = playQueue
@@ -2843,7 +2915,7 @@ private fun JellyfinMusicApp() {
         } else {
             (offset + baseQueue.size) % baseQueue.size
         }
-        playTrackFromQueue(baseQueue[nextIndex], baseQueue, activeSession, openPlayer = true)
+        playTrackFromQueue(baseQueue[nextIndex], baseQueue, activeSession, openPlayer = openPlayer)
     }
 
     fun playQueuedTrack(track: MusicTrack) {
@@ -3204,7 +3276,7 @@ private fun JellyfinMusicApp() {
                 showPlayer = false
                 statusText = "Stopped after current track"
             } else {
-                playAdjacent(1)
+                playAdjacent(1, openPlayer = false)
             }
             true
         }
@@ -3254,7 +3326,7 @@ private fun JellyfinMusicApp() {
     LaunchedEffect(player.currentTrack, player.isPlaying) {
         while (true) {
             player.syncProgress()
-            delay(500)
+            delay(if (player.isPlaying) 2_500 else 1_000)
         }
     }
 
@@ -7104,6 +7176,7 @@ private fun EqualizerSettingsCard(
     onAudioOutputSettingsChange: (AudioOutputSettings) -> Unit
 ) {
     val levels = settings.normalizedLevels()
+    var presetMenuExpanded by remember { mutableStateOf(false) }
     fun updateLevels(nextLevels: List<Float>, presetName: String = "Custom") {
         onSettingsChange(
             settings.copy(
@@ -7125,19 +7198,9 @@ private fun EqualizerSettingsCard(
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Surface(
-                    modifier = Modifier.size(50.dp),
-                    shape = RoundedCornerShape(18.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    tonalElevation = 2.dp
-                ) {
-                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                        EqualizerMiniIcon(levels = levels, enabled = settings.enabled)
-                    }
-                }
                 Column(Modifier.weight(1f)) {
                     Text(
                         text = "Equalizer",
@@ -7160,17 +7223,65 @@ private fun EqualizerSettingsCard(
                 )
             }
 
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(modifier = Modifier.weight(1f)) {
+                    FilledTonalButton(
+                        onClick = { presetMenuExpanded = true },
+                        shape = RoundedCornerShape(999.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "Preset: ${settings.presetName}",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = presetMenuExpanded,
+                        onDismissRequest = { presetMenuExpanded = false }
+                    ) {
+                        EqualizerPresets.forEach { preset ->
+                            DropdownMenuItem(
+                                text = { Text(preset.name) },
+                                onClick = {
+                                    presetMenuExpanded = false
+                                    onSettingsChange(
+                                        settings.copy(
+                                            enabled = true,
+                                            presetName = preset.name,
+                                            levelsDb = preset.levelsDb
+                                        )
+                                    )
+                                }
+                            )
+                        }
+                    }
+                }
+                TextButton(
+                    onClick = {
+                        onSettingsChange(
+                            settings.copy(
+                                presetName = EqualizerFlatPreset.name,
+                                levelsDb = EqualizerFlatPreset.levelsDb
+                            )
+                        )
+                    },
+                    shape = RoundedCornerShape(999.dp)
+                ) {
+                    Text("Reset")
+                }
+            }
+
             EqualizerHardwarePanel(
                 levels = levels,
                 enabled = settings.enabled,
                 presetName = settings.presetName,
-                onLevelChange = { index, value ->
-                    updateLevels(
-                        levels.toMutableList().also {
-                            it[index] = value
-                        }
-                    )
-                }
+                onLevelsChange = { nextLevels -> updateLevels(nextLevels) }
             )
 
             SettingsSwitchRow(
@@ -7213,49 +7324,6 @@ private fun EqualizerSettingsCard(
                         inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest
                     )
                 )
-            }
-
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "Presets",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold
-                )
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(EqualizerPresets, key = { it.name }) { preset ->
-                        FilterChip(
-                            selected = settings.presetName == preset.name,
-                            onClick = {
-                                onSettingsChange(
-                                    settings.copy(
-                                        enabled = true,
-                                        presetName = preset.name,
-                                        levelsDb = preset.levelsDb
-                                    )
-                                )
-                            },
-                            label = { Text(preset.name) }
-                        )
-                    }
-                }
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = if (settings.presetName == "Custom") "Custom tone" else "${settings.presetName} tone",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                TextButton(
-                    onClick = { onSettingsChange(settings.copy(presetName = EqualizerFlatPreset.name, levelsDb = EqualizerFlatPreset.levelsDb)) },
-                    shape = RoundedCornerShape(16.dp)
-                ) {
-                    Text("Reset")
-                }
             }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
@@ -7303,54 +7371,111 @@ private fun EqualizerSettingsCard(
 @Composable
 private fun EqualizerPreview(
     levels: List<Float>,
-    enabled: Boolean
+    enabled: Boolean,
+    modifier: Modifier = Modifier
 ) {
     val colorScheme = MaterialTheme.colorScheme
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        color = if (enabled) colorScheme.primaryContainer.copy(alpha = 0.76f) else colorScheme.surfaceContainerHigh,
-        tonalElevation = 1.dp
+    val accent = if (enabled) colorScheme.primary else colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+    val normalizedLevels = (0 until EQUALIZER_BAND_COUNT).map { index ->
+        levels.getOrNull(index)?.coerceIn(EQUALIZER_MIN_DB, EQUALIZER_MAX_DB) ?: 0f
+    }
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(104.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .background(
+                if (enabled) {
+                    colorScheme.surfaceContainer
+                } else {
+                    colorScheme.surfaceContainerHighest.copy(alpha = 0.5f)
+                }
+            )
     ) {
         Canvas(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(106.dp)
-                .padding(horizontal = 18.dp, vertical = 16.dp)
+                .fillMaxSize()
+                .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
-            val baseline = size.height * 0.5f
-            val spacing = size.width / EQUALIZER_BAND_COUNT
-            val maxBar = size.height * 0.44f
-            levels.forEachIndexed { index, level ->
-                val normalized = (level / EQUALIZER_MAX_DB).coerceIn(-1f, 1f)
-                val x = spacing * index + spacing / 2f
-                val y = baseline - normalized * maxBar
+            val left = 2.dp.toPx()
+            val right = size.width - 2.dp.toPx()
+            val top = 6.dp.toPx()
+            val bottom = size.height - 6.dp.toPx()
+            val baseline = top + (bottom - top) * 0.5f
+            val usableHeight = bottom - top
+            val bandCount = EQUALIZER_BAND_COUNT.coerceAtLeast(1)
+
+            repeat(3) { index ->
+                val y = top + (bottom - top) * index / 2f
                 drawLine(
-                    color = colorScheme.onPrimaryContainer.copy(alpha = if (enabled) 0.22f else 0.12f),
-                    start = Offset(x, baseline - maxBar),
-                    end = Offset(x, baseline + maxBar),
-                    strokeWidth = 8.dp.toPx(),
+                    color = colorScheme.onSurfaceVariant.copy(alpha = if (index == 1) 0.18f else 0.1f),
+                    start = Offset(left, y),
+                    end = Offset(right, y),
+                    strokeWidth = 1.dp.toPx(),
                     cap = StrokeCap.Round
-                )
-                drawLine(
-                    color = if (enabled) colorScheme.primary else colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                    start = Offset(x, baseline),
-                    end = Offset(x, y),
-                    strokeWidth = 10.dp.toPx(),
-                    cap = StrokeCap.Round
-                )
-                drawCircle(
-                    color = if (enabled) colorScheme.onPrimaryContainer else colorScheme.onSurfaceVariant,
-                    radius = 4.dp.toPx(),
-                    center = Offset(x, y)
                 )
             }
-            drawLine(
-                color = colorScheme.onPrimaryContainer.copy(alpha = if (enabled) 0.2f else 0.08f),
-                start = Offset(0f, baseline),
-                end = Offset(size.width, baseline),
-                strokeWidth = 1.dp.toPx()
+
+            val points = normalizedLevels.mapIndexed { index, level ->
+                val x = if (bandCount == 1) {
+                    (left + right) / 2f
+                } else {
+                    left + (right - left) * index / (bandCount - 1).toFloat()
+                }
+                val normalized = (level / EQUALIZER_MAX_DB).coerceIn(-1f, 1f)
+                Offset(x, baseline - normalized * usableHeight * 0.43f)
+            }
+
+            val fillPath = Path().apply {
+                moveTo(points.first().x, baseline)
+                points.forEachIndexed { index, point ->
+                    if (index == 0) {
+                        lineTo(point.x, point.y)
+                    } else {
+                        val previous = points[index - 1]
+                        val midX = (previous.x + point.x) / 2f
+                        cubicTo(midX, previous.y, midX, point.y, point.x, point.y)
+                    }
+                }
+                lineTo(points.last().x, baseline)
+                close()
+            }
+            drawPath(
+                path = fillPath,
+                brush = Brush.verticalGradient(
+                    colors = listOf(
+                        accent.copy(alpha = if (enabled) 0.22f else 0.08f),
+                        accent.copy(alpha = if (enabled) 0.06f else 0.02f),
+                        Color.Transparent
+                    )
+                )
             )
+
+            val curvePath = Path().apply {
+                moveTo(points.first().x, points.first().y)
+                points.drop(1).forEachIndexed { index, point ->
+                    val previous = points[index]
+                    val midX = (previous.x + point.x) / 2f
+                    cubicTo(midX, previous.y, midX, point.y, point.x, point.y)
+                }
+            }
+            drawPath(
+                path = curvePath,
+                color = accent,
+                style = Stroke(width = 2.8.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+            )
+            points.forEach { point ->
+                drawCircle(
+                    color = colorScheme.surfaceContainer,
+                    radius = 4.2.dp.toPx(),
+                    center = point
+                )
+                drawCircle(
+                    color = accent,
+                    radius = 2.6.dp.toPx(),
+                    center = point
+                )
+            }
         }
     }
 }
@@ -7360,112 +7485,192 @@ private fun EqualizerHardwarePanel(
     levels: List<Float>,
     enabled: Boolean,
     presetName: String,
-    onLevelChange: (Int, Float) -> Unit
+    onLevelsChange: (List<Float>) -> Unit
 ) {
-    val accent = if (enabled) Color(0xFF38E16D) else Color(0xFF9AA69D)
-    val subduedAccent = accent.copy(alpha = if (enabled) 0.42f else 0.22f)
-    val bassLevel = ((levels.getOrElse(0) { 0f } + levels.getOrElse(1) { 0f }) / 2f)
-    val airLevel = ((levels.getOrElse(3) { 0f } + levels.getOrElse(4) { 0f }) / 2f)
+    val colorScheme = MaterialTheme.colorScheme
+    val normalizedLevels = (0 until EQUALIZER_BAND_COUNT).map { index ->
+        levels.getOrNull(index)?.coerceIn(EQUALIZER_MIN_DB, EQUALIZER_MAX_DB) ?: 0f
+    }
+    val accent = if (enabled) colorScheme.primary else colorScheme.onSurfaceVariant.copy(alpha = 0.54f)
+    val bassLevel = ((normalizedLevels[0] + normalizedLevels[1]) / 2f)
+    val airLevel = ((normalizedLevels[3] + normalizedLevels[4]) / 2f)
 
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(30.dp))
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        Color(0xFF2B302C),
-                        Color(0xFF151916),
-                        Color(0xFF0F1210)
-                    )
-                )
-            )
-            .padding(18.dp)
-    ) {
-        Canvas(modifier = Modifier.matchParentSize()) {
-            drawRoundRect(
-                color = Color.White.copy(alpha = 0.06f),
-                size = size,
-                cornerRadius = CornerRadius(30.dp.toPx(), 30.dp.toPx()),
-                style = Stroke(width = 1.dp.toPx())
-            )
-            drawCircle(
-                color = accent.copy(alpha = if (enabled) 0.08f else 0.035f),
-                radius = size.minDimension * 0.5f,
-                center = Offset(size.width * 0.16f, size.height * 0.18f)
-            )
-            drawLine(
-                color = Color.White.copy(alpha = 0.08f),
-                start = Offset(size.width * 0.5f, 18.dp.toPx()),
-                end = Offset(size.width * 0.5f, 82.dp.toPx()),
-                strokeWidth = 1.dp.toPx()
-            )
-        }
-        Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(18.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                EqualizerKnob(
-                    label = "Bass",
-                    level = bassLevel,
-                    accent = accent,
-                    enabled = enabled,
-                    modifier = Modifier.weight(1f)
-                )
-                Column(
-                    modifier = Modifier.weight(0.72f),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    Text(
-                        text = presetName,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color.White.copy(alpha = if (enabled) 0.9f else 0.58f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        textAlign = TextAlign.Center
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        repeat(5) { index ->
-                            Box(
-                                modifier = Modifier
-                                    .height((8 + index * 3).dp)
-                                    .width(3.dp)
-                                    .clip(RoundedCornerShape(2.dp))
-                                    .background(subduedAccent)
-                            )
-                        }
-                    }
-                }
-                EqualizerKnob(
-                    label = "Air",
-                    level = airLevel,
-                    accent = accent,
-                    enabled = enabled,
-                    modifier = Modifier.weight(0.82f)
-                )
+    fun commitLevels(nextLevels: List<Float>) {
+        onLevelsChange(nextLevels.map(::snapEqualizerLevel))
+    }
+
+    fun updateBand(index: Int, value: Float) {
+        commitLevels(
+            normalizedLevels.toMutableList().also {
+                it[index] = value
             }
+        )
+    }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.Bottom
-            ) {
-                EqualizerBandLabels.forEachIndexed { index, label ->
-                    EqualizerVerticalSlider(
-                        label = label,
-                        level = levels.getOrElse(index) { 0f },
+    fun updateBandPair(firstIndex: Int, secondIndex: Int, value: Float) {
+        val currentAverage = (normalizedLevels[firstIndex] + normalizedLevels[secondIndex]) / 2f
+        val delta = snapEqualizerLevel(value) - currentAverage
+        commitLevels(
+            normalizedLevels.toMutableList().also {
+                it[firstIndex] = normalizedLevels[firstIndex] + delta
+                it[secondIndex] = normalizedLevels[secondIndex] + delta
+            }
+        )
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = colorScheme.surfaceContainerLow,
+        tonalElevation = 0.dp
+    ) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
+        ) {
+            val compact = maxWidth < 360.dp
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                EqualizerCenterPanel(
+                    levels = normalizedLevels,
+                    enabled = enabled,
+                    presetName = presetName
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    EqualizerKnob(
+                        label = "Bass",
+                        level = bassLevel,
                         accent = accent,
                         enabled = enabled,
-                        onValueChange = { value -> onLevelChange(index, value) },
+                        onValueChange = { updateBandPair(0, 1, it) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    EqualizerKnob(
+                        label = "Air",
+                        level = airLevel,
+                        accent = accent,
+                        enabled = enabled,
+                        onValueChange = { updateBandPair(3, 4, it) },
                         modifier = Modifier.weight(1f)
                     )
                 }
+                EqualizerScaleLabels(enabled = enabled)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 10.dp),
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    EqualizerBandLabels.forEachIndexed { index, label ->
+                        EqualizerVerticalSlider(
+                            label = label,
+                            level = normalizedLevels[index],
+                            accent = accent,
+                            enabled = enabled,
+                            onValueChange = { value -> updateBand(index, value) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun EqualizerCenterPanel(
+    levels: List<Float>,
+    enabled: Boolean,
+    presetName: String,
+    modifier: Modifier = Modifier
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = "Tone curve",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colorScheme.onSurface
+                )
+                Text(
+                    text = if (enabled) "$presetName preset" else "Disabled",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(
+                        if (enabled) {
+                            colorScheme.primary.copy(alpha = 0.12f)
+                        } else {
+                            colorScheme.surfaceContainerHighest
+                        }
+                    )
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(7.dp)
+                        .clip(CircleShape)
+                        .background(if (enabled) colorScheme.primary else colorScheme.onSurfaceVariant.copy(alpha = 0.48f))
+                )
+                Text(
+                    text = if (enabled) "Active" else "Off",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (enabled) colorScheme.primary else colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        EqualizerPreview(
+            levels = levels,
+            enabled = enabled
+        )
+    }
+}
+
+@Composable
+private fun EqualizerScaleLabels(enabled: Boolean) {
+    val colorScheme = MaterialTheme.colorScheme
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "-12 dB",
+            style = MaterialTheme.typography.labelSmall,
+            color = colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 0.72f else 0.46f)
+        )
+        Text(
+            text = "0 dB center",
+            style = MaterialTheme.typography.labelSmall,
+            color = colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 0.86f else 0.5f)
+        )
+        Text(
+            text = "+12 dB",
+            style = MaterialTheme.typography.labelSmall,
+            color = colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 0.72f else 0.46f)
+        )
     }
 }
 
@@ -7475,90 +7680,124 @@ private fun EqualizerKnob(
     level: Float,
     accent: Color,
     enabled: Boolean,
+    onValueChange: (Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val colorScheme = MaterialTheme.colorScheme
     val fraction = equalizerLevelFraction(level)
-    val textColor = Color.White.copy(alpha = if (enabled) 0.88f else 0.56f)
+    val activeColor = if (enabled) accent else colorScheme.onSurfaceVariant.copy(alpha = 0.44f)
+    val textColor = if (enabled) colorScheme.onSurface else colorScheme.onSurfaceVariant
+    val latestLevel by rememberUpdatedState(level)
     Column(
-        modifier = modifier,
+        modifier = modifier
+            .clip(RoundedCornerShape(18.dp))
+            .background(colorScheme.surfaceContainer)
+            .padding(12.dp)
+            .semantics { contentDescription = "$label equalizer ${formatEqualizerDb(level)}" },
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(4.dp)
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Canvas(modifier = Modifier.size(76.dp)) {
-            val center = Offset(size.width / 2f, size.height / 2f)
-            val radius = size.minDimension * 0.34f
-            val tickRadius = radius * 1.48f
-            drawCircle(
-                color = Color.Black.copy(alpha = 0.52f),
-                radius = radius * 1.14f,
-                center = center + Offset(0f, 5.dp.toPx())
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = textColor
             )
-            repeat(13) { tick ->
-                val angle = ((-140f + tick * (280f / 12f)) * PI / 180f).toFloat()
-                val start = Offset(
-                    x = center.x + cos(angle) * tickRadius,
-                    y = center.y + sin(angle) * tickRadius
-                )
-                val end = Offset(
-                    x = center.x + cos(angle) * (tickRadius + 5.dp.toPx()),
-                    y = center.y + sin(angle) * (tickRadius + 5.dp.toPx())
-                )
-                drawLine(
-                    color = accent.copy(alpha = if (enabled) 0.72f else 0.28f),
-                    start = start,
-                    end = end,
-                    strokeWidth = 2.dp.toPx(),
-                    cap = StrokeCap.Round
-                )
-            }
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = if (enabled) 0.24f else 0.1f),
-                        accent.copy(alpha = if (enabled) 0.95f else 0.45f),
-                        Color(0xFF0A5E2D).copy(alpha = if (enabled) 1f else 0.48f)
-                    ),
-                    center = center - Offset(radius * 0.26f, radius * 0.28f),
-                    radius = radius * 1.45f
-                ),
-                radius = radius,
-                center = center
-            )
-            drawCircle(
-                color = Color.Black.copy(alpha = 0.2f),
-                radius = radius,
-                center = center,
-                style = Stroke(width = 2.dp.toPx())
-            )
-            drawCircle(
-                color = Color.White.copy(alpha = 0.16f),
-                radius = radius * 0.62f,
-                center = center - Offset(radius * 0.14f, radius * 0.18f)
-            )
-            val pointerAngle = ((-140f + fraction * 280f) * PI / 180f).toFloat()
-            drawLine(
-                color = Color.White.copy(alpha = if (enabled) 0.9f else 0.45f),
-                start = center,
-                end = Offset(
-                    x = center.x + cos(pointerAngle) * radius * 0.72f,
-                    y = center.y + sin(pointerAngle) * radius * 0.72f
-                ),
-                strokeWidth = 2.4.dp.toPx(),
-                cap = StrokeCap.Round
+            Text(
+                text = formatEqualizerDb(level),
+                style = MaterialTheme.typography.labelSmall,
+                color = textColor.copy(alpha = 0.72f),
+                maxLines = 1
             )
         }
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.SemiBold,
-            color = textColor
-        )
-        Text(
-            text = formatEqualizerDb(level),
-            style = MaterialTheme.typography.labelSmall,
-            color = textColor.copy(alpha = 0.72f),
-            maxLines = 1
-        )
+        Box(
+            modifier = Modifier
+                .size(88.dp)
+                .pointerInput(label) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        var workingLevel = latestLevel
+                        var lastY = down.position.y
+                        val dragScale = (EQUALIZER_MAX_DB - EQUALIZER_MIN_DB) / 190f
+
+                        down.consume()
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) break
+                            val deltaY = change.position.y - lastY
+                            lastY = change.position.y
+                            workingLevel = snapEqualizerLevel(workingLevel - deltaY * dragScale)
+                            onValueChange(workingLevel)
+                            change.consume()
+                        }
+                    }
+                }
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val center = Offset(size.width / 2f, size.height / 2f)
+                val ringRadius = size.minDimension * 0.4f
+                val knobRadius = size.minDimension * 0.29f
+                val arcStroke = Stroke(width = 5.dp.toPx(), cap = StrokeCap.Round)
+                val arcTopLeft = Offset(center.x - ringRadius, center.y - ringRadius)
+                val arcSize = Size(ringRadius * 2f, ringRadius * 2f)
+                drawArc(
+                    color = colorScheme.surfaceContainerHighest.copy(alpha = if (enabled) 0.86f else 0.48f),
+                    startAngle = 135f,
+                    sweepAngle = 270f,
+                    useCenter = false,
+                    topLeft = arcTopLeft,
+                    size = arcSize,
+                    style = arcStroke
+                )
+                drawArc(
+                    color = activeColor.copy(alpha = if (enabled) 0.92f else 0.42f),
+                    startAngle = 135f,
+                    sweepAngle = 270f * fraction,
+                    useCenter = false,
+                    topLeft = arcTopLeft,
+                    size = arcSize,
+                    style = arcStroke
+                )
+                drawCircle(
+                    color = Color.Black.copy(alpha = 0.1f),
+                    radius = knobRadius,
+                    center = center + Offset(0f, 2.dp.toPx())
+                )
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            colorScheme.surfaceContainerHighest,
+                            colorScheme.surfaceContainerHigh
+                        ),
+                        center = center - Offset(knobRadius * 0.32f, knobRadius * 0.36f),
+                        radius = knobRadius * 1.2f
+                    ),
+                    radius = knobRadius,
+                    center = center
+                )
+                val angle = ((135f + 270f * fraction) * PI / 180f).toFloat()
+                val markerStart = center + Offset(cos(angle) * knobRadius * 0.2f, sin(angle) * knobRadius * 0.2f)
+                val markerEnd = center + Offset(cos(angle) * knobRadius * 0.78f, sin(angle) * knobRadius * 0.78f)
+                drawLine(
+                    color = activeColor.copy(alpha = if (enabled) 0.96f else 0.48f),
+                    start = markerStart,
+                    end = markerEnd,
+                    strokeWidth = 3.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+                drawCircle(
+                    color = activeColor.copy(alpha = if (enabled) 0.95f else 0.42f),
+                    radius = 2.6.dp.toPx(),
+                    center = markerEnd
+                )
+            }
+        }
     }
 }
 
@@ -7571,31 +7810,37 @@ private fun EqualizerVerticalSlider(
     onValueChange: (Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val colorScheme = MaterialTheme.colorScheme
     val valueLabel = formatEqualizerDb(level)
+    val activeColor = if (enabled) accent else colorScheme.onSurfaceVariant.copy(alpha = 0.42f)
+    val labelColor = if (enabled) colorScheme.onSurface else colorScheme.onSurfaceVariant
     Column(
         modifier = modifier.semantics {
             contentDescription = "$label Hz equalizer $valueLabel"
         },
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(6.dp)
+        verticalArrangement = Arrangement.spacedBy(7.dp)
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(150.dp)
+                .height(168.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(colorScheme.surfaceContainer.copy(alpha = 0.9f))
                 .pointerInput(label) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
 
                         fun updateFromY(y: Float) {
-                            val top = 8.dp.toPx()
-                            val bottom = size.height - 8.dp.toPx()
+                            val top = 14.dp.toPx()
+                            val bottom = size.height - 14.dp.toPx()
                             val fraction = ((bottom - y) / (bottom - top)).coerceIn(0f, 1f)
                             val rawValue = EQUALIZER_MIN_DB + fraction * (EQUALIZER_MAX_DB - EQUALIZER_MIN_DB)
-                            onValueChange((rawValue * 2f).roundToInt() / 2f)
+                            onValueChange(snapEqualizerLevel(rawValue))
                         }
 
                         updateFromY(down.position.y)
+                        down.consume()
                         while (true) {
                             val event = awaitPointerEvent()
                             val change = event.changes.firstOrNull { it.id == down.id } ?: break
@@ -7609,86 +7854,68 @@ private fun EqualizerVerticalSlider(
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 3.dp, vertical = 2.dp)
+                    .padding(horizontal = 3.dp, vertical = 3.dp)
             ) {
                 val centerX = size.width / 2f
-                val top = 10.dp.toPx()
-                val bottom = size.height - 10.dp.toPx()
+                val top = 14.dp.toPx()
+                val bottom = size.height - 14.dp.toPx()
+                val centerY = (top + bottom) / 2f
                 val fraction = equalizerLevelFraction(level)
                 val thumbY = bottom - fraction * (bottom - top)
-                val trackColor = Color.White.copy(alpha = if (enabled) 0.18f else 0.09f)
-                val activeColor = accent.copy(alpha = if (enabled) 0.95f else 0.42f)
-                repeat(10) { tick ->
-                    val y = top + (bottom - top) * tick / 9f
-                    val tickWidth = if (tick == 0 || tick == 9 || tick == 4) 13.dp.toPx() else 8.dp.toPx()
-                    drawLine(
-                        color = Color.White.copy(alpha = if (enabled) 0.22f else 0.1f),
-                        start = Offset(centerX - tickWidth - 8.dp.toPx(), y),
-                        end = Offset(centerX - 8.dp.toPx(), y),
-                        strokeWidth = 1.dp.toPx()
-                    )
-                    drawLine(
-                        color = Color.White.copy(alpha = if (enabled) 0.22f else 0.1f),
-                        start = Offset(centerX + 8.dp.toPx(), y),
-                        end = Offset(centerX + tickWidth + 8.dp.toPx(), y),
-                        strokeWidth = 1.dp.toPx()
-                    )
-                }
-                drawLine(
-                    color = trackColor,
-                    start = Offset(centerX, top),
-                    end = Offset(centerX, bottom),
-                    strokeWidth = 5.dp.toPx(),
-                    cap = StrokeCap.Round
-                )
-                drawLine(
-                    color = activeColor,
-                    start = Offset(centerX, bottom),
-                    end = Offset(centerX, thumbY),
-                    strokeWidth = 5.dp.toPx(),
-                    cap = StrokeCap.Round
-                )
-                val thumbWidth = minOf(30.dp.toPx(), size.width * 0.72f)
-                val thumbHeight = 16.dp.toPx()
+                val trackWidth = minOf(9.dp.toPx(), size.width * 0.24f)
+                val trackLeft = centerX - trackWidth / 2f
                 drawRoundRect(
-                    color = Color.Black.copy(alpha = 0.42f),
-                    topLeft = Offset(centerX - thumbWidth / 2f + 1.dp.toPx(), thumbY - thumbHeight / 2f + 3.dp.toPx()),
+                    color = colorScheme.surfaceContainerHighest.copy(alpha = if (enabled) 0.86f else 0.48f),
+                    topLeft = Offset(trackLeft, top),
+                    size = Size(trackWidth, bottom - top),
+                    cornerRadius = CornerRadius(trackWidth / 2f, trackWidth / 2f)
+                )
+                val activeTop = minOf(centerY, thumbY)
+                val activeBottom = maxOf(centerY, thumbY)
+                drawRoundRect(
+                    color = activeColor.copy(alpha = if (enabled) 0.92f else 0.42f),
+                    topLeft = Offset(trackLeft, activeTop),
+                    size = Size(trackWidth, (activeBottom - activeTop).coerceAtLeast(trackWidth)),
+                    cornerRadius = CornerRadius(trackWidth / 2f, trackWidth / 2f)
+                )
+                drawCircle(
+                    color = colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 0.22f else 0.12f),
+                    radius = 2.dp.toPx(),
+                    center = Offset(centerX, centerY)
+                )
+                val thumbWidth = minOf(40.dp.toPx(), size.width * 0.78f)
+                val thumbHeight = 22.dp.toPx()
+                val thumbTopLeft = Offset(centerX - thumbWidth / 2f, thumbY - thumbHeight / 2f)
+                drawRoundRect(
+                    color = Color.Black.copy(alpha = 0.08f),
+                    topLeft = thumbTopLeft + Offset(0f, 2.dp.toPx()),
                     size = Size(thumbWidth, thumbHeight),
-                    cornerRadius = CornerRadius(5.dp.toPx(), 5.dp.toPx())
+                    cornerRadius = CornerRadius(11.dp.toPx(), 11.dp.toPx())
                 )
                 drawRoundRect(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(
-                            Color.White.copy(alpha = if (enabled) 0.34f else 0.14f),
-                            Color(0xFF3E4640),
-                            Color(0xFF151916)
-                        ),
-                        startY = thumbY - thumbHeight,
-                        endY = thumbY + thumbHeight
-                    ),
-                    topLeft = Offset(centerX - thumbWidth / 2f, thumbY - thumbHeight / 2f),
+                    color = colorScheme.surfaceContainerHighest,
+                    topLeft = thumbTopLeft,
                     size = Size(thumbWidth, thumbHeight),
-                    cornerRadius = CornerRadius(5.dp.toPx(), 5.dp.toPx())
+                    cornerRadius = CornerRadius(11.dp.toPx(), 11.dp.toPx())
                 )
-                drawLine(
-                    color = accent.copy(alpha = if (enabled) 0.7f else 0.24f),
-                    start = Offset(centerX - thumbWidth * 0.28f, thumbY),
-                    end = Offset(centerX + thumbWidth * 0.28f, thumbY),
-                    strokeWidth = 1.3.dp.toPx(),
-                    cap = StrokeCap.Round
+                drawRoundRect(
+                    color = activeColor.copy(alpha = if (enabled) 0.18f else 0.08f),
+                    topLeft = thumbTopLeft + Offset(thumbWidth * 0.18f, thumbHeight * 0.28f),
+                    size = Size(thumbWidth * 0.64f, thumbHeight * 0.44f),
+                    cornerRadius = CornerRadius(7.dp.toPx(), 7.dp.toPx())
                 )
             }
         }
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall,
-            color = Color.White.copy(alpha = if (enabled) 0.8f else 0.5f),
+            color = labelColor,
             maxLines = 1
         )
         Text(
             text = valueLabel,
             style = MaterialTheme.typography.labelSmall,
-            color = Color.White.copy(alpha = if (enabled) 0.58f else 0.34f),
+            color = labelColor.copy(alpha = 0.68f),
             maxLines = 1
         )
     }
@@ -7720,8 +7947,12 @@ private fun EqualizerMiniIcon(
 private fun equalizerLevelFraction(level: Float): Float =
     ((level - EQUALIZER_MIN_DB) / (EQUALIZER_MAX_DB - EQUALIZER_MIN_DB)).coerceIn(0f, 1f)
 
+private fun snapEqualizerLevel(level: Float): Float =
+    ((level.coerceIn(EQUALIZER_MIN_DB, EQUALIZER_MAX_DB) * 2f).roundToInt() / 2f)
+        .coerceIn(EQUALIZER_MIN_DB, EQUALIZER_MAX_DB)
+
 private fun formatEqualizerDb(level: Float): String {
-    val rounded = (level * 2f).roundToInt() / 2f
+    val rounded = snapEqualizerLevel(level)
     return when {
         rounded > 0f -> "+${rounded.formatOneDecimal()} dB"
         rounded < 0f -> "${rounded.formatOneDecimal()} dB"
@@ -11528,41 +11759,42 @@ private fun rememberSmoothedPlaybackProgress(
     status: String
 ): Float {
     val normalizedProgress = progress.coerceIn(0f, 1f)
-    val animatedProgress = remember(trackId) { Animatable(normalizedProgress) }
+    val latestProgress by rememberUpdatedState(normalizedProgress)
+    val latestIsPlaying by rememberUpdatedState(isPlaying)
+    val latestStatus by rememberUpdatedState(status)
+    var displayProgress by remember(trackId) { mutableFloatStateOf(normalizedProgress) }
 
     LaunchedEffect(trackId) {
-        animatedProgress.snapTo(normalizedProgress)
+        displayProgress = normalizedProgress
     }
 
-    LaunchedEffect(trackId, normalizedProgress, isPlaying, status, durationMs) {
-        val smoothPlayback = isPlaying && status == "Playing" && durationMs > 0L
-        val lookAheadProgress = if (smoothPlayback) {
-            PLAYBACK_DISPLAY_PROGRESS_SMOOTH_MS.toFloat() / durationMs.toFloat()
-        } else {
-            0f
-        }
-        val targetProgress = (normalizedProgress + lookAheadProgress).coerceIn(0f, 0.9995f)
-        val delta = abs(targetProgress - animatedProgress.value)
-        val targetMovedBackward = targetProgress < animatedProgress.value
+    LaunchedEffect(trackId, durationMs) {
+        var lastFrameTime = withFrameNanos { it }
+        while (true) {
+            val frameTime = withFrameNanos { it }
+            val deltaSeconds = ((frameTime - lastFrameTime) / 1_000_000_000f).coerceIn(0f, 0.08f)
+            lastFrameTime = frameTime
 
-        when {
-            !smoothPlayback || targetMovedBackward || delta > 0.045f -> {
-                animatedProgress.snapTo(normalizedProgress)
+            val targetProgress = latestProgress.coerceIn(0f, 1f)
+            val smoothPlayback = latestIsPlaying && latestStatus == "Playing" && durationMs > 0L
+            if (!smoothPlayback) {
+                displayProgress = targetProgress
+                continue
             }
 
-            delta > 0.00005f -> {
-                animatedProgress.animateTo(
-                    targetValue = targetProgress,
-                    animationSpec = tween(
-                        durationMillis = PLAYBACK_DISPLAY_PROGRESS_SMOOTH_MS,
-                        easing = LinearEasing
-                    )
-                )
+            val drift = targetProgress - displayProgress
+            val bigCorrection = abs(drift) > 0.04f || drift < -0.006f
+            displayProgress = if (bigCorrection) {
+                targetProgress
+            } else {
+                val frameAdvance = deltaSeconds * 1_000f / durationMs.toFloat()
+                val softCorrection = drift * (deltaSeconds * 2.2f).coerceIn(0f, 0.18f)
+                (displayProgress + frameAdvance + softCorrection).coerceIn(0f, 0.9995f)
             }
         }
     }
 
-    return animatedProgress.value.coerceIn(0f, 1f)
+    return displayProgress.coerceIn(0f, 1f)
 }
 
 @Composable
@@ -13425,8 +13657,10 @@ private fun DiscAlbumStage(
     var isScratching by remember { mutableStateOf(false) }
     var holdScrubProgress by remember { mutableStateOf(false) }
     var scratchProgress by remember { mutableFloatStateOf(progress) }
-    val discRotation = remember { Animatable(0f) }
-    var requestedScratchRotation by remember { mutableStateOf<Float?>(null) }
+    var scratchRotation by remember { mutableFloatStateOf(0f) }
+    var scratchReleaseRotation by remember { mutableFloatStateOf(0f) }
+    var scratchReleaseRequest by remember { mutableStateOf(0) }
+    var discRotation by remember(track.id) { mutableFloatStateOf(0f) }
     var lastFlipTrack by remember { mutableStateOf<MusicTrack?>(null) }
     var lastFlipSession by remember { mutableStateOf<JellyfinSession?>(null) }
     var outgoingFlipTrack by remember { mutableStateOf<MusicTrack?>(null) }
@@ -13438,7 +13672,9 @@ private fun DiscAlbumStage(
     val density = LocalDensity.current
     val context = LocalContext.current.applicationContext
     val stageProgress = if (isScratching || holdScrubProgress) scratchProgress else progress
-    val currentDiscRotation = discRotation.value.floorMod(360f)
+    val animatedDiscRotation = discRotation.floorMod(360f)
+    val currentDiscRotation = if (isScratching) scratchRotation.floorMod(360f) else animatedDiscRotation
+    val latestDiscRotation by rememberUpdatedState(currentDiscRotation)
     val flipProgress = recordFlipProgress.value.coerceIn(0f, 1f)
     val isFlipActive = incomingFlipTrack != null
     val flipDepth = if (isFlipActive) {
@@ -13488,19 +13724,20 @@ private fun DiscAlbumStage(
 
     LaunchedEffect(isPlaying, isScratching, track.id) {
         if (!isPlaying || isScratching) return@LaunchedEffect
+        var lastFrameTime = withFrameNanos { it }
         while (true) {
-            val startRotation = discRotation.value
-            discRotation.animateTo(
-                targetValue = startRotation + 360f,
-                animationSpec = tween(durationMillis = RECORD_ROTATION_DURATION_MS, easing = LinearEasing)
-            )
-            discRotation.snapTo(discRotation.value.floorMod(360f))
+            val frameTime = withFrameNanos { it }
+            val deltaSeconds = ((frameTime - lastFrameTime) / 1_000_000_000f).coerceIn(0f, 0.08f)
+            lastFrameTime = frameTime
+            val degreesPerSecond = 360_000f / RECORD_ROTATION_DURATION_MS.toFloat()
+            discRotation = (discRotation + degreesPerSecond * deltaSeconds).floorMod(360f)
         }
     }
 
-    LaunchedEffect(requestedScratchRotation) {
-        requestedScratchRotation?.let { rotation ->
-            discRotation.snapTo(rotation)
+    LaunchedEffect(scratchReleaseRequest) {
+        if (scratchReleaseRequest > 0) {
+            discRotation = scratchReleaseRotation.floorMod(360f)
+            isScratching = false
         }
     }
 
@@ -13564,7 +13801,8 @@ private fun DiscAlbumStage(
                     }
 
                     scratchProgress = latestProgress
-                    var scratchDiscRotation = currentDiscRotation
+                    var scratchDragRotation = latestDiscRotation.floorMod(360f)
+                    scratchRotation = scratchDragRotation
                     var lastAngle = angleForOffset(
                         offset = down.position,
                         width = stageWidth,
@@ -13598,6 +13836,11 @@ private fun DiscAlbumStage(
                             lastAngle = angle
                             totalAngleDelta += deltaAngle
 
+                            if (!scratchStarted) {
+                                scratchDragRotation = latestDiscRotation.floorMod(360f)
+                                scratchRotation = scratchDragRotation
+                            }
+
                             if (!scratchStarted &&
                                 (totalMotionPx >= scratchStartSlopPx || abs(totalAngleDelta) >= 3f)
                             ) {
@@ -13607,8 +13850,8 @@ private fun DiscAlbumStage(
                             }
 
                             if (scratchStarted && abs(deltaAngle) > 0.05f) {
-                                scratchDiscRotation = (scratchDiscRotation + deltaAngle).floorMod(360f)
-                                requestedScratchRotation = scratchDiscRotation
+                                scratchDragRotation = (scratchDragRotation + deltaAngle).floorMod(360f)
+                                scratchRotation = scratchDragRotation
                                 scratchProgress = (
                                     scratchProgress +
                                         (deltaAngle / 360f) * DISC_SCRATCH_SEEK_SCALE
@@ -13621,7 +13864,12 @@ private fun DiscAlbumStage(
                         }
                     }
 
-                    isScratching = false
+                    if (scratchStarted) {
+                        scratchReleaseRotation = scratchDragRotation.floorMod(360f)
+                        scratchReleaseRequest += 1
+                    } else {
+                        isScratching = false
+                    }
                     holdScrubProgress = scratchChangedProgress
                     if (scratchChangedProgress) {
                         latestOnSeek(scratchProgress)
@@ -15059,7 +15307,9 @@ private class JellyfinPlayer(private val context: Context) {
         val requestedStartPositionMs = startPositionMs
             ?.takeIf { it > 0L && track.durationMs > 0L }
             ?.coerceIn(0L, track.durationMs)
-        val streamStartsAtOffset = requestedStartPositionMs != null && !canSeekInPlace(track, session)
+        val offlineFileForStart = offlinePlayableFileFor(context, session, track).takeUnless { bypassOfflineFile }
+        val streamStartsAtOffset = requestedStartPositionMs != null && offlineFileForStart == null
+        val playbackTranscoded = transcoded || streamStartsAtOffset
         val mediaSourceStartPositionMs = if (streamStartsAtOffset) 0L else (requestedStartPositionMs ?: 0L)
         releasePlayerForReplacement()
         streamStartOffsetMs = if (streamStartsAtOffset) requestedStartPositionMs ?: 0L else 0L
@@ -15075,8 +15325,8 @@ private class JellyfinPlayer(private val context: Context) {
         visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         lastPlaybackReportAt = 0L
         val streamMode = when {
-            offlinePlayableFileFor(context, session, track) != null && !bypassOfflineFile -> "offline"
-            transcoded -> "transcoded"
+            offlineFileForStart != null -> "offline"
+            playbackTranscoded -> "transcoded"
             else -> "direct"
         }
         PlaybackDiagnostics.record(
@@ -15099,12 +15349,12 @@ private class JellyfinPlayer(private val context: Context) {
             player = nextPlayer,
             generation = generation,
             track = track,
-            transcoded = transcoded,
+            transcoded = playbackTranscoded,
             allowTranscodedFallback = effectiveAllowTranscodedFallback
         )
         runCatching {
             nextPlayer.setMediaSource(
-                buildMediaSource(session, track, transcoded, bypassOfflineFile, requestedStartPositionMs),
+                buildMediaSource(session, track, playbackTranscoded, bypassOfflineFile, requestedStartPositionMs),
                 mediaSourceStartPositionMs
             )
             nextPlayer.prepare()
@@ -15116,7 +15366,7 @@ private class JellyfinPlayer(private val context: Context) {
                     nextPlayer,
                     generation,
                     track,
-                    transcoded,
+                    playbackTranscoded,
                     effectiveAllowTranscodedFallback
                 )
                 if (!retried) {
@@ -15281,6 +15531,22 @@ private class JellyfinPlayer(private val context: Context) {
                     publishContinuousPlaybackState(activeTrack)
                     return@runCatching
                 }
+                if (
+                    seekTimedOut &&
+                    isPlaying &&
+                    currentPosition + targetThreshold < pendingTarget &&
+                    currentSession != null &&
+                    offlinePlayableFileFor(context, currentSession!!, activeTrack) == null
+                ) {
+                    queueSeekPosition(activeTrack, pendingTarget, duration)
+                    scheduleDeferredStreamingSeek(activeTrack, currentSession!!, pendingTarget)
+                    PlaybackDiagnostics.record(
+                        "Seek fallback",
+                        "${activeTrack.title} - stream restarted at ${formatDuration(pendingTarget)}"
+                    )
+                    publishContinuousPlaybackState(activeTrack)
+                    return@runCatching
+                }
                 pendingSeekTargetMs = null
             }
             progress = (currentPosition.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
@@ -15303,6 +15569,26 @@ private class JellyfinPlayer(private val context: Context) {
             }
             publishPlaybackState(track)
             reportCurrentPlaybackProgress(force = true, isPaused = true)
+            return
+        }
+        val activeSession = currentSession
+        if (
+            activeSession != null &&
+            !canSeekInPlace(track, activeSession)
+        ) {
+            queueSeekPosition(track, target, duration)
+            if (isPlaying) {
+                status = "Seeking"
+                scheduleDeferredStreamingSeek(track, activeSession, target)
+            } else if (status != "Ended") {
+                status = "Paused"
+            }
+            publishPlaybackState(track)
+            reportCurrentPlaybackProgress(force = true, isPaused = !isPlaying)
+            PlaybackDiagnostics.record(
+                "Seek restart",
+                "${track.title} - ${formatDuration(target)}"
+            )
             return
         }
         runCatching {
@@ -15378,6 +15664,7 @@ private class JellyfinPlayer(private val context: Context) {
             .build()
             .apply {
                 setAudioAttributes(media3PlaybackAudioAttributes(), false)
+                setWakeMode(C.WAKE_MODE_NONE)
                 volume = 1f
             }
 
@@ -15520,7 +15807,6 @@ private class JellyfinPlayer(private val context: Context) {
     }
 
     private fun finishCurrentTrack(track: MusicTrack) {
-        abandonAudioFocus()
         stopVisualizerPump()
         isPlaying = false
         status = "Ended"
@@ -15530,24 +15816,22 @@ private class JellyfinPlayer(private val context: Context) {
         pendingSeekStartedAt = 0L
         smoothedVisualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
         visualizerLevels = FloatArray(VISUALIZER_BAR_COUNT)
-        reportCurrentPlaybackStopped()
         val endHandler = onTrackEnded
-        if (endHandler != null) {
-            val dispatchEnd = {
-                if (currentTrack?.id == track.id && status == "Ended") {
-                    val handled = endHandler(track)
-                    if (!handled && currentTrack?.id == track.id && status == "Ended") {
-                        publishPlaybackState(track)
-                    }
-                }
+        val dispatchEnd = {
+            var handled = false
+            if (endHandler != null && currentTrack?.id == track.id && status == "Ended") {
+                handled = endHandler(track)
             }
-            if (Looper.myLooper() == Looper.getMainLooper()) {
-                dispatchEnd()
-            } else {
-                mainHandler.post(dispatchEnd)
+            if (!handled && currentTrack?.id == track.id && status == "Ended") {
+                abandonAudioFocus()
+                reportCurrentPlaybackStopped()
+                publishPlaybackState(track)
             }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            dispatchEnd()
         } else {
-            publishPlaybackState(track)
+            mainHandler.post(dispatchEnd)
         }
     }
 
@@ -15655,11 +15939,14 @@ private class JellyfinPlayer(private val context: Context) {
                     return
                 }
                 val streamingSettings = loadStreamingQualitySettings(context)
+                val useTranscodedSeek = offlinePlayableFileFor(context, session, track) == null && positionMs > 0L
                 startPlayback(
                     track = track,
                     session = session,
-                    transcoded = streamingSettings.startsTranscoded,
-                    allowTranscodedFallback = streamingSettings.tryDirectPlayFirst && !streamingSettings.forceTranscoding,
+                    transcoded = streamingSettings.startsTranscoded || useTranscodedSeek,
+                    allowTranscodedFallback = !useTranscodedSeek &&
+                        streamingSettings.tryDirectPlayFirst &&
+                        !streamingSettings.forceTranscoding,
                     bypassOfflineFile = false,
                     reportStopped = false,
                     startPositionMs = positionMs
@@ -15685,7 +15972,10 @@ private class JellyfinPlayer(private val context: Context) {
     }
 
     private fun canSeekInPlace(track: MusicTrack, session: JellyfinSession): Boolean =
-        (currentTrack?.id == track.id && mediaPlayer != null && activePlayerPrepared) ||
+        (currentTrack?.id == track.id &&
+            mediaPlayer != null &&
+            activePlayerPrepared &&
+            mediaPlayer?.isCurrentMediaItemSeekable == true) ||
             offlinePlayableFileFor(context, session, track) != null
 
     private fun currentPlaybackPositionMs(track: MusicTrack): Long? {
@@ -18254,7 +18544,10 @@ private fun MusicTrack.toAutoTrackItem(session: JellyfinSession?): MediaBrowser.
             .setTitle(title)
             .setSubtitle(notificationSubtitle())
             .apply {
-                imageUrl(session, size = 256, quality = 78)?.let { setIconUri(Uri.parse(it)) }
+                imageUrl(session, size = 256, quality = 78)?.let { imageUrl ->
+                    setIconUri(Uri.parse(imageUrl))
+                    AlbumArtCache[imageUrl]?.let { setIconBitmap(it) }
+                }
             }
             .build(),
         MediaBrowser.MediaItem.FLAG_PLAYABLE
@@ -18273,7 +18566,10 @@ private fun LibraryGroup.toAutoGroupItem(
             .apply {
                 tracks.firstOrNull()
                     ?.imageUrl(session, size = 256, quality = 78)
-                    ?.let { setIconUri(Uri.parse(it)) }
+                    ?.let { imageUrl ->
+                        setIconUri(Uri.parse(imageUrl))
+                        AlbumArtCache[imageUrl]?.let { setIconBitmap(it) }
+                    }
             }
             .build(),
         flags

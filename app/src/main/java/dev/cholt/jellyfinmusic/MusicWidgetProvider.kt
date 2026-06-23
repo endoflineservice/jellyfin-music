@@ -333,6 +333,13 @@ private fun loadWidgetState(context: Context): WidgetState {
 }
 
 fun saveWidgetState(context: Context, snapshot: PlaybackSnapshot) {
+    val appContext = context.applicationContext
+    thread(name = "jellyfin-widget-state", isDaemon = true) {
+        saveWidgetStateBlocking(appContext, snapshot)
+    }
+}
+
+private fun saveWidgetStateBlocking(context: Context, snapshot: PlaybackSnapshot) {
     val prefs = context.getSharedPreferences("jellyfin_music_widget", Context.MODE_PRIVATE)
     val track = snapshot.track
     val session = snapshot.session
