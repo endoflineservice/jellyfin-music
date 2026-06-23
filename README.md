@@ -20,6 +20,20 @@ This is an early prototype. It already connects to a Jellyfin server and plays r
 - Home-screen widgets: a vinyl-inspired 4x2 player card and a compact 2x1 mini widget.
 - App label and package identity set to `Jellyfin Music`.
 
+## Screenshots
+
+Screenshots are tracked under:
+
+```text
+docs/screenshots/
+```
+
+Current release screenshots:
+
+- [Home smart cards](docs/screenshots/home-smart-cards.png)
+- [Now playing turntable](docs/screenshots/now-playing-turntable.png)
+- [Audio equalizer](docs/screenshots/audio-equalizer.png)
+
 ## Roadmap
 
 - Improve Jellyfin auth and connection error handling.
@@ -48,10 +62,10 @@ The debug APK is written to:
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
-The current shareable release APK and icon images are tracked under:
+The current shareable release APK, icon images, and release screenshots are tracked under:
 
 ```text
-release-assets/0.1.3-v7/
+release-assets/0.1.4-v8/
 ```
 
 ## Contributing
