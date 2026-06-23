@@ -482,15 +482,18 @@ private const val DISC_SEEK_RING_INNER_TAP_PADDING_DP = 1f
 private const val DISC_SEEK_RING_OUTER_TAP_PADDING_DP = 10f
 private const val DISC_SCRATCH_RING_GAP_DP = 9f
 private const val DISC_SCRATCH_START_SLOP_DP = 7f
+private const val DISC_ARTWORK_IMAGE_SIZE = 384
+private const val DISC_ARTWORK_IMAGE_QUALITY = 78
 private const val RECORD_FLIP_DURATION_MS = 720
 private const val RECORD_FLIP_ROTATION_DEGREES = 96f
-private const val RECORD_FLIP_ART_PRELOAD_TIMEOUT_MS = 850L
+private const val RECORD_FLIP_ART_PRELOAD_TIMEOUT_MS = 1_400L
 private const val RECORD_ROTATION_DURATION_MS = 14_000
 private const val DISC_SCRATCH_SEEK_SCALE = 0.55f
 private const val DISC_SCRATCH_DEAD_ZONE = 0.22f
 private const val USER_SEEK_PROGRESS_HOLD_MS = 2_000L
 private const val STREAMING_SEEK_DEBOUNCE_MS = 280L
 private const val PLAYBACK_DISPLAY_PROGRESS_SMOOTH_MS = 620
+private const val ALBUM_THEME_COLOR_TRANSITION_MS = 850
 private const val VISUALIZER_BAR_COUNT = 32
 private const val VISUALIZER_FALLBACK_FRAME_MS = 48L
 private const val WIDGET_PROGRESS_UPDATE_MS = 1_000L
@@ -2198,7 +2201,18 @@ private fun JellyfinMusicTheme(
     content: @Composable () -> Unit
 ) {
     val context = LocalContext.current
-    val colorScheme = albumAccentColor?.let {
+    val animatedAlbumAccentColor = albumAccentColor?.let { targetAccent ->
+        val animatedAccent by animateColorAsState(
+            targetValue = targetAccent,
+            animationSpec = tween(
+                durationMillis = ALBUM_THEME_COLOR_TRANSITION_MS,
+                easing = FastOutSlowInEasing
+            ),
+            label = "albumThemeAccent"
+        )
+        animatedAccent
+    }
+    val colorScheme = animatedAlbumAccentColor?.let {
         if (darkTheme) albumArtDarkColorScheme(it) else albumArtLightColorScheme(it)
     }
         ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -10297,6 +10311,31 @@ private suspend fun loadAlbumBitmap(context: Context, imageUrl: String, token: S
     loadAlbumBitmapBlocking(context, imageUrl, token)
 }
 
+private suspend fun preloadFlipAlbumArt(
+    context: Context,
+    track: MusicTrack,
+    session: JellyfinSession?
+) {
+    val imageUrl = track.imageUrl(
+        session,
+        size = DISC_ARTWORK_IMAGE_SIZE,
+        quality = DISC_ARTWORK_IMAGE_QUALITY
+    ) ?: return
+    if (AlbumArtCache[imageUrl] != null) return
+
+    withTimeoutOrNull(RECORD_FLIP_ART_PRELOAD_TIMEOUT_MS) {
+        withContext(Dispatchers.IO) {
+            loadAlbumBitmapBlocking(
+                context = context,
+                imageUrl = imageUrl,
+                token = session?.token,
+                connectTimeoutMs = 450,
+                readTimeoutMs = 900
+            )
+        }
+    }
+}
+
 private fun loadAlbumBitmapBlocking(
     context: Context,
     imageUrl: String,
@@ -12747,20 +12786,43 @@ private fun DiscAlbumStage(
     var lastFlipSession by remember { mutableStateOf<JellyfinSession?>(null) }
     var outgoingFlipTrack by remember { mutableStateOf<MusicTrack?>(null) }
     var outgoingFlipSession by remember { mutableStateOf<JellyfinSession?>(null) }
+    var incomingFlipTrack by remember { mutableStateOf<MusicTrack?>(null) }
+    var incomingFlipSession by remember { mutableStateOf<JellyfinSession?>(null) }
     var outgoingFlipRotation by remember { mutableFloatStateOf(0f) }
     val recordFlipProgress = remember { Animatable(1f) }
     val density = LocalDensity.current
-    val context = LocalContext.current
+    val context = LocalContext.current.applicationContext
     val stageProgress = if (isScratching || holdScrubProgress) scratchProgress else progress
     val currentDiscRotation = discRotation.value.floorMod(360f)
     val flipProgress = recordFlipProgress.value.coerceIn(0f, 1f)
-    val flipDepth = (1f - abs(flipProgress - 0.5f) * 2f).coerceIn(0f, 1f)
-    val incomingAlpha = ((flipProgress - 0.12f) / 0.42f).coerceIn(0f, 1f)
-    val outgoingAlpha = (1f - ((flipProgress - 0.44f) / 0.48f).coerceIn(0f, 1f)).coerceIn(0f, 1f)
+    val isFlipActive = incomingFlipTrack != null
+    val flipDepth = if (isFlipActive) {
+        (1f - abs(flipProgress - 0.5f) * 2f).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+    val outgoingFlipPhase = if (isFlipActive) (flipProgress / 0.5f).coerceIn(0f, 1f) else 1f
+    val incomingFlipPhase = if (isFlipActive) ((flipProgress - 0.5f) / 0.5f).coerceIn(0f, 1f) else 1f
+    val incomingAlpha = if (isFlipActive) {
+        ((flipProgress - 0.48f) / 0.12f).coerceIn(0f, 1f)
+    } else {
+        1f
+    }
+    val outgoingAlpha = if (isFlipActive) {
+        (1f - ((flipProgress - 0.46f) / 0.12f).coerceIn(0f, 1f)).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
     val flipSlidePx = with(density) { 12.dp.toPx() }
+    val settledTrack = lastFlipTrack
+    val isWaitingForIncomingArt = settledTrack != null &&
+        settledTrack.id != track.id &&
+        incomingFlipTrack == null
+    val visibleTrack = incomingFlipTrack ?: if (isWaitingForIncomingArt) settledTrack ?: track else track
+    val visibleSession = incomingFlipSession ?: if (isWaitingForIncomingArt) lastFlipSession else session
 
     SideEffect {
-        if (lastFlipTrack?.id == track.id) {
+        if (lastFlipTrack?.id == track.id && incomingFlipTrack == null) {
             lastFlipTrack = track
             lastFlipSession = session
         }
@@ -12804,35 +12866,28 @@ private fun DiscAlbumStage(
             lastFlipSession = session
             recordFlipProgress.snapTo(1f)
         } else if (previousTrack.id != track.id) {
-            val incomingImageUrl = track.imageUrl(session, size = 512, quality = 86)
-            if (incomingImageUrl != null && AlbumArtCache[incomingImageUrl] == null) {
-                withTimeoutOrNull(RECORD_FLIP_ART_PRELOAD_TIMEOUT_MS) {
-                    withContext(Dispatchers.IO) {
-                        loadAlbumBitmapBlocking(
-                            context = context,
-                            imageUrl = incomingImageUrl,
-                            token = session?.token,
-                            connectTimeoutMs = 250,
-                            readTimeoutMs = 600
-                        )
-                    }
-                }
-            }
+            preloadFlipAlbumArt(context, track, session)
+            outgoingFlipRotation = currentDiscRotation
+            recordFlipProgress.snapTo(0f)
             outgoingFlipTrack = previousTrack
             outgoingFlipSession = lastFlipSession
-            outgoingFlipRotation = currentDiscRotation
-            lastFlipTrack = track
-            lastFlipSession = session
-            recordFlipProgress.snapTo(0f)
+            incomingFlipTrack = track
+            incomingFlipSession = session
             recordFlipProgress.animateTo(
                 targetValue = 1f,
                 animationSpec = tween(durationMillis = RECORD_FLIP_DURATION_MS, easing = FastOutSlowInEasing)
             )
+            lastFlipTrack = track
+            lastFlipSession = session
             outgoingFlipTrack = null
             outgoingFlipSession = null
+            incomingFlipTrack = null
+            incomingFlipSession = null
         } else {
             lastFlipTrack = track
             lastFlipSession = session
+            incomingFlipTrack = null
+            incomingFlipSession = null
             recordFlipProgress.snapTo(1f)
         }
     }
@@ -12939,31 +12994,31 @@ private fun DiscAlbumStage(
                     .fillMaxSize(DISC_RECORD_STAGE_SCALE)
                     .zIndex(0f)
                     .graphicsLayer {
-                        rotationY = RECORD_FLIP_ROTATION_DEGREES * flipProgress
-                        rotationZ = -1.8f * flipProgress
-                        translationX = flipSlidePx * flipProgress
+                        rotationY = RECORD_FLIP_ROTATION_DEGREES * outgoingFlipPhase
+                        rotationZ = -1.8f * outgoingFlipPhase
+                        translationX = flipSlidePx * outgoingFlipPhase
                         cameraDistance = 22f * density.density
-                        scaleX = 1f - flipProgress * 0.12f
-                        scaleY = 1f - flipProgress * 0.06f
+                        scaleX = 1f - outgoingFlipPhase * 0.12f
+                        scaleY = 1f - outgoingFlipPhase * 0.06f
                         alpha = outgoingAlpha
                     }
             )
         }
         VinylDisc(
-            track = track,
-            session = session,
+            track = visibleTrack,
+            session = visibleSession,
             rotationDegrees = currentDiscRotation,
             modifier = Modifier
                 .fillMaxSize(DISC_RECORD_STAGE_SCALE)
                 .zIndex(1f)
                 .graphicsLayer {
-                    val hiddenAmount = 1f - flipProgress
+                    val hiddenAmount = 1f - incomingFlipPhase
                     rotationY = -RECORD_FLIP_ROTATION_DEGREES * hiddenAmount
                     rotationZ = 1.4f * hiddenAmount
                     translationX = -flipSlidePx * hiddenAmount
                     cameraDistance = 22f * density.density
-                    scaleX = 0.92f + flipProgress * 0.08f
-                    scaleY = 0.96f + flipProgress * 0.04f
+                    scaleX = 0.92f + incomingFlipPhase * 0.08f
+                    scaleY = 0.96f + incomingFlipPhase * 0.04f
                     alpha = incomingAlpha
                 }
         )
@@ -13148,7 +13203,7 @@ private fun TurntableArmOverlay(
         fun mix(start: Float, end: Float, amount: Float): Float = start + (end - start) * amount
 
         val onRecordStartAngle = if (alternativeTonearmEnabled) 1.84f else 1.68f
-        val onRecordEndAngle = if (alternativeTonearmEnabled) 2.06f else 2.03f
+        val onRecordEndAngle = if (alternativeTonearmEnabled) 2.16f else 2.13f
         val offRecordAngle = if (alternativeTonearmEnabled) 1.42f else 1.48f
         val armAngle = mix(
             mix(onRecordStartAngle, onRecordEndAngle, p),
@@ -13333,8 +13388,8 @@ private fun VinylDisc(
                         }
                         .clip(CircleShape)
                         .alpha(0.92f),
-                    imageSize = 384,
-                    imageQuality = 78
+                    imageSize = DISC_ARTWORK_IMAGE_SIZE,
+                    imageQuality = DISC_ARTWORK_IMAGE_QUALITY
                 )
                 Canvas(modifier = Modifier.matchParentSize()) {
                     val radius = size.minDimension / 2f
