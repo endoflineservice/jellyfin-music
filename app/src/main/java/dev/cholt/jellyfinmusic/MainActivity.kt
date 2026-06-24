@@ -678,6 +678,7 @@ const val PLAYBACK_ACTION_DOWNLOAD = "dev.cholt.jellyfinmusic.action.DOWNLOAD"
 private const val PLAYBACK_SERVICE_ACTION_START = "dev.cholt.jellyfinmusic.service.START"
 private const val PLAYBACK_SERVICE_ACTION_STOP = "dev.cholt.jellyfinmusic.service.STOP"
 private const val GITHUB_REPOSITORY_URL = "https://github.com/endoflineservice/jellyfin-music"
+private const val BUY_ME_A_COFFEE_URL = "https://www.buymeacoffee.com/endoflineservice"
 private const val AUTO_ROOT_ID = "auto:root"
 private const val AUTO_SONGS_ID = "auto:songs"
 private const val AUTO_ALBUMS_ID = "auto:albums"
@@ -2703,7 +2704,8 @@ private fun DrawScope.drawDriftingStars(
     starCount: Int,
     flowScale: Float = 1f,
     baseAlpha: Float = 1f,
-    accentColor: Color = Color.White
+    accentColor: Color = Color.White,
+    starColor: Color = Color.White
 ) {
     if (size.width <= 0f || size.height <= 0f || starCount <= 0) return
 
@@ -2746,7 +2748,7 @@ private fun DrawScope.drawDriftingStars(
             )
         }
         drawCircle(
-            color = Color.White.copy(alpha = alpha.coerceIn(0f, 1f)),
+            color = starColor.copy(alpha = alpha.coerceIn(0f, 1f)),
             radius = radius,
             center = center
         )
@@ -6436,6 +6438,44 @@ private fun AboutCard() {
                     Text("Open")
                 }
             }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = "Support development",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "Buy Me a Coffee",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                FilledTonalButton(
+                    onClick = {
+                        runCatching {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse(BUY_ME_A_COFFEE_URL))
+                            )
+                        }
+                    },
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Icon(
+                        imageVector = PlayerIconVectors.FavoriteFilled,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Buy coffee")
+                }
+            }
         }
     }
 }
@@ -8809,6 +8849,9 @@ private fun AnimatedBackgroundSettingPreview(
     enabled: Boolean,
     modifier: Modifier = Modifier
 ) {
+    val colorScheme = MaterialTheme.colorScheme
+    val starColor = readableOnColor(colorScheme.background)
+    val lightMode = starColor != Color.White
     val drift = if (enabled) {
         val transition = rememberInfiniteTransition(label = "animated-background-preview")
         val animatedDrift by transition.animateFloat(
@@ -8828,11 +8871,19 @@ private fun AnimatedBackgroundSettingPreview(
         val corner = 11.dp.toPx()
         drawRoundRect(
             brush = Brush.verticalGradient(
-                colors = listOf(
-                    Color(0xFF071124),
-                    Color(0xFF020611),
-                    blendColors(color, Color.Black, 0.78f)
-                )
+                colors = if (lightMode) {
+                    listOf(
+                        blendColors(color, Color.White, 0.82f),
+                        Color(0xFFF7FAFF),
+                        blendColors(color, Color.White, 0.72f)
+                    )
+                } else {
+                    listOf(
+                        Color(0xFF071124),
+                        Color(0xFF020611),
+                        blendColors(color, Color.Black, 0.78f)
+                    )
+                }
             ),
             cornerRadius = CornerRadius(corner, corner)
         )
@@ -8869,7 +8920,7 @@ private fun AnimatedBackgroundSettingPreview(
             val radius = radiusDp.dp.toPx()
             if (enabled && index % 4 == 0) {
                 drawLine(
-                    color = Color.White.copy(alpha = 0.16f),
+                    color = starColor.copy(alpha = if (lightMode) 0.2f else 0.16f),
                     start = center + Offset(radius * 1.8f, -radius * 2.4f),
                     end = center + Offset(radius * 5.2f, -radius * 7.4f),
                     strokeWidth = 1.1.dp.toPx(),
@@ -8877,7 +8928,7 @@ private fun AnimatedBackgroundSettingPreview(
                 )
             }
             drawCircle(
-                color = Color.White.copy(alpha = if (enabled) 0.9f else 0.52f),
+                color = starColor.copy(alpha = if (enabled) 0.82f else 0.5f),
                 radius = radius,
                 center = center
             )
@@ -8890,7 +8941,7 @@ private fun AnimatedBackgroundSettingPreview(
             }
         }
         drawRoundRect(
-            color = Color.White.copy(alpha = if (enabled) 0.16f else 0.08f),
+            color = starColor.copy(alpha = if (enabled) 0.16f else 0.08f),
             cornerRadius = CornerRadius(corner, corner),
             style = Stroke(width = 1.dp.toPx())
         )
@@ -11989,6 +12040,8 @@ private fun AnimatedNowPlayingBackground(
     gradientEnabled: Boolean,
     modifier: Modifier = Modifier
 ) {
+    val colorScheme = MaterialTheme.colorScheme
+    val starColor = readableOnColor(colorScheme.background)
     val phase = rememberStarfieldPhase(active = true)
     val renderedAccentColor by animateColorAsState(
         targetValue = accentColor,
@@ -12033,7 +12086,8 @@ private fun AnimatedNowPlayingBackground(
             starCount = 95,
             flowScale = 1f,
             baseAlpha = 0.92f,
-            accentColor = renderedAccentColor
+            accentColor = renderedAccentColor,
+            starColor = starColor
         )
         drawRect(
             brush = Brush.verticalGradient(
