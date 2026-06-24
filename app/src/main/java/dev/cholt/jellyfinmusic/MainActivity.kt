@@ -962,6 +962,8 @@ class AutoMediaBrowserService : MediaBrowserService() {
     private var autoAlbumArt: Bitmap? = null
     private var autoAlbumArtTrackId: String? = null
     private var loadingAutoAlbumArtTrackId: String? = null
+    private var autoPublishedQueueTrackId: String? = null
+    private var autoPublishedQueueHadArt = false
     private var autoPlaybackSessionActive = false
     private var statePumpRunning = false
     private val statePump = object : Runnable {
@@ -1047,10 +1049,13 @@ class AutoMediaBrowserService : MediaBrowserService() {
         super.onDestroy()
     }
 
-    override fun onGetRoot(clientPackageName: String, clientUid: Int, rootHints: Bundle?): BrowserRoot =
-        BrowserRoot(AUTO_ROOT_ID, null)
+    override fun onGetRoot(clientPackageName: String, clientUid: Int, rootHints: Bundle?): BrowserRoot {
+        mirrorExistingPlaybackForAuto()
+        return BrowserRoot(AUTO_ROOT_ID, null)
+    }
 
     override fun onLoadChildren(parentId: String, result: Result<List<MediaBrowser.MediaItem>>) {
+        mirrorExistingPlaybackForAuto()
         result.detach()
         thread(name = "jellyfin-auto-browse", isDaemon = true) {
             val items = buildAutoChildren(parentId)
@@ -1409,9 +1414,22 @@ class AutoMediaBrowserService : MediaBrowserService() {
     private fun autoPlayer(): JellyfinPlayer =
         PlaybackControllerHolder.get(applicationContext)
 
+    private fun mirrorExistingPlaybackForAuto() {
+        serviceHandler.post {
+            if (autoPlayer().currentTrack != null) {
+                autoPlaybackSessionActive = true
+                startStatePump()
+                publishAutoSessionState()
+            }
+        }
+    }
+
     private fun publishAutoSessionState() {
         if (!autoPlaybackSessionActive) {
             autoSession.isActive = false
+            autoPublishedQueueTrackId = null
+            autoPublishedQueueHadArt = false
+            autoSession.setQueue(emptyList())
             autoSession.setPlaybackState(
                 PlaybackState.Builder()
                     .setState(
@@ -1439,6 +1457,27 @@ class AutoMediaBrowserService : MediaBrowserService() {
                 autoAlbumArtTrackId = track.id
             }
             val currentArt = autoAlbumArt.takeIf { autoAlbumArtTrackId == track.id } ?: cachedArt
+            val queueId = track.autoQueueId()
+            val hasQueueArt = currentArt != null
+            if (autoPublishedQueueTrackId != track.id || autoPublishedQueueHadArt != hasQueueArt) {
+                autoSession.setQueue(
+                    listOf(
+                        MediaSession.QueueItem(
+                            track.toAutoDescription(
+                                context = applicationContext,
+                                session = snapshot.session,
+                                artwork = currentArt,
+                                imageSize = AUTO_NOW_PLAYING_ART_SIZE,
+                                imageQuality = 82
+                            ),
+                            queueId
+                        )
+                    )
+                )
+                autoSession.setQueueTitle(track.album.ifBlank { "Now playing" })
+                autoPublishedQueueTrackId = track.id
+                autoPublishedQueueHadArt = hasQueueArt
+            }
             autoSession.setMetadata(
                 MediaMetadata.Builder()
                     .putString(MediaMetadata.METADATA_KEY_MEDIA_ID, "$AUTO_TRACK_PREFIX${track.id}")
@@ -1485,7 +1524,7 @@ class AutoMediaBrowserService : MediaBrowserService() {
                     autoCustomAction(
                         action = PLAYBACK_ACTION_SHUFFLE,
                         title = if (autoShuffleEnabled) "Shuffle on" else "Shuffle off",
-                        iconRes = R.drawable.auto_icon_shuffle,
+                        iconRes = if (autoShuffleEnabled) R.drawable.auto_icon_shuffle_on else R.drawable.auto_icon_shuffle,
                         commandIcon = if (autoShuffleEnabled) AUTO_COMMAND_ICON_SHUFFLE_ON else AUTO_COMMAND_ICON_SHUFFLE_OFF
                     )
                 )
@@ -1513,6 +1552,7 @@ class AutoMediaBrowserService : MediaBrowserService() {
                         commandIcon = AUTO_COMMAND_ICON_RADIO
                     )
                 )
+                .setActiveQueueItemId(track?.autoQueueId() ?: -1L)
                 .setState(snapshot.androidPlaybackState(), position, if (snapshot.isPlaying) 1f else 0f, snapshot.updatedAtMs)
                 .build()
         )
@@ -1802,6 +1842,15 @@ private class PlaybackNotificationController(context: Context) {
         if (!force && now - lastPlaybackStateUpdateAt < 1_500L) return
         lastPlaybackStateUpdateAt = now
 
+        val imageUrl = track.imageUrl(snapshot.session, size = AUTO_NOW_PLAYING_ART_SIZE, quality = 82)
+        val sessionArtwork = largeIcon
+            ?.takeIf { largeIconTrackId == track.id }
+            ?: cachedAutoAlbumArt(appContext, imageUrl, AUTO_NOW_PLAYING_ART_SIZE)
+                ?.also {
+                    largeIcon = it
+                    largeIconTrackId = track.id
+                }
+
         mediaSession.isActive = true
         mediaSession.setMetadata(
             MediaMetadata.Builder()
@@ -1814,12 +1863,12 @@ private class PlaybackNotificationController(context: Context) {
                 .putString(MediaMetadata.METADATA_KEY_DISPLAY_DESCRIPTION, track.album)
                 .putLong(MediaMetadata.METADATA_KEY_DURATION, track.durationMs.coerceAtLeast(0L))
                 .apply {
-                    track.imageUrl(snapshot.session, size = 512, quality = 84)?.let { imageUrl ->
+                    imageUrl?.let { imageUrl ->
                         putString(MediaMetadata.METADATA_KEY_ART_URI, imageUrl)
                         putString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI, imageUrl)
                         putString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI, imageUrl)
                     }
-                    largeIcon?.takeIf { largeIconTrackId == track.id }?.let {
+                    sessionArtwork?.let {
                         putBitmap(MediaMetadata.METADATA_KEY_ART, it)
                         putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, it)
                         putBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON, it)
@@ -1871,7 +1920,14 @@ private class PlaybackNotificationController(context: Context) {
 
     private fun loadLargeIconIfNeeded(track: MusicTrack, session: JellyfinSession) {
         if (largeIconTrackId == track.id || loadingLargeIconTrackId == track.id) return
-        val imageUrl = track.imageUrl(session, size = 256, quality = 82) ?: return
+        val imageUrl = track.imageUrl(session, size = AUTO_NOW_PLAYING_ART_SIZE, quality = 82) ?: return
+        cachedAutoAlbumArt(appContext, imageUrl, AUTO_NOW_PLAYING_ART_SIZE)?.let { cached ->
+            largeIcon = cached
+            largeIconTrackId = track.id
+            publishMediaSessionState(force = true)
+            publishPlaybackNotification(currentSnapshot, buildNotification(currentSnapshot))
+            return
+        }
         loadingLargeIconTrackId = track.id
         thread(name = "jellyfin-notification-art", isDaemon = true) {
             val bitmap = loadAlbumBitmapBlocking(appContext, imageUrl, session.token)
@@ -2669,10 +2725,13 @@ private fun DrawScope.drawDriftingStars(
         val travel = cycle * speed * flowScale * spanY
         val x = wrap(seed(index, 0.17f) * spanX - margin - travel * 0.42f, spanX)
         val y = wrap(seed(index, 4.91f) * spanY - margin + travel, spanY)
-        val flicker = if (index % 3 == 0) {
-            0.56f + 0.44f * ((sin(phase * (0.74f + seed(index, 1.1f) * 0.9f) + index) + 1f) * 0.5f)
+        val flicker = if (index % 2 == 0) {
+            val fastPulse = (sin(phase * (18f + seed(index, 1.1f) * 34f) + index * 1.73f) + 1f) * 0.5f
+            val irregularFade = (sin(phase * (7f + seed(index, 5.6f) * 16f) + index * 3.17f) + 1f) * 0.5f
+            0.08f + 0.92f * fastPulse * (0.36f + irregularFade * 0.64f)
         } else {
-            0.9f + seed(index, 7.2f) * 0.1f
+            val softPulse = (sin(phase * (10f + seed(index, 7.2f) * 22f) + index * 2.31f) + 1f) * 0.5f
+            0.26f + 0.74f * softPulse
         }
         val radius = (0.62f + seed(index, 2.2f) * 1.34f).dp.toPx()
         val alpha = baseAlpha * (0.34f + seed(index, 3.3f) * 0.5f) * flicker
@@ -2782,7 +2841,7 @@ private fun JellyfinMusicApp() {
         mutableStateOf(loadAnimatedNowPlayingBackgroundEnabled(context))
     }
     var backgroundGradientEnabled by remember {
-        mutableStateOf(loadBackgroundGradientEnabled(context) && !animatedNowPlayingBackgroundEnabled)
+        mutableStateOf(loadBackgroundGradientEnabled(context))
     }
     var turntableProgressRingEnabled by remember { mutableStateOf(loadTurntableProgressRingEnabled(context)) }
     var alternativeTonearmEnabled by remember { mutableStateOf(loadAlternativeTonearmEnabled(context)) }
@@ -4410,18 +4469,10 @@ private fun JellyfinMusicApp() {
                                             onBackgroundGradientEnabledChange = { enabled ->
                                                 backgroundGradientEnabled = enabled
                                                 saveBackgroundGradientEnabled(context, enabled)
-                                                if (enabled) {
-                                                    animatedNowPlayingBackgroundEnabled = false
-                                                    saveAnimatedNowPlayingBackgroundEnabled(context, false)
-                                                }
                                             },
                                             onAnimatedNowPlayingBackgroundEnabledChange = { enabled ->
                                                 animatedNowPlayingBackgroundEnabled = enabled
                                                 saveAnimatedNowPlayingBackgroundEnabled(context, enabled)
-                                                if (enabled) {
-                                                    backgroundGradientEnabled = false
-                                                    saveBackgroundGradientEnabled(context, false)
-                                                }
                                             },
                                             onTurntableProgressRingEnabledChange = { enabled ->
                                                 turntableProgressRingEnabled = enabled
@@ -6130,6 +6181,7 @@ private fun settingsCategoryDetail(
             themeMode.label,
             if (useAlbumArtColors) "Artwork colors" else "Static colors",
             when {
+                backgroundGradientEnabled && animatedNowPlayingBackgroundEnabled -> "Gradient + stars"
                 animatedNowPlayingBackgroundEnabled -> "Starfield mode"
                 backgroundGradientEnabled -> "Gradient on"
                 else -> "Flat background"
@@ -8507,7 +8559,7 @@ private fun AppearanceCard(
                         fontWeight = FontWeight.SemiBold
                     )
                     Text(
-                        text = if (animatedNowPlayingBackgroundEnabled) "Slow drifting stars behind Now Playing" else "Static Now Playing background",
+                        text = if (animatedNowPlayingBackgroundEnabled) "Slow drifting stars behind Now Playing" else "No animated stars",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -11657,6 +11709,7 @@ private fun loadAlbumBitmapBlocking(
             connectTimeout = connectTimeoutMs
             readTimeout = readTimeoutMs
             setRequestProperty("Accept", "image/*")
+            setRequestProperty("User-Agent", appUserAgent(compact = false))
             token?.let { setRequestProperty("X-Emby-Token", it) }
         }
         try {
@@ -11804,6 +11857,7 @@ private fun Modifier.swipeDownToDismiss(
 @Composable
 private fun AnimatedNowPlayingBackground(
     accentColor: Color,
+    gradientEnabled: Boolean,
     modifier: Modifier = Modifier
 ) {
     val transition = rememberInfiniteTransition(label = "now-playing-background")
@@ -11817,25 +11871,38 @@ private fun AnimatedNowPlayingBackground(
         label = "now-playing-background-phase"
     )
     Canvas(modifier = modifier) {
-        drawRect(
-            brush = Brush.verticalGradient(
-                colorStops = arrayOf(
-                    0f to Color(0xFF080D1D),
-                    0.48f to Color(0xFF02040B),
-                    1f to blendColors(accentColor, Color.Black, 0.9f)
+        if (gradientEnabled) {
+            drawRect(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        accentColor.copy(alpha = 0.08f),
+                        Color.Transparent
+                    ),
+                    center = Offset(size.width * 0.66f, size.height * 0.16f),
+                    radius = size.minDimension * 0.82f
                 )
             )
-        )
-        drawRect(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    accentColor.copy(alpha = 0.1f),
-                    Color.Transparent
-                ),
-                center = Offset(size.width * 0.66f, size.height * 0.16f),
-                radius = size.minDimension * 0.82f
+        } else {
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colorStops = arrayOf(
+                        0f to Color(0xFF080D1D),
+                        0.48f to Color(0xFF02040B),
+                        1f to blendColors(accentColor, Color.Black, 0.9f)
+                    )
+                )
             )
-        )
+            drawRect(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        accentColor.copy(alpha = 0.1f),
+                        Color.Transparent
+                    ),
+                    center = Offset(size.width * 0.66f, size.height * 0.16f),
+                    radius = size.minDimension * 0.82f
+                )
+            )
+        }
         drawDriftingStars(
             phase = phase,
             starCount = 95,
@@ -11924,7 +11991,7 @@ private fun FullPlayerScreen(
             }
         }
     }
-    val playerBackground = if (backgroundGradientEnabled && !animatedBackgroundEnabled) {
+    val playerBackground = if (backgroundGradientEnabled) {
         Brush.verticalGradient(
             colorStops = arrayOf(
                 0f to blendColors(colorScheme.primary, colorScheme.background, 0.38f),
@@ -11945,6 +12012,7 @@ private fun FullPlayerScreen(
         if (animatedBackgroundEnabled) {
             AnimatedNowPlayingBackground(
                 accentColor = track.tint,
+                gradientEnabled = backgroundGradientEnabled,
                 modifier = Modifier.matchParentSize()
             )
         }
@@ -19557,19 +19625,39 @@ private fun Bitmap.scaledForMediaSession(maxEdge: Int): Bitmap {
 
 private fun MusicTrack.toAutoTrackItem(context: Context, session: JellyfinSession?): MediaBrowser.MediaItem =
     MediaBrowser.MediaItem(
-        MediaDescription.Builder()
-            .setMediaId("$AUTO_TRACK_PREFIX$id")
-            .setTitle(title)
-            .setSubtitle(notificationSubtitle())
-            .apply {
-                imageUrl(session, size = AUTO_BROWSE_ART_SIZE, quality = 78)?.let { imageUrl ->
-                    setIconUri(Uri.parse(imageUrl))
-                    cachedAutoAlbumArt(context, imageUrl, AUTO_BROWSE_ART_SIZE)?.let { setIconBitmap(it) }
-                }
-            }
-            .build(),
+        toAutoDescription(
+            context = context,
+            session = session,
+            artwork = null,
+            imageSize = AUTO_BROWSE_ART_SIZE,
+            imageQuality = 78
+        ),
         MediaBrowser.MediaItem.FLAG_PLAYABLE
     )
+
+private fun MusicTrack.toAutoDescription(
+    context: Context,
+    session: JellyfinSession?,
+    artwork: Bitmap?,
+    imageSize: Int,
+    imageQuality: Int
+): MediaDescription =
+    MediaDescription.Builder()
+        .setMediaId("$AUTO_TRACK_PREFIX$id")
+        .setTitle(title)
+        .setSubtitle(notificationSubtitle())
+        .apply {
+            imageUrl(session, size = imageSize, quality = imageQuality)?.let { imageUrl ->
+                setIconUri(Uri.parse(imageUrl))
+                (artwork ?: cachedAutoAlbumArt(context, imageUrl, imageSize))?.let { setIconBitmap(it) }
+            }
+        }
+        .build()
+
+private fun MusicTrack.autoQueueId(): Long =
+    runCatching {
+        stableCacheKey(id).take(15).toLong(16).coerceAtLeast(1L)
+    }.getOrDefault((id.hashCode().toLong() and Long.MAX_VALUE).coerceAtLeast(1L))
 
 private fun LibraryGroup.toAutoGroupItem(
     context: Context,
