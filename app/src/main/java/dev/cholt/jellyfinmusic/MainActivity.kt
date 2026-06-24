@@ -408,6 +408,8 @@ private val AlbumTints = listOf(
 private const val PREFS_NAME = "jellyfin_music"
 private const val PREF_USE_ALBUM_ART_COLORS = "use_album_art_colors"
 private const val PREF_BACKGROUND_GRADIENT_ENABLED = "background_gradient_enabled"
+private const val PREF_ANIMATED_NOW_PLAYING_BACKGROUND_ENABLED = "animated_now_playing_background_enabled"
+private const val PREF_TURNTABLE_PROGRESS_RING_ENABLED = "turntable_progress_ring_enabled"
 private const val PREF_ALTERNATIVE_TONEARM_ENABLED = "alternative_tonearm_enabled"
 private const val PREF_VISUALIZER_ENABLED = "visualizer_enabled"
 private const val PREF_THEME_MODE = "theme_mode"
@@ -670,6 +672,7 @@ const val PLAYBACK_ACTION_STOP = "dev.cholt.jellyfinmusic.action.STOP"
 const val PLAYBACK_ACTION_FAVORITE = "dev.cholt.jellyfinmusic.action.FAVORITE"
 const val PLAYBACK_ACTION_SHUFFLE = "dev.cholt.jellyfinmusic.action.SHUFFLE"
 const val PLAYBACK_ACTION_REPEAT = "dev.cholt.jellyfinmusic.action.REPEAT"
+const val PLAYBACK_ACTION_RADIO = "dev.cholt.jellyfinmusic.action.RADIO"
 const val PLAYBACK_ACTION_DOWNLOAD = "dev.cholt.jellyfinmusic.action.DOWNLOAD"
 private const val PLAYBACK_SERVICE_ACTION_START = "dev.cholt.jellyfinmusic.service.START"
 private const val PLAYBACK_SERVICE_ACTION_STOP = "dev.cholt.jellyfinmusic.service.STOP"
@@ -691,6 +694,14 @@ private const val AUTO_PLAYLIST_PREFIX = "auto:playlist:"
 private const val AUTO_MAX_TOP_LEVEL_ITEMS = 500
 private const val AUTO_NOW_PLAYING_ART_SIZE = 320
 private const val AUTO_BROWSE_ART_SIZE = 256
+private const val AUTO_COMMAND_BUTTON_ICON_COMPAT = "androidx.media3.session.EXTRAS_KEY_COMMAND_BUTTON_ICON_COMPAT"
+private const val AUTO_COMMAND_ICON_SHUFFLE_ON = 0xe043
+private const val AUTO_COMMAND_ICON_SHUFFLE_OFF = 0xfe044
+private const val AUTO_COMMAND_ICON_REPEAT_ALL = 0xe040
+private const val AUTO_COMMAND_ICON_REPEAT_OFF = 0xfe040
+private const val AUTO_COMMAND_ICON_HEART_FILLED = 0xfe87d
+private const val AUTO_COMMAND_ICON_HEART_UNFILLED = 0xe87d
+private const val AUTO_COMMAND_ICON_RADIO = 0xe51e
 
 private data class PlaybackActionHandlers(
     val onPlay: () -> Unit,
@@ -802,7 +813,10 @@ class PlaybackForegroundService : Service() {
             return START_NOT_STICKY
         }
 
-        val notification = latestNotification ?: buildFallbackNotification()
+        val notification = latestNotification
+            ?: pendingNotification
+            ?: buildFallbackNotification()
+        pendingNotification = null
         startAsForeground(notification)
         return START_STICKY
     }
@@ -888,23 +902,48 @@ class PlaybackForegroundService : Service() {
     companion object {
         @Volatile
         private var instance: PlaybackForegroundService? = null
+        @Volatile
+        private var pendingNotification: Notification? = null
 
-        fun publish(context: Context, notification: Notification, keepForeground: Boolean) {
+        fun publish(context: Context, notification: Notification, keepForeground: Boolean): Boolean {
             val appContext = context.applicationContext
+            val activeInstance = instance
             if (keepForeground) {
+                pendingNotification = notification
                 val startIntent = Intent(appContext, PlaybackForegroundService::class.java)
                     .setAction(PLAYBACK_SERVICE_ACTION_START)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    appContext.startForegroundService(startIntent)
-                } else {
-                    appContext.startService(startIntent)
+                runCatching {
+                    if (activeInstance == null) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            appContext.startForegroundService(startIntent)
+                        } else {
+                            appContext.startService(startIntent)
+                        }
+                    }
+                }.onFailure {
+                    PlaybackDiagnostics.record(
+                        "Foreground service start failed",
+                        it.readableMessage()
+                    )
                 }
+            } else {
+                pendingNotification = null
             }
-            instance?.publish(notification, keepForeground)
+            return runCatching {
+                activeInstance?.publish(notification, keepForeground)
+                activeInstance != null
+            }.getOrElse {
+                PlaybackDiagnostics.record(
+                    "Notification update failed",
+                    it.readableMessage()
+                )
+                false
+            }
         }
 
         fun stop(context: Context) {
             val appContext = context.applicationContext
+            pendingNotification = null
             instance?.stopSelf()
             appContext.stopService(
                 Intent(appContext, PlaybackForegroundService::class.java)
@@ -923,9 +962,14 @@ class AutoMediaBrowserService : MediaBrowserService() {
     private var autoAlbumArt: Bitmap? = null
     private var autoAlbumArtTrackId: String? = null
     private var loadingAutoAlbumArtTrackId: String? = null
+    private var autoPlaybackSessionActive = false
     private var statePumpRunning = false
     private val statePump = object : Runnable {
         override fun run() {
+            if (!autoPlaybackSessionActive) {
+                stopStatePump()
+                return
+            }
             publishAutoSessionState()
             serviceHandler.postDelayed(this, 1_000L)
         }
@@ -951,6 +995,8 @@ class AutoMediaBrowserService : MediaBrowserService() {
                 override fun onStop() {
                     autoPlayer().release()
                     autoQueue = emptyList()
+                    autoPlaybackSessionActive = false
+                    stopStatePump()
                     publishAutoSessionState()
                 }
 
@@ -990,10 +1036,9 @@ class AutoMediaBrowserService : MediaBrowserService() {
                     publishAutoSessionState()
                 }
             })
-            isActive = true
+            isActive = false
         }
         sessionToken = autoSession.sessionToken
-        startStatePump()
     }
 
     override fun onDestroy() {
@@ -1190,6 +1235,8 @@ class AutoMediaBrowserService : MediaBrowserService() {
         val player = autoPlayer()
         val current = player.currentTrack
         if (current != null && !player.isPlaying && player.status != "Ended") {
+            autoPlaybackSessionActive = true
+            startStatePump()
             player.toggle()
             publishAutoSessionState()
             return
@@ -1289,11 +1336,8 @@ class AutoMediaBrowserService : MediaBrowserService() {
         when (action) {
             PLAYBACK_ACTION_SHUFFLE -> {
                 autoShuffleEnabled = !autoShuffleEnabled
-                autoPlayer().currentTrack?.let { activeTrack ->
-                    val baseQueue = autoQueue.ifEmpty { loadAutoTracks().second.queueStartingAt(activeTrack) }
-                    if (baseQueue.size > 2) {
-                        autoQueue = listOf(activeTrack) + baseQueue.drop(1).randomizedPlaybackQueue()
-                    }
+                if (autoShuffleEnabled) {
+                    reshuffleAutoQueueAfterCurrent()
                 }
             }
             PLAYBACK_ACTION_REPEAT -> {
@@ -1313,7 +1357,35 @@ class AutoMediaBrowserService : MediaBrowserService() {
                     saveLocalPlaylists(applicationContext, session, playlists)
                 }
             }
+            PLAYBACK_ACTION_RADIO -> startAutoSongRadio()
         }
+    }
+
+    private fun reshuffleAutoQueueAfterCurrent() {
+        autoPlayer().currentTrack?.let { activeTrack ->
+            val baseQueue = autoQueue.ifEmpty { loadAutoTracks().second.queueStartingAt(activeTrack) }
+            if (baseQueue.size > 2) {
+                autoQueue = listOf(activeTrack) + baseQueue.drop(1).randomizedPlaybackQueue()
+            }
+        }
+    }
+
+    private fun startAutoSongRadio() {
+        val (session, tracks) = loadAutoTracks()
+        val seed = autoPlayer().currentTrack
+        if (session == null || seed == null || tracks.isEmpty()) return
+        val likedTrackIds = loadLikedTrackIds(applicationContext, session)
+        val recentTrackIds = loadRecentTrackIds(applicationContext, session)
+        val source = autoQueue.ifEmpty { tracks.queueStartingAt(seed) }.ifEmpty { tracks }
+        autoQueue = buildSongRadioQueue(
+            tracks = tracks,
+            source = source,
+            seed = seed,
+            likedTrackIds = likedTrackIds,
+            recentTrackIds = recentTrackIds,
+            smartShuffleEnabled = loadQueueBehaviorSettings(applicationContext).smartShuffleEnabled
+        )
+        autoShuffleEnabled = false
     }
 
     private fun playTrackFromQueue(
@@ -1322,6 +1394,8 @@ class AutoMediaBrowserService : MediaBrowserService() {
         session: JellyfinSession? = loadAutoTracks().first
     ) {
         val activeSession = session ?: return
+        autoPlaybackSessionActive = true
+        startStatePump()
         autoQueue = queue.queueStartingAt(track).ifEmpty { listOf(track) }
         autoPlayer().play(track, activeSession)
         publishAutoSessionState()
@@ -1336,12 +1410,29 @@ class AutoMediaBrowserService : MediaBrowserService() {
         PlaybackControllerHolder.get(applicationContext)
 
     private fun publishAutoSessionState() {
+        if (!autoPlaybackSessionActive) {
+            autoSession.isActive = false
+            autoSession.setPlaybackState(
+                PlaybackState.Builder()
+                    .setState(
+                        PlaybackState.STATE_NONE,
+                        PlaybackState.PLAYBACK_POSITION_UNKNOWN,
+                        0f
+                    )
+                    .build()
+            )
+            return
+        }
         val player = autoPlayer()
         player.syncProgress()
         val snapshot = player.playbackSnapshot
         val track = snapshot.track
         if (track != null) {
             val imageUrl = track.imageUrl(snapshot.session, size = AUTO_NOW_PLAYING_ART_SIZE, quality = 82)
+            if (autoAlbumArtTrackId != null && autoAlbumArtTrackId != track.id) {
+                autoAlbumArt = null
+                autoAlbumArtTrackId = null
+            }
             val cachedArt = cachedAutoAlbumArt(applicationContext, imageUrl, AUTO_NOW_PLAYING_ART_SIZE)
             if (cachedArt != null && autoAlbumArtTrackId != track.id) {
                 autoAlbumArt = cachedArt
@@ -1391,25 +1482,36 @@ class AutoMediaBrowserService : MediaBrowserService() {
                         PlaybackState.ACTION_PLAY_FROM_SEARCH
                 )
                 .addCustomAction(
-                    PlaybackState.CustomAction.Builder(
-                        PLAYBACK_ACTION_FAVORITE,
-                        if (trackIsFavorite) "Unfavorite" else "Favorite",
-                        if (trackIsFavorite) R.drawable.auto_icon_favorite_filled else R.drawable.auto_icon_favorite_outline
-                    ).build()
+                    autoCustomAction(
+                        action = PLAYBACK_ACTION_SHUFFLE,
+                        title = if (autoShuffleEnabled) "Shuffle on" else "Shuffle off",
+                        iconRes = R.drawable.auto_icon_shuffle,
+                        commandIcon = if (autoShuffleEnabled) AUTO_COMMAND_ICON_SHUFFLE_ON else AUTO_COMMAND_ICON_SHUFFLE_OFF
+                    )
                 )
                 .addCustomAction(
-                    PlaybackState.CustomAction.Builder(
-                        PLAYBACK_ACTION_SHUFFLE,
-                        if (autoShuffleEnabled) "Shuffle on" else "Shuffle off",
-                        R.drawable.auto_icon_shuffle
-                    ).build()
+                    autoCustomAction(
+                        action = PLAYBACK_ACTION_REPEAT,
+                        title = if (autoRepeatEnabled) "Repeat on" else "Repeat off",
+                        iconRes = R.drawable.auto_icon_repeat,
+                        commandIcon = if (autoRepeatEnabled) AUTO_COMMAND_ICON_REPEAT_ALL else AUTO_COMMAND_ICON_REPEAT_OFF
+                    )
                 )
                 .addCustomAction(
-                    PlaybackState.CustomAction.Builder(
-                        PLAYBACK_ACTION_REPEAT,
-                        if (autoRepeatEnabled) "Repeat on" else "Repeat off",
-                        R.drawable.auto_icon_repeat
-                    ).build()
+                    autoCustomAction(
+                        action = PLAYBACK_ACTION_FAVORITE,
+                        title = if (trackIsFavorite) "Unfavorite" else "Favorite",
+                        iconRes = if (trackIsFavorite) R.drawable.auto_icon_favorite_filled else R.drawable.auto_icon_favorite_outline,
+                        commandIcon = if (trackIsFavorite) AUTO_COMMAND_ICON_HEART_FILLED else AUTO_COMMAND_ICON_HEART_UNFILLED
+                    )
+                )
+                .addCustomAction(
+                    autoCustomAction(
+                        action = PLAYBACK_ACTION_RADIO,
+                        title = "Song Radio",
+                        iconRes = R.drawable.auto_icon_radio,
+                        commandIcon = AUTO_COMMAND_ICON_RADIO
+                    )
                 )
                 .setState(snapshot.androidPlaybackState(), position, if (snapshot.isPlaying) 1f else 0f, snapshot.updatedAtMs)
                 .build()
@@ -1554,12 +1656,7 @@ private class PlaybackNotificationController(context: Context) {
         publishMediaSessionState(force = true)
         val notification = buildNotification(snapshot)
         lastNotificationProgressUpdateAt = SystemClock.elapsedRealtime()
-        PlaybackForegroundService.publish(
-            context = appContext,
-            notification = notification,
-            keepForeground = snapshot.isPlaying || snapshot.isBuffering
-        )
-        notificationManager.notify(PLAYBACK_NOTIFICATION_ID, notification)
+        publishPlaybackNotification(snapshot, notification)
         loadLargeIconIfNeeded(track, session)
     }
 
@@ -1572,7 +1669,7 @@ private class PlaybackNotificationController(context: Context) {
         val now = SystemClock.elapsedRealtime()
         if (now - lastNotificationProgressUpdateAt >= 1_500L) {
             lastNotificationProgressUpdateAt = now
-            notificationManager.notify(PLAYBACK_NOTIFICATION_ID, buildNotification(snapshot))
+            publishPlaybackNotification(snapshot, buildNotification(snapshot))
         }
     }
 
@@ -1708,17 +1805,24 @@ private class PlaybackNotificationController(context: Context) {
         mediaSession.isActive = true
         mediaSession.setMetadata(
             MediaMetadata.Builder()
+                .putString(MediaMetadata.METADATA_KEY_MEDIA_ID, track.id)
                 .putString(MediaMetadata.METADATA_KEY_TITLE, track.title)
                 .putString(MediaMetadata.METADATA_KEY_ARTIST, track.artist)
                 .putString(MediaMetadata.METADATA_KEY_ALBUM, track.album)
+                .putString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE, track.title)
+                .putString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE, track.artist)
+                .putString(MediaMetadata.METADATA_KEY_DISPLAY_DESCRIPTION, track.album)
                 .putLong(MediaMetadata.METADATA_KEY_DURATION, track.durationMs.coerceAtLeast(0L))
                 .apply {
                     track.imageUrl(snapshot.session, size = 512, quality = 84)?.let { imageUrl ->
                         putString(MediaMetadata.METADATA_KEY_ART_URI, imageUrl)
                         putString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI, imageUrl)
+                        putString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI, imageUrl)
                     }
                     largeIcon?.takeIf { largeIconTrackId == track.id }?.let {
+                        putBitmap(MediaMetadata.METADATA_KEY_ART, it)
                         putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, it)
+                        putBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON, it)
                     }
                 }
                 .build()
@@ -1771,6 +1875,7 @@ private class PlaybackNotificationController(context: Context) {
         loadingLargeIconTrackId = track.id
         thread(name = "jellyfin-notification-art", isDaemon = true) {
             val bitmap = loadAlbumBitmapBlocking(appContext, imageUrl, session.token)
+                ?.scaledForMediaSession(AUTO_NOW_PLAYING_ART_SIZE)
             mainHandler.post {
                 loadingLargeIconTrackId = null
                 val snapshot = currentSnapshot
@@ -1778,19 +1883,24 @@ private class PlaybackNotificationController(context: Context) {
                     largeIcon = bitmap
                     largeIconTrackId = track.id
                     publishMediaSessionState(force = true)
-                    val notification = buildNotification(snapshot)
-                    PlaybackForegroundService.publish(
-                        context = appContext,
-                        notification = notification,
-                        keepForeground = snapshot.isPlaying || snapshot.isBuffering
-                    )
-                    notificationManager.notify(
-                        PLAYBACK_NOTIFICATION_ID,
-                        notification
-                    )
+                    publishPlaybackNotification(snapshot, buildNotification(snapshot))
                 }
             }
         }
+    }
+
+    private fun publishPlaybackNotification(snapshot: PlaybackSnapshot, notification: Notification) {
+        val keepForeground = snapshot.isPlaying || snapshot.isBuffering
+        if (!keepForeground) {
+            PlaybackForegroundService.stop(appContext)
+            notificationManager.cancel(PLAYBACK_NOTIFICATION_ID)
+            return
+        }
+        PlaybackForegroundService.publish(
+            context = appContext,
+            notification = notification,
+            keepForeground = keepForeground
+        )
     }
 
     private fun openAppPendingIntent(): PendingIntent {
@@ -2531,6 +2641,58 @@ private fun composeColor(argb: Int): Color =
         alpha = AndroidColor.alpha(argb) / 255f
     )
 
+private fun DrawScope.drawDriftingStars(
+    phase: Float,
+    starCount: Int,
+    flowScale: Float = 1f,
+    baseAlpha: Float = 1f,
+    accentColor: Color = Color.White
+) {
+    if (size.width <= 0f || size.height <= 0f || starCount <= 0) return
+
+    val cycle = ((phase / (PI.toFloat() * 2f)) % 1f + 1f) % 1f
+    val maxDimension = if (size.width > size.height) size.width else size.height
+    val margin = maxDimension * 0.08f
+    val spanX = size.width + margin * 2f
+    val spanY = size.height + margin * 2f
+
+    fun seed(index: Int, salt: Float): Float =
+        (abs(sin(index * 12.9898f + salt) * 43758.5453f) % 1f)
+
+    fun wrap(value: Float, span: Float): Float {
+        val wrapped = (value + margin) % span
+        return (if (wrapped < 0f) wrapped + span else wrapped) - margin
+    }
+
+    repeat(starCount) { index ->
+        val speed = 0.22f + seed(index, 9.4f) * 0.56f
+        val travel = cycle * speed * flowScale * spanY
+        val x = wrap(seed(index, 0.17f) * spanX - margin - travel * 0.42f, spanX)
+        val y = wrap(seed(index, 4.91f) * spanY - margin + travel, spanY)
+        val flicker = if (index % 3 == 0) {
+            0.56f + 0.44f * ((sin(phase * (0.74f + seed(index, 1.1f) * 0.9f) + index) + 1f) * 0.5f)
+        } else {
+            0.9f + seed(index, 7.2f) * 0.1f
+        }
+        val radius = (0.62f + seed(index, 2.2f) * 1.34f).dp.toPx()
+        val alpha = baseAlpha * (0.34f + seed(index, 3.3f) * 0.5f) * flicker
+        val center = Offset(x, y)
+
+        if (index % 8 == 0) {
+            drawCircle(
+                color = accentColor.copy(alpha = 0.08f * baseAlpha * flicker),
+                radius = radius * 3.4f,
+                center = center
+            )
+        }
+        drawCircle(
+            color = Color.White.copy(alpha = alpha.coerceIn(0f, 1f)),
+            radius = radius,
+            center = center
+        )
+    }
+}
+
 private fun stableCacheKey(value: String): String =
     MessageDigest
         .getInstance("SHA-256")
@@ -2616,7 +2778,13 @@ private fun JellyfinMusicApp() {
     var shuffleEnabled by remember { mutableStateOf(false) }
     var repeatEnabled by remember { mutableStateOf(false) }
     var useAlbumArtColors by remember { mutableStateOf(loadUseAlbumArtColors(context)) }
-    var backgroundGradientEnabled by remember { mutableStateOf(loadBackgroundGradientEnabled(context)) }
+    var animatedNowPlayingBackgroundEnabled by remember {
+        mutableStateOf(loadAnimatedNowPlayingBackgroundEnabled(context))
+    }
+    var backgroundGradientEnabled by remember {
+        mutableStateOf(loadBackgroundGradientEnabled(context) && !animatedNowPlayingBackgroundEnabled)
+    }
+    var turntableProgressRingEnabled by remember { mutableStateOf(loadTurntableProgressRingEnabled(context)) }
     var alternativeTonearmEnabled by remember { mutableStateOf(loadAlternativeTonearmEnabled(context)) }
     var themeMode by remember { mutableStateOf(loadThemeMode(context)) }
     var offlineWifiOnly by remember { mutableStateOf(loadOfflineWifiOnly(context)) }
@@ -2906,12 +3074,17 @@ private fun JellyfinMusicApp() {
 
     fun shuffledPlaybackQueue(source: List<MusicTrack>): List<MusicTrack> =
         if (queueBehaviorSettings.smartShuffleEnabled) {
-            source.smartShufflePlaybackQueue(
-                likedTrackIds = likedTrackIds,
-                recentTrackIds = recentTrackIds,
-                queueHistoryTrackIds = queueHistoryTrackIds,
-                fewerRepeatsEnabled = queueBehaviorSettings.fewerRepeatsEnabled
-            )
+            runCatching {
+                source.smartShufflePlaybackQueue(
+                    likedTrackIds = likedTrackIds,
+                    recentTrackIds = recentTrackIds,
+                    queueHistoryTrackIds = queueHistoryTrackIds,
+                    fewerRepeatsEnabled = queueBehaviorSettings.fewerRepeatsEnabled
+                )
+            }.getOrElse {
+                PlaybackDiagnostics.record("Smart shuffle failed", it.readableMessage())
+                source.randomizedPlaybackQueue()
+            }
         } else {
             source.randomizedPlaybackQueue()
         }
@@ -3283,8 +3456,8 @@ private fun JellyfinMusicApp() {
                         }
                     }
                 },
-                onPrevious = { playAdjacent(-1) },
-                onNext = { playAdjacent(1) },
+                onPrevious = { playAdjacent(-1, openPlayer = false) },
+                onNext = { playAdjacent(1, openPlayer = false) },
                 onSeekToFraction = { player.seekToFraction(it) },
                 onStop = {
                     player.dispose()
@@ -3625,8 +3798,8 @@ private fun JellyfinMusicApp() {
                                 onToggle = { player.toggle() },
                                 onReplay = { player.play(activeTrack, activeSession) },
                                 onSeek = { player.seekToFraction(it) },
-                                onPrevious = { playAdjacent(-1) },
-                                onNext = { playAdjacent(1) }
+                                onPrevious = { playAdjacent(-1, openPlayer = false) },
+                                onNext = { playAdjacent(1, openPlayer = false) }
                             )
                         }
                         BottomTabsBar(
@@ -4008,6 +4181,8 @@ private fun JellyfinMusicApp() {
                                         themeMode = themeMode,
                                         useAlbumArtColors = useAlbumArtColors,
                                         backgroundGradientEnabled = backgroundGradientEnabled,
+                                        animatedNowPlayingBackgroundEnabled = animatedNowPlayingBackgroundEnabled,
+                                        turntableProgressRingEnabled = turntableProgressRingEnabled,
                                         alternativeTonearmEnabled = alternativeTonearmEnabled,
                                         onPageSelected = { activeSettingsPage = it }
                                     )
@@ -4219,6 +4394,8 @@ private fun JellyfinMusicApp() {
                                             themeMode = themeMode,
                                             useAlbumArtColors = useAlbumArtColors,
                                             backgroundGradientEnabled = backgroundGradientEnabled,
+                                            animatedNowPlayingBackgroundEnabled = animatedNowPlayingBackgroundEnabled,
+                                            turntableProgressRingEnabled = turntableProgressRingEnabled,
                                             alternativeTonearmEnabled = alternativeTonearmEnabled,
                                             currentTrack = player.currentTrack,
                                             albumAccentColor = albumAccentColor,
@@ -4233,6 +4410,22 @@ private fun JellyfinMusicApp() {
                                             onBackgroundGradientEnabledChange = { enabled ->
                                                 backgroundGradientEnabled = enabled
                                                 saveBackgroundGradientEnabled(context, enabled)
+                                                if (enabled) {
+                                                    animatedNowPlayingBackgroundEnabled = false
+                                                    saveAnimatedNowPlayingBackgroundEnabled(context, false)
+                                                }
+                                            },
+                                            onAnimatedNowPlayingBackgroundEnabledChange = { enabled ->
+                                                animatedNowPlayingBackgroundEnabled = enabled
+                                                saveAnimatedNowPlayingBackgroundEnabled(context, enabled)
+                                                if (enabled) {
+                                                    backgroundGradientEnabled = false
+                                                    saveBackgroundGradientEnabled(context, false)
+                                                }
+                                            },
+                                            onTurntableProgressRingEnabledChange = { enabled ->
+                                                turntableProgressRingEnabled = enabled
+                                                saveTurntableProgressRingEnabled(context, enabled)
                                             },
                                             onAlternativeTonearmEnabledChange = { enabled ->
                                                 alternativeTonearmEnabled = enabled
@@ -5658,6 +5851,8 @@ private fun JellyfinMusicApp() {
                     shuffleEnabled = shuffleEnabled,
                     repeatEnabled = repeatEnabled,
                     backgroundGradientEnabled = backgroundGradientEnabled,
+                    animatedBackgroundEnabled = animatedNowPlayingBackgroundEnabled,
+                    turntableProgressRingEnabled = turntableProgressRingEnabled,
                     alternativeTonearmEnabled = alternativeTonearmEnabled,
                     isFavorite = activeTrack.id in likedTrackIds,
                     isDownloaded = activeTrack.id in offlineDownloads,
@@ -5730,6 +5925,8 @@ private fun SettingsCategoryListCard(
     themeMode: AppThemeMode,
     useAlbumArtColors: Boolean,
     backgroundGradientEnabled: Boolean,
+    animatedNowPlayingBackgroundEnabled: Boolean,
+    turntableProgressRingEnabled: Boolean,
     alternativeTonearmEnabled: Boolean,
     onPageSelected: (SettingsPage) -> Unit
 ) {
@@ -5768,6 +5965,8 @@ private fun SettingsCategoryListCard(
                         themeMode = themeMode,
                         useAlbumArtColors = useAlbumArtColors,
                         backgroundGradientEnabled = backgroundGradientEnabled,
+                        animatedNowPlayingBackgroundEnabled = animatedNowPlayingBackgroundEnabled,
+                        turntableProgressRingEnabled = turntableProgressRingEnabled,
                         alternativeTonearmEnabled = alternativeTonearmEnabled
                     ),
                     onClick = { onPageSelected(page) }
@@ -5874,6 +6073,8 @@ private fun settingsCategoryDetail(
     themeMode: AppThemeMode,
     useAlbumArtColors: Boolean,
     backgroundGradientEnabled: Boolean,
+    animatedNowPlayingBackgroundEnabled: Boolean,
+    turntableProgressRingEnabled: Boolean,
     alternativeTonearmEnabled: Boolean
 ): String =
     when (page) {
@@ -5925,7 +6126,17 @@ private fun settingsCategoryDetail(
             if (crossfadeEnabled) "Crossfade ${crossfadeDurationSeconds}s" else "Crossfade off",
             if (audioOutputSettings.normalizationEnabled) "Normalize" else null
         ).filterNotNull().joinToString(" - ")
-        SettingsPage.Appearance -> "${themeMode.label} - ${if (useAlbumArtColors) "Artwork colors" else "Static colors"} - ${if (backgroundGradientEnabled) "Gradient on" else "Gradient off"} - ${if (alternativeTonearmEnabled) "Alt arm" else "Classic arm"}"
+        SettingsPage.Appearance -> listOf(
+            themeMode.label,
+            if (useAlbumArtColors) "Artwork colors" else "Static colors",
+            when {
+                animatedNowPlayingBackgroundEnabled -> "Starfield mode"
+                backgroundGradientEnabled -> "Gradient on"
+                else -> "Flat background"
+            },
+            if (turntableProgressRingEnabled) "Ring on" else "Ring off",
+            if (alternativeTonearmEnabled) "Alt arm" else "Classic arm"
+        ).joinToString(" - ")
         SettingsPage.Backup -> "Export or restore settings"
         SettingsPage.About -> "Version ${appVersionLabel()}"
     }
@@ -7464,45 +7675,58 @@ private fun EqualizerPreview(
 ) {
     val colorScheme = MaterialTheme.colorScheme
     val accent = if (enabled) colorScheme.primary else colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+    val labelColor = colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 0.74f else 0.42f)
     val normalizedLevels = (0 until EQUALIZER_BAND_COUNT).map { index ->
         levels.getOrNull(index)?.coerceIn(EQUALIZER_MIN_DB, EQUALIZER_MAX_DB) ?: 0f
     }
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(104.dp)
+            .height(116.dp)
             .clip(RoundedCornerShape(18.dp))
             .background(
-                if (enabled) {
-                    colorScheme.surfaceContainer
-                } else {
-                    colorScheme.surfaceContainerHighest.copy(alpha = 0.5f)
-                }
+                Brush.verticalGradient(
+                    colors = listOf(
+                        if (enabled) colorScheme.surfaceContainerHigh else colorScheme.surfaceContainerHighest.copy(alpha = 0.52f),
+                        if (enabled) colorScheme.surfaceContainerLow else colorScheme.surfaceContainerHighest.copy(alpha = 0.34f)
+                    )
+                )
             )
     ) {
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .padding(horizontal = 14.dp, vertical = 10.dp)
         ) {
-            val left = 2.dp.toPx()
-            val right = size.width - 2.dp.toPx()
-            val top = 6.dp.toPx()
-            val bottom = size.height - 6.dp.toPx()
+            val labelPaint = AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG).apply {
+                color = labelColor.toArgb()
+                textSize = 9.5.dp.toPx()
+                textAlign = AndroidPaint.Align.CENTER
+            }
+            val sideLabelPaint = AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG).apply {
+                color = labelColor.copy(alpha = 0.62f).toArgb()
+                textSize = 8.5.dp.toPx()
+                textAlign = AndroidPaint.Align.LEFT
+            }
+            val left = 22.dp.toPx()
+            val right = size.width - 4.dp.toPx()
+            val top = 8.dp.toPx()
+            val bottom = size.height - 22.dp.toPx()
             val baseline = top + (bottom - top) * 0.5f
             val usableHeight = bottom - top
             val bandCount = EQUALIZER_BAND_COUNT.coerceAtLeast(1)
 
-            repeat(3) { index ->
-                val y = top + (bottom - top) * index / 2f
-                drawLine(
-                    color = colorScheme.onSurfaceVariant.copy(alpha = if (index == 1) 0.18f else 0.1f),
-                    start = Offset(left, y),
-                    end = Offset(right, y),
-                    strokeWidth = 1.dp.toPx(),
-                    cap = StrokeCap.Round
-                )
-            }
+            drawRoundRect(
+                brush = Brush.verticalGradient(
+                    colors = listOf(
+                        colorScheme.scrim.copy(alpha = if (enabled) 0.18f else 0.08f),
+                        colorScheme.surface.copy(alpha = if (enabled) 0.08f else 0.04f)
+                    )
+                ),
+                topLeft = Offset(0f, 0f),
+                size = size,
+                cornerRadius = CornerRadius(18.dp.toPx(), 18.dp.toPx())
+            )
 
             val points = normalizedLevels.mapIndexed { index, level ->
                 val x = if (bandCount == 1) {
@@ -7511,7 +7735,38 @@ private fun EqualizerPreview(
                     left + (right - left) * index / (bandCount - 1).toFloat()
                 }
                 val normalized = (level / EQUALIZER_MAX_DB).coerceIn(-1f, 1f)
-                Offset(x, baseline - normalized * usableHeight * 0.43f)
+                Offset(x, baseline - normalized * usableHeight * 0.42f)
+            }
+
+            EqualizerBandLabels.forEachIndexed { index, label ->
+                val x = points.getOrNull(index)?.x ?: return@forEachIndexed
+                drawLine(
+                    color = colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 0.07f else 0.04f),
+                    start = Offset(x, top),
+                    end = Offset(x, bottom),
+                    strokeWidth = 1.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+                drawIntoCanvas { canvas ->
+                    canvas.nativeCanvas.drawText(label, x, size.height - 4.dp.toPx(), labelPaint)
+                }
+            }
+
+            listOf(
+                top to "+12",
+                baseline to "0",
+                bottom to "-12"
+            ).forEach { (y, label) ->
+                drawLine(
+                    color = colorScheme.onSurfaceVariant.copy(alpha = if (y == baseline) 0.22f else 0.09f),
+                    start = Offset(left, y),
+                    end = Offset(right, y),
+                    strokeWidth = if (y == baseline) 1.35.dp.toPx() else 1.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+                drawIntoCanvas { canvas ->
+                    canvas.nativeCanvas.drawText(label, 1.dp.toPx(), y + 3.dp.toPx(), sideLabelPaint)
+                }
             }
 
             val fillPath = Path().apply {
@@ -7528,15 +7783,28 @@ private fun EqualizerPreview(
                 lineTo(points.last().x, baseline)
                 close()
             }
+            val glowPath = Path().apply {
+                moveTo(points.first().x, points.first().y)
+                points.drop(1).forEachIndexed { index, point ->
+                    val previous = points[index]
+                    val midX = (previous.x + point.x) / 2f
+                    cubicTo(midX, previous.y, midX, point.y, point.x, point.y)
+                }
+            }
             drawPath(
                 path = fillPath,
                 brush = Brush.verticalGradient(
                     colors = listOf(
-                        accent.copy(alpha = if (enabled) 0.22f else 0.08f),
-                        accent.copy(alpha = if (enabled) 0.06f else 0.02f),
+                        accent.copy(alpha = if (enabled) 0.34f else 0.1f),
+                        accent.copy(alpha = if (enabled) 0.12f else 0.04f),
                         Color.Transparent
                     )
                 )
+            )
+            drawPath(
+                path = glowPath,
+                color = accent.copy(alpha = if (enabled) 0.22f else 0.08f),
+                style = Stroke(width = 9.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
             )
 
             val curvePath = Path().apply {
@@ -7549,18 +7817,36 @@ private fun EqualizerPreview(
             }
             drawPath(
                 path = curvePath,
-                color = accent,
-                style = Stroke(width = 2.8.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+                color = colorScheme.surface.copy(alpha = if (enabled) 0.5f else 0.22f),
+                style = Stroke(width = 5.5.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
             )
-            points.forEach { point ->
+            drawPath(
+                path = curvePath,
+                brush = Brush.horizontalGradient(
+                    colors = listOf(
+                        accent.copy(alpha = if (enabled) 0.86f else 0.46f),
+                        accent,
+                        accent.copy(alpha = if (enabled) 0.82f else 0.42f)
+                    ),
+                    startX = left,
+                    endX = right
+                ),
+                style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+            )
+            points.forEachIndexed { index, point ->
                 drawCircle(
-                    color = colorScheme.surfaceContainer,
-                    radius = 4.2.dp.toPx(),
+                    color = accent.copy(alpha = if (enabled) 0.2f else 0.08f),
+                    radius = 6.8.dp.toPx(),
+                    center = point
+                )
+                drawCircle(
+                    color = colorScheme.surfaceContainerHighest,
+                    radius = 4.4.dp.toPx(),
                     center = point
                 )
                 drawCircle(
                     color = accent,
-                    radius = 2.6.dp.toPx(),
+                    radius = if (index == 0 || index == points.lastIndex) 2.9.dp.toPx() else 2.6.dp.toPx(),
                     center = point
                 )
             }
@@ -8117,12 +8403,16 @@ private fun AppearanceCard(
     themeMode: AppThemeMode,
     useAlbumArtColors: Boolean,
     backgroundGradientEnabled: Boolean,
+    animatedNowPlayingBackgroundEnabled: Boolean,
+    turntableProgressRingEnabled: Boolean,
     alternativeTonearmEnabled: Boolean,
     currentTrack: MusicTrack?,
     albumAccentColor: Color?,
     onThemeModeChange: (AppThemeMode) -> Unit,
     onUseAlbumArtColorsChange: (Boolean) -> Unit,
     onBackgroundGradientEnabledChange: (Boolean) -> Unit,
+    onAnimatedNowPlayingBackgroundEnabledChange: (Boolean) -> Unit,
+    onTurntableProgressRingEnabledChange: (Boolean) -> Unit,
     onAlternativeTonearmEnabledChange: (Boolean) -> Unit
 ) {
     Card(
@@ -8187,6 +8477,85 @@ private fun AppearanceCard(
                 Switch(
                     checked = backgroundGradientEnabled,
                     onCheckedChange = onBackgroundGradientEnabledChange
+                )
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(46.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                    contentAlignment = Alignment.Center
+                ) {
+                    AnimatedBackgroundSettingPreview(
+                        color = albumAccentColor ?: MaterialTheme.colorScheme.primary,
+                        enabled = animatedNowPlayingBackgroundEnabled,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(7.dp)
+                    )
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = "Starfield mode",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = if (animatedNowPlayingBackgroundEnabled) "Slow drifting stars behind Now Playing" else "Static Now Playing background",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Switch(
+                    checked = animatedNowPlayingBackgroundEnabled,
+                    onCheckedChange = onAnimatedNowPlayingBackgroundEnabledChange
+                )
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    modifier = Modifier.size(46.dp),
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    tonalElevation = 2.dp
+                ) {
+                    CircularProgressRingSettingPreview(
+                        enabled = turntableProgressRingEnabled,
+                        color = albumAccentColor ?: MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(9.dp)
+                    )
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = "Turntable progress ring",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = if (turntableProgressRingEnabled) "Circular seek ring around the record" else "Hide the circular seek ring",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Switch(
+                    checked = turntableProgressRingEnabled,
+                    onCheckedChange = onTurntableProgressRingEnabledChange
                 )
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
@@ -8266,6 +8635,84 @@ private fun AppearanceCard(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun CircularProgressRingSettingPreview(
+    enabled: Boolean,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
+    val centerColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.18f)
+    Canvas(modifier = modifier) {
+        val strokeWidth = 3.dp.toPx()
+        val radius = size.minDimension / 2f - strokeWidth / 2f
+        val center = Offset(size.width / 2f, size.height / 2f)
+        drawCircle(
+            color = centerColor,
+            radius = radius * 0.72f,
+            center = center
+        )
+        if (enabled) {
+            drawCircle(
+                color = color.copy(alpha = 0.2f),
+                radius = radius,
+                center = center,
+                style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+            )
+            drawArc(
+                color = color.copy(alpha = 0.9f),
+                startAngle = -90f,
+                sweepAngle = 230f,
+                useCenter = false,
+                topLeft = Offset(center.x - radius, center.y - radius),
+                size = Size(radius * 2f, radius * 2f),
+                style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+            )
+        }
+    }
+}
+
+@Composable
+private fun AnimatedBackgroundSettingPreview(
+    color: Color,
+    enabled: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val phase = if (enabled) {
+        val transition = rememberInfiniteTransition(label = "animated-background-preview")
+        val animatedPhase by transition.animateFloat(
+            initialValue = 0f,
+            targetValue = (PI * 2).toFloat(),
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 3200, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "animated-background-preview-phase"
+        )
+        animatedPhase
+    } else {
+        0.7f
+    }
+    Canvas(modifier = modifier) {
+        drawRoundRect(
+            brush = Brush.verticalGradient(
+                colors = listOf(
+                    Color(0xFF060B18),
+                    Color(0xFF03050C),
+                    blendColors(color, Color.Black, 0.86f)
+                )
+            ),
+            cornerRadius = CornerRadius(10.dp.toPx(), 10.dp.toPx())
+        )
+        drawDriftingStars(
+            phase = phase,
+            starCount = 22,
+            flowScale = 0.46f,
+            baseAlpha = if (enabled) 0.9f else 0.42f,
+            accentColor = color
+        )
     }
 }
 
@@ -11355,6 +11802,60 @@ private fun Modifier.swipeDownToDismiss(
 }
 
 @Composable
+private fun AnimatedNowPlayingBackground(
+    accentColor: Color,
+    modifier: Modifier = Modifier
+) {
+    val transition = rememberInfiniteTransition(label = "now-playing-background")
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = (PI * 2).toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 32000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "now-playing-background-phase"
+    )
+    Canvas(modifier = modifier) {
+        drawRect(
+            brush = Brush.verticalGradient(
+                colorStops = arrayOf(
+                    0f to Color(0xFF080D1D),
+                    0.48f to Color(0xFF02040B),
+                    1f to blendColors(accentColor, Color.Black, 0.9f)
+                )
+            )
+        )
+        drawRect(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    accentColor.copy(alpha = 0.1f),
+                    Color.Transparent
+                ),
+                center = Offset(size.width * 0.66f, size.height * 0.16f),
+                radius = size.minDimension * 0.82f
+            )
+        )
+        drawDriftingStars(
+            phase = phase,
+            starCount = 95,
+            flowScale = 1f,
+            baseAlpha = 0.92f,
+            accentColor = accentColor
+        )
+        drawRect(
+            brush = Brush.verticalGradient(
+                colorStops = arrayOf(
+                    0f to Color.Black.copy(alpha = 0.04f),
+                    0.55f to Color.Transparent,
+                    1f to Color.Black.copy(alpha = 0.28f)
+                )
+            )
+        )
+    }
+}
+
+@Composable
 private fun FullPlayerScreen(
     track: MusicTrack,
     isPlaying: Boolean,
@@ -11372,6 +11873,8 @@ private fun FullPlayerScreen(
     shuffleEnabled: Boolean,
     repeatEnabled: Boolean,
     backgroundGradientEnabled: Boolean,
+    animatedBackgroundEnabled: Boolean,
+    turntableProgressRingEnabled: Boolean,
     alternativeTonearmEnabled: Boolean,
     isFavorite: Boolean,
     isDownloaded: Boolean,
@@ -11421,7 +11924,7 @@ private fun FullPlayerScreen(
             }
         }
     }
-    val playerBackground = if (backgroundGradientEnabled) {
+    val playerBackground = if (backgroundGradientEnabled && !animatedBackgroundEnabled) {
         Brush.verticalGradient(
             colorStops = arrayOf(
                 0f to blendColors(colorScheme.primary, colorScheme.background, 0.38f),
@@ -11439,6 +11942,12 @@ private fun FullPlayerScreen(
             .fillMaxSize()
             .background(playerBackground)
     ) {
+        if (animatedBackgroundEnabled) {
+            AnimatedNowPlayingBackground(
+                accentColor = track.tint,
+                modifier = Modifier.matchParentSize()
+            )
+        }
         val expandedLayout = maxWidth >= EXPANDED_LAYOUT_MIN_WIDTH
         val queueSheetClosedOffsetPx = with(LocalDensity.current) {
             maxHeight.toPx() * 0.72f
@@ -11492,6 +12001,7 @@ private fun FullPlayerScreen(
                             progress = turntableProgress,
                             session = session,
                             onSeek = onSeek,
+                            showProgressRing = turntableProgressRingEnabled,
                             alternativeTonearmEnabled = alternativeTonearmEnabled,
                             modifier = Modifier
                                 .fillMaxWidth(tabletStageWidth)
@@ -11559,6 +12069,7 @@ private fun FullPlayerScreen(
                                 progress = turntableProgress,
                                 session = session,
                                 onSeek = onSeek,
+                                showProgressRing = turntableProgressRingEnabled,
                                 alternativeTonearmEnabled = alternativeTonearmEnabled,
                                 modifier = Modifier
                                     .fillMaxWidth(0.94f)
@@ -11651,6 +12162,7 @@ private fun FullPlayerScreen(
                         progress = turntableProgress,
                         session = session,
                         onSeek = onSeek,
+                        showProgressRing = turntableProgressRingEnabled,
                         alternativeTonearmEnabled = alternativeTonearmEnabled,
                         modifier = Modifier
                             .fillMaxWidth(mobileStageFraction)
@@ -13738,6 +14250,7 @@ private fun DiscAlbumStage(
     progress: Float,
     session: JellyfinSession?,
     onSeek: (Float) -> Unit,
+    showProgressRing: Boolean,
     alternativeTonearmEnabled: Boolean,
     modifier: Modifier = Modifier
 ) {
@@ -14027,15 +14540,17 @@ private fun DiscAlbumStage(
                 )
             }
         }
-        CircularSeekRing(
-            progress = stageProgress,
-            onSeek = onSeek,
-            modifier = Modifier
-                .fillMaxSize()
-                .zIndex(3f),
-            activeColor = MaterialTheme.colorScheme.primary,
-            trackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.18f)
-        )
+        if (showProgressRing) {
+            CircularSeekRing(
+                progress = stageProgress,
+                onSeek = onSeek,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(3f),
+                activeColor = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.18f)
+            )
+        }
         TurntableArmOverlay(
             progress = stageProgress,
             onRecord = isPlaying || isScratching || holdScrubProgress,
@@ -14184,22 +14699,22 @@ private fun TurntableArmOverlay(
         val lift = (offRecord / 0.46f).coerceIn(0f, 1f)
         fun mix(start: Float, end: Float, amount: Float): Float = start + (end - start) * amount
 
-        val onRecordStartAngle = if (alternativeTonearmEnabled) 1.84f else 1.68f
-        val onRecordEndAngle = if (alternativeTonearmEnabled) 2.16f else 2.13f
-        val offRecordAngle = if (alternativeTonearmEnabled) 1.42f else 1.48f
+        val onRecordStartAngle = if (alternativeTonearmEnabled) 1.72f else 1.68f
+        val onRecordEndAngle = if (alternativeTonearmEnabled) 2.18f else 2.13f
+        val offRecordAngle = if (alternativeTonearmEnabled) 1.36f else 1.48f
         val armAngle = mix(
             mix(onRecordStartAngle, onRecordEndAngle, p),
             offRecordAngle,
             swing
         )
         val armRotationDegrees = armAngle * 180f / PI.toFloat() - 90f
-        val pivotXFraction = if (alternativeTonearmEnabled) 0.987f else 0.966f
-        val pivotYFraction = if (alternativeTonearmEnabled) 0.203f else 0.052f
-        val armHeightFraction = if (alternativeTonearmEnabled) 0.762f else 0.78f
+        val pivotXFraction = if (alternativeTonearmEnabled) 0.972f else 0.966f
+        val pivotYFraction = if (alternativeTonearmEnabled) 0.074f else 0.052f
+        val armHeightFraction = if (alternativeTonearmEnabled) 0.86f else 0.78f
         val armAspectRatio = if (alternativeTonearmEnabled) 156f / 511f else 172f / 565f
         val armPivotX = 0.5f
-        val armPivotY = if (alternativeTonearmEnabled) 0.305f else 0.125f
-        val stylusYFraction = if (alternativeTonearmEnabled) 0.94f else 0.84f
+        val armPivotY = if (alternativeTonearmEnabled) 0.195f else 0.125f
+        val stylusYFraction = if (alternativeTonearmEnabled) 0.968f else 0.84f
         val shadowAlphaScale = if (alternativeTonearmEnabled) 0.34f else 1f
         val shadowOffsetX = if (alternativeTonearmEnabled) 0.8.dp + (lift * 2.2f).dp else 2.dp + (lift * 7f).dp
         val shadowOffsetY = if (alternativeTonearmEnabled) 1.4.dp + (lift * 2.6f).dp else 3.dp + (lift * 6f).dp
@@ -15753,7 +16268,7 @@ private class JellyfinPlayer(private val context: Context) {
             .build()
             .apply {
                 setAudioAttributes(media3PlaybackAudioAttributes(), false)
-                setWakeMode(C.WAKE_MODE_NONE)
+                setWakeMode(C.WAKE_MODE_LOCAL)
                 volume = 1f
             }
 
@@ -15909,7 +16424,11 @@ private class JellyfinPlayer(private val context: Context) {
         val dispatchEnd = {
             var handled = false
             if (endHandler != null && currentTrack?.id == track.id && status == "Ended") {
-                handled = endHandler(track)
+                handled = runCatching { endHandler(track) }
+                    .onFailure {
+                        PlaybackDiagnostics.record("Next track handoff failed", it.readableMessage())
+                    }
+                    .getOrDefault(false)
             }
             if (!handled && currentTrack?.id == track.id && status == "Ended") {
                 abandonAudioFocus()
@@ -16971,9 +17490,31 @@ private fun saveBackgroundGradientEnabled(context: Context, enabled: Boolean) {
         .apply()
 }
 
+private fun loadAnimatedNowPlayingBackgroundEnabled(context: Context): Boolean =
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getBoolean(PREF_ANIMATED_NOW_PLAYING_BACKGROUND_ENABLED, false)
+
+private fun saveAnimatedNowPlayingBackgroundEnabled(context: Context, enabled: Boolean) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(PREF_ANIMATED_NOW_PLAYING_BACKGROUND_ENABLED, enabled)
+        .apply()
+}
+
+private fun loadTurntableProgressRingEnabled(context: Context): Boolean =
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getBoolean(PREF_TURNTABLE_PROGRESS_RING_ENABLED, true)
+
+private fun saveTurntableProgressRingEnabled(context: Context, enabled: Boolean) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(PREF_TURNTABLE_PROGRESS_RING_ENABLED, enabled)
+        .apply()
+}
+
 private fun loadAlternativeTonearmEnabled(context: Context): Boolean =
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        .getBoolean(PREF_ALTERNATIVE_TONEARM_ENABLED, false)
+        .getBoolean(PREF_ALTERNATIVE_TONEARM_ENABLED, true)
 
 private fun saveAlternativeTonearmEnabled(context: Context, enabled: Boolean) {
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -18545,9 +19086,13 @@ private fun List<MusicTrack>.smartShufflePlaybackQueue(
     while (remaining.isNotEmpty()) {
         val previous = result.lastOrNull()
         val next = candidateSample()
-            .sortedByDescending { it.smartScore(previous) }
+            .map { candidate -> candidate to candidate.smartScore(previous) }
+            .sortedWith(
+                compareByDescending<Pair<MusicTrack, Float>> { it.second }
+                    .thenBy { it.first.id }
+            )
             .take(SMART_SHUFFLE_TOP_CHOICE_COUNT)
-            .let { topChoices -> topChoices[random.nextInt(topChoices.size)] }
+            .let { topChoices -> topChoices[random.nextInt(topChoices.size)].first }
         result += next
         remaining.removeAll { it.id == next.id }
 
@@ -18975,6 +19520,20 @@ private fun cachedAutoAlbumArt(context: Context, imageUrl: String?, maxEdge: Int
     }
     return normalized
 }
+
+private fun autoCustomAction(
+    action: String,
+    title: String,
+    iconRes: Int,
+    commandIcon: Int
+): PlaybackState.CustomAction =
+    PlaybackState.CustomAction.Builder(action, title, iconRes)
+        .setExtras(
+            Bundle().apply {
+                putInt(AUTO_COMMAND_BUTTON_ICON_COMPAT, commandIcon)
+            }
+        )
+        .build()
 
 private fun Bitmap.scaledForMediaSession(maxEdge: Int): Bitmap {
     val largestEdge = maxOf(width, height)
