@@ -2752,6 +2752,33 @@ private fun DrawScope.drawDriftingStars(
     }
 }
 
+@Composable
+private fun rememberStarfieldPhase(
+    active: Boolean,
+    durationMillis: Long = 32_000L
+): Float {
+    fun clockPhase(): Float {
+        val boundedDuration = durationMillis.coerceAtLeast(1L)
+        val cycle = (SystemClock.elapsedRealtime() % boundedDuration).toFloat() / boundedDuration.toFloat()
+        return cycle * PI.toFloat() * 2f
+    }
+
+    var phase by remember { mutableFloatStateOf(clockPhase()) }
+
+    LaunchedEffect(active, durationMillis) {
+        if (!active) {
+            phase = clockPhase()
+            return@LaunchedEffect
+        }
+        while (true) {
+            withFrameNanos { }
+            phase = clockPhase()
+        }
+    }
+
+    return phase
+}
+
 private fun stableCacheKey(value: String): String =
     MessageDigest
         .getInstance("SHA-256")
@@ -11860,22 +11887,18 @@ private fun AnimatedNowPlayingBackground(
     gradientEnabled: Boolean,
     modifier: Modifier = Modifier
 ) {
-    val transition = rememberInfiniteTransition(label = "now-playing-background")
-    val phase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = (PI * 2).toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 32000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "now-playing-background-phase"
+    val phase = rememberStarfieldPhase(active = true)
+    val renderedAccentColor by animateColorAsState(
+        targetValue = accentColor,
+        animationSpec = tween(durationMillis = 700, easing = FastOutSlowInEasing),
+        label = "starfield-accent"
     )
     Canvas(modifier = modifier) {
         if (gradientEnabled) {
             drawRect(
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        accentColor.copy(alpha = 0.08f),
+                        renderedAccentColor.copy(alpha = 0.08f),
                         Color.Transparent
                     ),
                     center = Offset(size.width * 0.66f, size.height * 0.16f),
@@ -11888,14 +11911,14 @@ private fun AnimatedNowPlayingBackground(
                     colorStops = arrayOf(
                         0f to Color(0xFF080D1D),
                         0.48f to Color(0xFF02040B),
-                        1f to blendColors(accentColor, Color.Black, 0.9f)
+                        1f to blendColors(renderedAccentColor, Color.Black, 0.9f)
                     )
                 )
             )
             drawRect(
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        accentColor.copy(alpha = 0.1f),
+                        renderedAccentColor.copy(alpha = 0.1f),
                         Color.Transparent
                     ),
                     center = Offset(size.width * 0.66f, size.height * 0.16f),
@@ -11908,7 +11931,7 @@ private fun AnimatedNowPlayingBackground(
             starCount = 95,
             flowScale = 1f,
             baseAlpha = 0.92f,
-            accentColor = accentColor
+            accentColor = renderedAccentColor
         )
         drawRect(
             brush = Brush.verticalGradient(
@@ -14418,7 +14441,9 @@ private fun DiscAlbumStage(
             lastFlipSession = session
             recordFlipProgress.snapTo(1f)
         } else if (previousTrack.id != track.id) {
-            preloadFlipAlbumArt(context, track, session)
+            launch {
+                preloadFlipAlbumArt(context, track, session)
+            }
             outgoingFlipRotation = currentDiscRotation
             recordFlipProgress.snapTo(0f)
             outgoingFlipTrack = previousTrack
