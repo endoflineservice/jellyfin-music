@@ -1,16 +1,22 @@
 package dev.cholt.jellyfinmusic
 
+import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.BroadcastReceiver
+import android.content.ContentProvider
 import android.content.ContentValues
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.content.res.Configuration
+import android.database.Cursor
+import android.database.MatrixCursor
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.BlurMaskFilter
@@ -35,9 +41,11 @@ import android.os.Environment
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.provider.Settings
 import android.provider.MediaStore
+import android.provider.OpenableColumns
 import android.service.media.MediaBrowserService
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
@@ -222,9 +230,21 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.common.AudioAttributes as Media3AudioAttributes
+import com.android.billingclient.api.AcknowledgePurchaseParams
+import com.android.billingclient.api.BillingClient
+import com.android.billingclient.api.BillingClientStateListener
+import com.android.billingclient.api.BillingFlowParams
+import com.android.billingclient.api.BillingResult
+import com.android.billingclient.api.PendingPurchasesParams
+import com.android.billingclient.api.ProductDetails
+import com.android.billingclient.api.Purchase
+import com.android.billingclient.api.PurchasesUpdatedListener
+import com.android.billingclient.api.QueryProductDetailsParams
+import com.android.billingclient.api.QueryPurchasesParams
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileNotFoundException
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.net.HttpURLConnection
@@ -500,6 +520,7 @@ private const val GENERATED_FAVORITES_PLAYLIST_ID = "generated_favorites_playlis
 private const val GENERATED_FAVORITES_PLAYLIST_NAME = "Favorites"
 private const val GENERATED_FAVORITES_PLAYLIST_FOLDER = "Generated"
 private const val ALBUM_ART_CACHE_DIR = "album_art_cache"
+private const val ALBUM_ART_PROVIDER_AUTHORITY_SUFFIX = ".albumart"
 private const val OFFLINE_DOWNLOAD_DIR = "offline_audio"
 private const val MAX_ALBUM_ART_CACHE_FILES = 128
 private const val DEFAULT_OFFLINE_STORAGE_LIMIT_MB = 1024
@@ -678,7 +699,7 @@ const val PLAYBACK_ACTION_DOWNLOAD = "dev.cholt.jellyfinmusic.action.DOWNLOAD"
 private const val PLAYBACK_SERVICE_ACTION_START = "dev.cholt.jellyfinmusic.service.START"
 private const val PLAYBACK_SERVICE_ACTION_STOP = "dev.cholt.jellyfinmusic.service.STOP"
 private const val GITHUB_REPOSITORY_URL = "https://github.com/endoflineservice/jellyfin-music"
-private const val BUY_ME_A_COFFEE_URL = "https://www.buymeacoffee.com/endoflineservice"
+private const val SUPPORT_PURCHASE_PRODUCT_ID = "support_3_usd"
 private const val AUTO_ROOT_ID = "auto:root"
 private const val AUTO_SONGS_ID = "auto:songs"
 private const val AUTO_ALBUMS_ID = "auto:albums"
@@ -694,9 +715,12 @@ private const val AUTO_ALBUM_PREFIX = "auto:album:"
 private const val AUTO_ARTIST_PREFIX = "auto:artist:"
 private const val AUTO_PLAYLIST_PREFIX = "auto:playlist:"
 private const val AUTO_MAX_TOP_LEVEL_ITEMS = 500
-private const val AUTO_NOW_PLAYING_ART_SIZE = 320
+private const val AUTO_NOW_PLAYING_ART_SIZE = 224
 private const val AUTO_BROWSE_ART_SIZE = 256
 private const val AUTO_COMMAND_BUTTON_ICON_COMPAT = "androidx.media3.session.EXTRAS_KEY_COMMAND_BUTTON_ICON_COMPAT"
+private const val AUTO_COMMAND_BUTTON_SELECTED = "dev.cholt.jellyfinmusic.AUTO_COMMAND_BUTTON_SELECTED"
+private const val AUTO_PLAYBACK_EXTRA_SHUFFLE_ENABLED = "dev.cholt.jellyfinmusic.AUTO_SHUFFLE_ENABLED"
+private const val AUTO_PLAYBACK_EXTRA_REPEAT_ENABLED = "dev.cholt.jellyfinmusic.AUTO_REPEAT_ENABLED"
 private const val AUTO_COMMAND_ICON_SHUFFLE_ON = 0xe043
 private const val AUTO_COMMAND_ICON_SHUFFLE_OFF = 0xfe044
 private const val AUTO_COMMAND_ICON_REPEAT_ALL = 0xe040
@@ -704,6 +728,232 @@ private const val AUTO_COMMAND_ICON_REPEAT_OFF = 0xfe040
 private const val AUTO_COMMAND_ICON_HEART_FILLED = 0xfe87d
 private const val AUTO_COMMAND_ICON_HEART_UNFILLED = 0xe87d
 private const val AUTO_COMMAND_ICON_RADIO = 0xe51e
+
+private class SupportPurchaseController(context: Context) : PurchasesUpdatedListener {
+    private val appContext = context.applicationContext
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var billingClient: BillingClient? = null
+
+    var isLoading by mutableStateOf(false)
+        private set
+    var isPurchased by mutableStateOf(false)
+        private set
+    var supportProductDetails by mutableStateOf<ProductDetails?>(null)
+        private set
+    var supportPrice by mutableStateOf("$3")
+        private set
+    var message by mutableStateOf("Checking Google Play")
+        private set
+
+    val canPurchase: Boolean
+        get() = supportProductDetails != null && !isPurchased && !isLoading
+
+    fun start() {
+        if (billingClient != null) return
+        update {
+            isLoading = true
+            message = "Checking Google Play"
+        }
+        val client = BillingClient.newBuilder(appContext)
+            .enablePendingPurchases(
+                PendingPurchasesParams.newBuilder()
+                    .enableOneTimeProducts()
+                    .build()
+            )
+            .enableAutoServiceReconnection()
+            .setListener(this)
+            .build()
+        billingClient = client
+        client.startConnection(object : BillingClientStateListener {
+            override fun onBillingSetupFinished(billingResult: BillingResult) {
+                if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
+                    querySupportProduct(client)
+                    queryExistingPurchases(client)
+                } else {
+                    updateUnavailable(billingResult)
+                }
+            }
+
+            override fun onBillingServiceDisconnected() {
+                update {
+                    isLoading = false
+                    supportProductDetails = null
+                    message = "Google Play disconnected"
+                }
+            }
+        })
+    }
+
+    fun refresh() {
+        close()
+        start()
+    }
+
+    fun close() {
+        billingClient?.endConnection()
+        billingClient = null
+    }
+
+    fun launchPurchase(activity: Activity?) {
+        val activeActivity = activity
+        val client = billingClient
+        val details = supportProductDetails
+        if (activeActivity == null) {
+            update { message = "Open the app directly to purchase" }
+            return
+        }
+        if (client == null || !client.isReady || details == null) {
+            refresh()
+            return
+        }
+
+        val productParamsBuilder = BillingFlowParams.ProductDetailsParams.newBuilder()
+            .setProductDetails(details)
+        details.oneTimePurchaseOfferDetailsList
+            ?.firstOrNull()
+            ?.offerToken
+            ?.takeIf { it.isNotBlank() }
+            ?.let(productParamsBuilder::setOfferToken)
+        val productParams = productParamsBuilder.build()
+        val flowParams = BillingFlowParams.newBuilder()
+            .setProductDetailsParamsList(listOf(productParams))
+            .build()
+        val result = client.launchBillingFlow(activeActivity, flowParams)
+        if (result.responseCode != BillingClient.BillingResponseCode.OK) {
+            updatePurchaseMessage(result, fallback = "Could not open Play Store purchase")
+        }
+    }
+
+    override fun onPurchasesUpdated(billingResult: BillingResult, purchases: MutableList<Purchase>?) {
+        when (billingResult.responseCode) {
+            BillingClient.BillingResponseCode.OK -> {
+                val supportPurchases = purchases.orEmpty()
+                    .filter { SUPPORT_PURCHASE_PRODUCT_ID in it.products }
+                if (supportPurchases.isEmpty()) {
+                    update { message = "Purchase not found" }
+                } else {
+                    supportPurchases.forEach(::handlePurchase)
+                }
+            }
+            BillingClient.BillingResponseCode.USER_CANCELED -> update {
+                isLoading = false
+                message = "Purchase canceled"
+            }
+            else -> updatePurchaseMessage(billingResult, fallback = "Purchase unavailable")
+        }
+    }
+
+    private fun querySupportProduct(client: BillingClient) {
+        val product = QueryProductDetailsParams.Product.newBuilder()
+            .setProductId(SUPPORT_PURCHASE_PRODUCT_ID)
+            .setProductType(BillingClient.ProductType.INAPP)
+            .build()
+        val params = QueryProductDetailsParams.newBuilder()
+            .setProductList(listOf(product))
+            .build()
+        client.queryProductDetailsAsync(params) { billingResult, productDetailsResult ->
+            if (billingResult.responseCode != BillingClient.BillingResponseCode.OK) {
+                updateUnavailable(billingResult)
+                return@queryProductDetailsAsync
+            }
+            val details = productDetailsResult.productDetailsList
+                .firstOrNull { it.productId == SUPPORT_PURCHASE_PRODUCT_ID }
+            update {
+                isLoading = false
+                supportProductDetails = details
+                supportPrice = details
+                    ?.oneTimePurchaseOfferDetailsList
+                    ?.firstOrNull()
+                    ?.formattedPrice
+                    ?.takeIf { it.isNotBlank() }
+                    ?: "$3"
+                message = when {
+                    isPurchased -> "Already supported. Thank you."
+                    details != null -> "One-time Play Store purchase"
+                    else -> "Create support_3_usd in Play Console"
+                }
+            }
+        }
+    }
+
+    private fun queryExistingPurchases(client: BillingClient) {
+        val params = QueryPurchasesParams.newBuilder()
+            .setProductType(BillingClient.ProductType.INAPP)
+            .build()
+        client.queryPurchasesAsync(params) { billingResult, purchases ->
+            if (billingResult.responseCode != BillingClient.BillingResponseCode.OK) return@queryPurchasesAsync
+            purchases
+                .filter { SUPPORT_PURCHASE_PRODUCT_ID in it.products }
+                .forEach(::handlePurchase)
+        }
+    }
+
+    private fun handlePurchase(purchase: Purchase) {
+        when (purchase.purchaseState) {
+            Purchase.PurchaseState.PURCHASED -> {
+                update {
+                    isLoading = false
+                    isPurchased = true
+                    message = "Thanks for supporting the app"
+                }
+                if (!purchase.isAcknowledged) {
+                    val params = AcknowledgePurchaseParams.newBuilder()
+                        .setPurchaseToken(purchase.purchaseToken)
+                        .build()
+                    billingClient?.acknowledgePurchase(params) { result ->
+                        if (result.responseCode == BillingClient.BillingResponseCode.OK) {
+                            update {
+                                isPurchased = true
+                                message = "Thanks for supporting the app"
+                            }
+                        } else {
+                            updatePurchaseMessage(result, fallback = "Support saved, acknowledgement pending")
+                        }
+                    }
+                }
+            }
+            Purchase.PurchaseState.PENDING -> update {
+                isLoading = false
+                message = "Purchase pending"
+            }
+            else -> Unit
+        }
+    }
+
+    private fun updateUnavailable(billingResult: BillingResult) {
+        update {
+            isLoading = false
+            supportProductDetails = null
+            message = billingResult.debugMessage
+                .takeIf { it.isNotBlank() }
+                ?: "Google Play purchase unavailable"
+        }
+    }
+
+    private fun updatePurchaseMessage(billingResult: BillingResult, fallback: String) {
+        update {
+            isLoading = false
+            message = billingResult.debugMessage
+                .takeIf { it.isNotBlank() }
+                ?: fallback
+        }
+    }
+
+    private fun update(block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            block()
+        } else {
+            mainHandler.post(block)
+        }
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? =
+    when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext.findActivity()
+        else -> null
+    }
 
 private data class PlaybackActionHandlers(
     val onPlay: () -> Unit,
@@ -798,6 +1048,68 @@ class PlaybackNotificationReceiver : BroadcastReceiver() {
     }
 }
 
+class AlbumArtContentProvider : ContentProvider() {
+    override fun onCreate(): Boolean = true
+
+    override fun getType(uri: Uri): String = "image/jpeg"
+
+    override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
+        if (!mode.contains("r")) {
+            throw FileNotFoundException("Album art is read-only")
+        }
+        val activeContext = context ?: throw FileNotFoundException("No provider context")
+        val cacheKey = uri.lastPathSegment
+            ?.takeIf { it.matches(Regex("[a-fA-F0-9]{64}")) }
+            ?: throw FileNotFoundException("Invalid album art key")
+        val file = albumArtCacheFileForKey(activeContext, cacheKey)
+        if (!file.isFile) {
+            throw FileNotFoundException("Album art not cached")
+        }
+        return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+    }
+
+    override fun query(
+        uri: Uri,
+        projection: Array<out String>?,
+        selection: String?,
+        selectionArgs: Array<out String>?,
+        sortOrder: String?
+    ): Cursor? {
+        val activeContext = context ?: return null
+        val cacheKey = uri.lastPathSegment
+            ?.takeIf { it.matches(Regex("[a-fA-F0-9]{64}")) }
+            ?: return null
+        val file = albumArtCacheFileForKey(activeContext, cacheKey)
+        if (!file.isFile) return null
+        val columns = projection?.takeIf { it.isNotEmpty() } ?: arrayOf(
+            OpenableColumns.DISPLAY_NAME,
+            OpenableColumns.SIZE
+        )
+        return MatrixCursor(columns).apply {
+            addRow(
+                Array<Any?>(columns.size) { index ->
+                    when (columns[index]) {
+                        OpenableColumns.DISPLAY_NAME -> "$cacheKey.jpg"
+                        OpenableColumns.SIZE -> file.length()
+                        else -> null
+                    }
+                }
+            )
+        }
+    }
+
+    override fun insert(uri: Uri, values: ContentValues?): Uri? = null
+
+    override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int = 0
+
+    override fun update(
+        uri: Uri,
+        values: ContentValues?,
+        selection: String?,
+        selectionArgs: Array<out String>?
+    ): Int = 0
+}
+
 class PlaybackForegroundService : Service() {
     private val notificationManager by lazy { getSystemService(NotificationManager::class.java) }
     private var latestNotification: Notification? = null
@@ -811,6 +1123,7 @@ class PlaybackForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == PLAYBACK_SERVICE_ACTION_STOP) {
+            removeForegroundNotification()
             stopSelf()
             return START_NOT_STICKY
         }
@@ -826,10 +1139,10 @@ class PlaybackForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        removeForegroundNotification()
         if (instance === this) {
             instance = null
         }
-        isInForeground = false
         super.onDestroy()
     }
 
@@ -838,8 +1151,7 @@ class PlaybackForegroundService : Service() {
         if (keepForeground) {
             startAsForeground(notification)
         } else {
-            detachForeground()
-            notificationManager.notify(PLAYBACK_NOTIFICATION_ID, notification)
+            removeForegroundNotification()
             stopSelf()
         }
     }
@@ -857,15 +1169,19 @@ class PlaybackForegroundService : Service() {
         isInForeground = true
     }
 
-    private fun detachForeground() {
-        if (!isInForeground) return
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(STOP_FOREGROUND_DETACH)
-        } else {
-            @Suppress("DEPRECATION")
-            stopForeground(false)
+    private fun removeForegroundNotification() {
+        latestNotification = null
+        pendingNotification = null
+        if (isInForeground) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+            isInForeground = false
         }
-        isInForeground = false
+        notificationManager.cancel(PLAYBACK_NOTIFICATION_ID)
     }
 
     private fun buildFallbackNotification(): Notification {
@@ -946,7 +1262,10 @@ class PlaybackForegroundService : Service() {
         fun stop(context: Context) {
             val appContext = context.applicationContext
             pendingNotification = null
+            instance?.removeForegroundNotification()
             instance?.stopSelf()
+            appContext.getSystemService(NotificationManager::class.java)
+                ?.cancel(PLAYBACK_NOTIFICATION_ID)
             appContext.stopService(
                 Intent(appContext, PlaybackForegroundService::class.java)
                     .setAction(PLAYBACK_SERVICE_ACTION_STOP)
@@ -1047,6 +1366,7 @@ class AutoMediaBrowserService : MediaBrowserService() {
 
     override fun onDestroy() {
         stopStatePump()
+        clearAutoSessionState()
         autoSession.release()
         super.onDestroy()
     }
@@ -1069,9 +1389,7 @@ class AutoMediaBrowserService : MediaBrowserService() {
         val (session, tracks) = loadAutoTracks()
         return when {
             parentId == AUTO_ROOT_ID -> buildAutoRootItems(session, tracks)
-            parentId == AUTO_SONGS_ID -> tracks
-                .take(AUTO_MAX_TOP_LEVEL_ITEMS)
-                .map { it.toAutoTrackItem(applicationContext, session) }
+            parentId == AUTO_SONGS_ID -> buildAutoSongsItems(session, tracks)
             parentId == AUTO_FAVORITES_ID -> {
                 val activeSession = session ?: return emptyList()
                 val tracksById = tracks.associateBy { it.id }
@@ -1152,6 +1470,12 @@ class AutoMediaBrowserService : MediaBrowserService() {
         }
     }
 
+    private fun buildAutoSongsItems(session: JellyfinSession?, tracks: List<MusicTrack>): List<MediaBrowser.MediaItem> =
+        listOf(autoShuffleAllItem(tracks, title = "Shuffle all songs")) +
+            tracks
+                .take(AUTO_MAX_TOP_LEVEL_ITEMS)
+                .map { it.toAutoTrackItem(applicationContext, session) }
+
     private fun buildAutoRootItems(session: JellyfinSession?, tracks: List<MusicTrack>): List<MediaBrowser.MediaItem> {
         val likedCount = session?.let { loadLikedTrackIds(applicationContext, it).size } ?: 0
         val recentCount = session?.let { loadRecentTrackIds(applicationContext, it).size } ?: 0
@@ -1163,14 +1487,7 @@ class AutoMediaBrowserService : MediaBrowserService() {
         val offlineCount = session?.let { loadOfflineDownloads(applicationContext, it).size } ?: 0
         val recentlyAddedCount = tracks.count { it.dateAddedMs > 0L }
         return listOf(
-            MediaBrowser.MediaItem(
-                MediaDescription.Builder()
-                    .setMediaId(AUTO_SHUFFLE_ALL_ID)
-                    .setTitle("Shuffle all")
-                    .setSubtitle(tracks.size.countLabel("song"))
-                    .build(),
-                MediaBrowser.MediaItem.FLAG_PLAYABLE
-            ),
+            autoShuffleAllItem(tracks),
             MediaBrowser.MediaItem(
                 MediaDescription.Builder()
                     .setMediaId(AUTO_SONGS_ID)
@@ -1237,6 +1554,19 @@ class AutoMediaBrowserService : MediaBrowserService() {
             )
         )
     }
+
+    private fun autoShuffleAllItem(
+        tracks: List<MusicTrack>,
+        title: String = "Shuffle all"
+    ): MediaBrowser.MediaItem =
+        MediaBrowser.MediaItem(
+            MediaDescription.Builder()
+                .setMediaId(AUTO_SHUFFLE_ALL_ID)
+                .setTitle(title)
+                .setSubtitle(tracks.size.countLabel("song"))
+                .build(),
+            MediaBrowser.MediaItem.FLAG_PLAYABLE
+        )
 
     private fun playFirstOrResume() {
         val player = autoPlayer()
@@ -1337,6 +1667,7 @@ class AutoMediaBrowserService : MediaBrowserService() {
                 autoRepeatEnabled = !autoRepeatEnabled
             }
         }
+        updateAutoPlayerFallbackQueue()
     }
 
     private fun handleAutoCustomAction(action: String?) {
@@ -1346,9 +1677,11 @@ class AutoMediaBrowserService : MediaBrowserService() {
                 if (autoShuffleEnabled) {
                     reshuffleAutoQueueAfterCurrent()
                 }
+                updateAutoPlayerFallbackQueue()
             }
             PLAYBACK_ACTION_REPEAT -> {
                 autoRepeatEnabled = !autoRepeatEnabled
+                updateAutoPlayerFallbackQueue()
             }
             PLAYBACK_ACTION_FAVORITE -> {
                 val (session, _) = loadAutoTracks()
@@ -1393,6 +1726,7 @@ class AutoMediaBrowserService : MediaBrowserService() {
             smartShuffleEnabled = loadQueueBehaviorSettings(applicationContext).smartShuffleEnabled
         )
         autoShuffleEnabled = false
+        updateAutoPlayerFallbackQueue()
     }
 
     private fun playTrackFromQueue(
@@ -1404,8 +1738,17 @@ class AutoMediaBrowserService : MediaBrowserService() {
         autoPlaybackSessionActive = true
         startStatePump()
         autoQueue = queue.queueStartingAt(track).ifEmpty { listOf(track) }
+        updateAutoPlayerFallbackQueue()
         autoPlayer().play(track, activeSession)
         publishAutoSessionState()
+    }
+
+    private fun updateAutoPlayerFallbackQueue() {
+        autoPlayer().setPlaybackQueue(
+            queue = autoQueue,
+            repeatCurrentTrack = autoRepeatEnabled,
+            stopAfterCurrentTrack = false
+        )
     }
 
     private fun loadAutoTracks(): Pair<JellyfinSession?, List<MusicTrack>> {
@@ -1428,87 +1771,80 @@ class AutoMediaBrowserService : MediaBrowserService() {
 
     private fun publishAutoSessionState() {
         if (!autoPlaybackSessionActive) {
-            autoSession.isActive = false
-            autoPublishedQueueTrackId = null
-            autoPublishedQueueHadArt = false
-            autoSession.setQueue(emptyList())
-            autoSession.setPlaybackState(
-                PlaybackState.Builder()
-                    .setState(
-                        PlaybackState.STATE_NONE,
-                        PlaybackState.PLAYBACK_POSITION_UNKNOWN,
-                        0f
-                    )
-                    .build()
-            )
+            clearAutoSessionState()
             return
         }
         val player = autoPlayer()
         player.syncProgress()
         val snapshot = player.playbackSnapshot
         val track = snapshot.track
-        if (track != null) {
-            val imageUrl = track.imageUrl(snapshot.session, size = AUTO_NOW_PLAYING_ART_SIZE, quality = 82)
-            if (autoAlbumArtTrackId != null && autoAlbumArtTrackId != track.id) {
-                autoAlbumArt = null
-                autoAlbumArtTrackId = null
-            }
-            val cachedArt = cachedAutoAlbumArt(applicationContext, imageUrl, AUTO_NOW_PLAYING_ART_SIZE)
-            if (cachedArt != null && autoAlbumArtTrackId != track.id) {
-                autoAlbumArt = cachedArt
-                autoAlbumArtTrackId = track.id
-            }
-            val currentArt = autoAlbumArt.takeIf { autoAlbumArtTrackId == track.id } ?: cachedArt
-            val queueId = track.autoQueueId()
-            val hasQueueArt = currentArt != null
-            if (autoPublishedQueueTrackId != track.id || autoPublishedQueueHadArt != hasQueueArt) {
-                autoSession.setQueue(
-                    listOf(
-                        MediaSession.QueueItem(
-                            track.toAutoDescription(
-                                context = applicationContext,
-                                session = snapshot.session,
-                                artwork = currentArt,
-                                imageSize = AUTO_NOW_PLAYING_ART_SIZE,
-                                imageQuality = 82
-                            ),
-                            queueId
-                        )
+        if (track == null) {
+            autoPlaybackSessionActive = false
+            stopStatePump()
+            clearAutoSessionState()
+            return
+        }
+        val imageUrl = track.imageUrl(snapshot.session, size = AUTO_NOW_PLAYING_ART_SIZE, quality = 82)
+        if (autoAlbumArtTrackId != null && autoAlbumArtTrackId != track.id) {
+            autoAlbumArt = null
+            autoAlbumArtTrackId = null
+        }
+        val cachedArt = cachedAutoAlbumArt(applicationContext, imageUrl, AUTO_NOW_PLAYING_ART_SIZE)
+        if (cachedArt != null && autoAlbumArtTrackId != track.id) {
+            autoAlbumArt = cachedArt
+            autoAlbumArtTrackId = track.id
+        }
+        val currentArt = autoAlbumArt.takeIf { autoAlbumArtTrackId == track.id } ?: cachedArt
+        val artUriString = imageUrl?.let { autoAlbumArtUriString(applicationContext, it) ?: it }
+        val queueId = track.autoQueueId()
+        val hasQueueArt = currentArt != null
+        if (autoPublishedQueueTrackId != track.id || autoPublishedQueueHadArt != hasQueueArt) {
+            autoSession.setQueue(
+                listOf(
+                    MediaSession.QueueItem(
+                        track.toAutoDescription(
+                            context = applicationContext,
+                            session = snapshot.session,
+                            artwork = currentArt,
+                            imageSize = AUTO_NOW_PLAYING_ART_SIZE,
+                            imageQuality = 82,
+                            preferCachedContentUri = true
+                        ),
+                        queueId
                     )
                 )
-                autoSession.setQueueTitle(track.album.ifBlank { "Now playing" })
-                autoPublishedQueueTrackId = track.id
-                autoPublishedQueueHadArt = hasQueueArt
-            }
-            autoSession.setMetadata(
-                MediaMetadata.Builder()
-                    .putString(MediaMetadata.METADATA_KEY_MEDIA_ID, "$AUTO_TRACK_PREFIX${track.id}")
-                    .putString(MediaMetadata.METADATA_KEY_TITLE, track.title)
-                    .putString(MediaMetadata.METADATA_KEY_ARTIST, track.artist)
-                    .putString(MediaMetadata.METADATA_KEY_ALBUM, track.album)
-                    .putString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE, track.title)
-                    .putString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE, track.artist)
-                    .putString(MediaMetadata.METADATA_KEY_DISPLAY_DESCRIPTION, track.album)
-                    .putLong(MediaMetadata.METADATA_KEY_DURATION, track.durationMs.coerceAtLeast(0L))
-                    .apply {
-                        imageUrl?.let { imageUrl ->
-                            putString(MediaMetadata.METADATA_KEY_ART_URI, imageUrl)
-                            putString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI, imageUrl)
-                            putString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI, imageUrl)
-                        }
-                        currentArt?.let { bitmap ->
-                            putBitmap(MediaMetadata.METADATA_KEY_ART, bitmap)
-                            putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, bitmap)
-                            putBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON, bitmap)
-                        }
-                    }
-                    .build()
             )
-            loadAutoAlbumArtIfNeeded(track, snapshot.session)
+            autoSession.setQueueTitle(track.album.ifBlank { "Now playing" })
+            autoPublishedQueueTrackId = track.id
+            autoPublishedQueueHadArt = hasQueueArt
         }
-        val position = track?.let { snapshot.livePositionMs } ?: PlaybackState.PLAYBACK_POSITION_UNKNOWN
-        val trackIsFavorite = track != null &&
-            snapshot.session?.let { track.id in loadLikedTrackIds(applicationContext, it) } == true
+        autoSession.setMetadata(
+            MediaMetadata.Builder()
+                .putString(MediaMetadata.METADATA_KEY_MEDIA_ID, "$AUTO_TRACK_PREFIX${track.id}")
+                .putString(MediaMetadata.METADATA_KEY_TITLE, track.title)
+                .putString(MediaMetadata.METADATA_KEY_ARTIST, track.artist)
+                .putString(MediaMetadata.METADATA_KEY_ALBUM, track.album)
+                .putString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE, track.title)
+                .putString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE, track.artist)
+                .putString(MediaMetadata.METADATA_KEY_DISPLAY_DESCRIPTION, track.album)
+                .putLong(MediaMetadata.METADATA_KEY_DURATION, track.durationMs.coerceAtLeast(0L))
+                .apply {
+                    artUriString?.let { artUri ->
+                        putString(MediaMetadata.METADATA_KEY_ART_URI, artUri)
+                        putString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI, artUri)
+                        putString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI, artUri)
+                    }
+                    currentArt?.let { bitmap ->
+                        putBitmap(MediaMetadata.METADATA_KEY_ART, bitmap)
+                        putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, bitmap)
+                        putBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON, bitmap)
+                    }
+                }
+                .build()
+        )
+        loadAutoAlbumArtIfNeeded(track, snapshot.session)
+        val position = snapshot.livePositionMs
+        val trackIsFavorite = snapshot.session?.let { track.id in loadLikedTrackIds(applicationContext, it) } == true
         autoSession.setPlaybackState(
             PlaybackState.Builder()
                 .setActions(
@@ -1527,7 +1863,8 @@ class AutoMediaBrowserService : MediaBrowserService() {
                         action = PLAYBACK_ACTION_SHUFFLE,
                         title = if (autoShuffleEnabled) "Shuffle on" else "Shuffle off",
                         iconRes = if (autoShuffleEnabled) R.drawable.auto_icon_shuffle_on else R.drawable.auto_icon_shuffle,
-                        commandIcon = if (autoShuffleEnabled) AUTO_COMMAND_ICON_SHUFFLE_ON else AUTO_COMMAND_ICON_SHUFFLE_OFF
+                        commandIcon = if (autoShuffleEnabled) AUTO_COMMAND_ICON_SHUFFLE_ON else AUTO_COMMAND_ICON_SHUFFLE_OFF,
+                        selected = autoShuffleEnabled
                     )
                 )
                 .addCustomAction(
@@ -1535,7 +1872,8 @@ class AutoMediaBrowserService : MediaBrowserService() {
                         action = PLAYBACK_ACTION_REPEAT,
                         title = if (autoRepeatEnabled) "Repeat on" else "Repeat off",
                         iconRes = R.drawable.auto_icon_repeat,
-                        commandIcon = if (autoRepeatEnabled) AUTO_COMMAND_ICON_REPEAT_ALL else AUTO_COMMAND_ICON_REPEAT_OFF
+                        commandIcon = if (autoRepeatEnabled) AUTO_COMMAND_ICON_REPEAT_ALL else AUTO_COMMAND_ICON_REPEAT_OFF,
+                        selected = autoRepeatEnabled
                     )
                 )
                 .addCustomAction(
@@ -1543,7 +1881,8 @@ class AutoMediaBrowserService : MediaBrowserService() {
                         action = PLAYBACK_ACTION_FAVORITE,
                         title = if (trackIsFavorite) "Unfavorite" else "Favorite",
                         iconRes = if (trackIsFavorite) R.drawable.auto_icon_favorite_filled else R.drawable.auto_icon_favorite_outline,
-                        commandIcon = if (trackIsFavorite) AUTO_COMMAND_ICON_HEART_FILLED else AUTO_COMMAND_ICON_HEART_UNFILLED
+                        commandIcon = if (trackIsFavorite) AUTO_COMMAND_ICON_HEART_FILLED else AUTO_COMMAND_ICON_HEART_UNFILLED,
+                        selected = trackIsFavorite
                     )
                 )
                 .addCustomAction(
@@ -1555,11 +1894,40 @@ class AutoMediaBrowserService : MediaBrowserService() {
                     )
                 )
                 .setActiveQueueItemId(track?.autoQueueId() ?: -1L)
+                .setExtras(autoPlaybackStateExtras())
                 .setState(snapshot.androidPlaybackState(), position, if (snapshot.isPlaying) 1f else 0f, snapshot.updatedAtMs)
                 .build()
         )
         autoSession.isActive = true
     }
+
+    private fun clearAutoSessionState() {
+        autoSession.isActive = false
+        autoQueue = emptyList()
+        autoPublishedQueueTrackId = null
+        autoPublishedQueueHadArt = false
+        autoAlbumArt = null
+        autoAlbumArtTrackId = null
+        loadingAutoAlbumArtTrackId = null
+        autoSession.setQueue(emptyList())
+        autoSession.setQueueTitle(null)
+        autoSession.setMetadata(MediaMetadata.Builder().build())
+        autoSession.setPlaybackState(
+            PlaybackState.Builder()
+                .setState(
+                    PlaybackState.STATE_NONE,
+                    PlaybackState.PLAYBACK_POSITION_UNKNOWN,
+                    0f
+                )
+                .build()
+        )
+    }
+
+    private fun autoPlaybackStateExtras(): Bundle =
+        Bundle().apply {
+            putBoolean(AUTO_PLAYBACK_EXTRA_SHUFFLE_ENABLED, autoShuffleEnabled)
+            putBoolean(AUTO_PLAYBACK_EXTRA_REPEAT_ENABLED, autoRepeatEnabled)
+        }
 
     private fun loadAutoAlbumArtIfNeeded(track: MusicTrack, session: JellyfinSession?) {
         val activeSession = session ?: return
@@ -1845,6 +2213,7 @@ private class PlaybackNotificationController(context: Context) {
         lastPlaybackStateUpdateAt = now
 
         val imageUrl = track.imageUrl(snapshot.session, size = AUTO_NOW_PLAYING_ART_SIZE, quality = 82)
+        val artUriString = imageUrl?.let { autoAlbumArtUriString(appContext, it) ?: it }
         val sessionArtwork = largeIcon
             ?.takeIf { largeIconTrackId == track.id }
             ?: cachedAutoAlbumArt(appContext, imageUrl, AUTO_NOW_PLAYING_ART_SIZE)
@@ -1865,10 +2234,10 @@ private class PlaybackNotificationController(context: Context) {
                 .putString(MediaMetadata.METADATA_KEY_DISPLAY_DESCRIPTION, track.album)
                 .putLong(MediaMetadata.METADATA_KEY_DURATION, track.durationMs.coerceAtLeast(0L))
                 .apply {
-                    imageUrl?.let { imageUrl ->
-                        putString(MediaMetadata.METADATA_KEY_ART_URI, imageUrl)
-                        putString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI, imageUrl)
-                        putString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI, imageUrl)
+                    artUriString?.let { artUri ->
+                        putString(MediaMetadata.METADATA_KEY_ART_URI, artUri)
+                        putString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI, artUri)
+                        putString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI, artUri)
                     }
                     sessionArtwork?.let {
                         putBitmap(MediaMetadata.METADATA_KEY_ART, it)
@@ -2967,6 +3336,11 @@ private fun JellyfinMusicApp() {
             }
         if (restoredQueue.isNotEmpty()) {
             playQueue = restoredQueue
+            player.setPlaybackQueue(
+                queue = restoredQueue,
+                repeatCurrentTrack = repeatEnabled,
+                stopAfterCurrentTrack = playbackBehaviorSettings.stopAfterCurrent
+            )
         }
         lastPlaybackState?.let { playbackState ->
             if (restoredTrack != null) {
@@ -2980,6 +3354,14 @@ private fun JellyfinMusicApp() {
         if (startupBehaviorSettings.restoreLastQueue && playQueue.isNotEmpty()) {
             saveLastQueueIds(context, activeSession, playQueue)
         }
+    }
+
+    LaunchedEffect(playQueue, repeatEnabled, playbackBehaviorSettings.stopAfterCurrent) {
+        player.setPlaybackQueue(
+            queue = playQueue,
+            repeatCurrentTrack = repeatEnabled,
+            stopAfterCurrentTrack = playbackBehaviorSettings.stopAfterCurrent
+        )
     }
 
     fun runTask(task: () -> Unit) {
@@ -3171,7 +3553,13 @@ private fun JellyfinMusicApp() {
         activeSession: JellyfinSession,
         openPlayer: Boolean = false
     ) {
-        playQueue = queue.queueStartingAt(track).ifEmpty { listOf(track) }
+        val nextQueue = queue.queueStartingAt(track).ifEmpty { listOf(track) }
+        playQueue = nextQueue
+        player.setPlaybackQueue(
+            queue = nextQueue,
+            repeatCurrentTrack = repeatEnabled,
+            stopAfterCurrentTrack = playbackBehaviorSettings.stopAfterCurrent
+        )
         if (openPlayer) {
             showNowPlayingPlayer()
         }
@@ -4287,6 +4675,9 @@ private fun JellyfinMusicApp() {
                                         title = "Settings",
                                         icon = PlayerIconVectors.SettingsFilled
                                     )
+                                }
+                                item {
+                                    SupportPurchaseCard()
                                 }
                                 item {
                                     SettingsSectionHeader("Categories")
@@ -6380,6 +6771,96 @@ private fun PageTitleRow(
 }
 
 @Composable
+private fun SupportPurchaseCard() {
+    val context = LocalContext.current
+    val controller = remember { SupportPurchaseController(context.applicationContext) }
+    val activity = remember(context) { context.findActivity() }
+
+    DisposableEffect(controller) {
+        controller.start()
+        onDispose { controller.close() }
+    }
+
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.82f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(18.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                modifier = Modifier.size(48.dp),
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+            ) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                    Icon(
+                        imageVector = PlayerIconVectors.FavoriteFilled,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Text(
+                    text = "Buy me a coffee",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "One-time ${controller.supportPrice} Play Store support purchase",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.78f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = controller.message,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.72f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            FilledTonalButton(
+                onClick = {
+                    if (controller.supportProductDetails == null && !controller.isLoading) {
+                        controller.refresh()
+                    } else {
+                        controller.launchPurchase(activity)
+                    }
+                },
+                enabled = !controller.isPurchased && (!controller.isLoading || controller.supportProductDetails != null),
+                shape = RoundedCornerShape(18.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)
+            ) {
+                Text(
+                    text = when {
+                        controller.isPurchased -> "Supported"
+                        controller.isLoading -> "Checking"
+                        controller.supportProductDetails == null -> "Retry"
+                        else -> "Support ${controller.supportPrice}"
+                    },
+                    maxLines = 1
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun AboutCard() {
     val context = LocalContext.current
     Card(
@@ -6436,44 +6917,6 @@ private fun AboutCard() {
                     shape = RoundedCornerShape(16.dp)
                 ) {
                     Text("Open")
-                }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        text = "Support development",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        text = "Buy Me a Coffee",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                FilledTonalButton(
-                    onClick = {
-                        runCatching {
-                            context.startActivity(
-                                Intent(Intent.ACTION_VIEW, Uri.parse(BUY_ME_A_COFFEE_URL))
-                            )
-                        }
-                    },
-                    shape = RoundedCornerShape(16.dp)
-                ) {
-                    Icon(
-                        imageVector = PlayerIconVectors.FavoriteFilled,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text("Buy coffee")
                 }
             }
         }
@@ -11929,7 +12372,7 @@ private fun saveAlbumBitmapToDisk(context: Context, imageUrl: String, bytes: Byt
 }
 
 private fun albumArtCacheFile(context: Context, imageUrl: String): File =
-    File(File(context.cacheDir, ALBUM_ART_CACHE_DIR), "${stableCacheKey(imageUrl)}.img")
+    albumArtCacheFileForKey(context, stableCacheKey(imageUrl))
 
 private fun pruneAlbumArtCache(directory: File?, limit: Int = MAX_ALBUM_ART_CACHE_FILES) {
     val files = directory
@@ -12099,6 +12542,7 @@ private fun AnimatedNowPlayingBackground(
             )
         )
     }
+
 }
 
 @Composable
@@ -16084,6 +16528,17 @@ private class JellyfinPlayer(private val context: Context) {
     private var queuedSeekPositionMs: Long? = null
     private var deferredStreamingSeek: Runnable? = null
     private var streamStartOffsetMs = 0L
+    private var fallbackPlaybackQueue: List<MusicTrack> = emptyList()
+    private var fallbackRepeatCurrentTrack = false
+    private var fallbackStopAfterCurrentTrack = false
+    private var noisyReceiverRegistered = false
+    private val noisyAudioReceiver = object : BroadcastReceiver() {
+        override fun onReceive(receiverContext: Context?, intent: Intent?) {
+            if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
+                mainHandler.post { pauseForAudioRouteDisconnect() }
+            }
+        }
+    }
     private val visualizerPump = object : Runnable {
         override fun run() {
             if (!isPlaying || !visualizerEnabled) {
@@ -16101,6 +16556,9 @@ private class JellyfinPlayer(private val context: Context) {
 
     fun play(track: MusicTrack, session: JellyfinSession) {
         val streamingSettings = loadStreamingQualitySettings(context)
+        if (fallbackPlaybackQueue.none { it.id == track.id }) {
+            fallbackPlaybackQueue = listOf(track)
+        }
         startPlayback(
             track = track,
             session = session,
@@ -16110,6 +16568,17 @@ private class JellyfinPlayer(private val context: Context) {
             reportStopped = true,
             startPositionMs = queuedSeekPositionFor(track)
         )
+    }
+
+    fun setPlaybackQueue(
+        queue: List<MusicTrack>,
+        repeatCurrentTrack: Boolean,
+        stopAfterCurrentTrack: Boolean
+    ) {
+        val activeTrack = currentTrack
+        fallbackPlaybackQueue = activeTrack?.let { queue.queueStartingAt(it) } ?: queue
+        fallbackRepeatCurrentTrack = repeatCurrentTrack
+        fallbackStopAfterCurrentTrack = stopAfterCurrentTrack
     }
 
     fun restorePaused(track: MusicTrack, session: JellyfinSession, positionMs: Long) {
@@ -16279,6 +16748,7 @@ private class JellyfinPlayer(private val context: Context) {
         if (isPlaying) {
             activePlayer.pause()
             abandonAudioFocus()
+            unregisterNoisyAudioReceiver()
             stopVisualizerPump()
             isPlaying = false
             status = "Paused"
@@ -16324,6 +16794,7 @@ private class JellyfinPlayer(private val context: Context) {
             activePlayer.play()
             isPlaying = true
             status = "Playing"
+            registerNoisyAudioReceiver()
             if (visualizerEnabled) {
                 startVisualizerPump()
             }
@@ -16517,6 +16988,7 @@ private class JellyfinPlayer(private val context: Context) {
             .build()
             .apply {
                 setAudioAttributes(media3PlaybackAudioAttributes(), false)
+                setHandleAudioBecomingNoisy(true)
                 setWakeMode(C.WAKE_MODE_LOCAL)
                 volume = 1f
             }
@@ -16607,6 +17079,7 @@ private class JellyfinPlayer(private val context: Context) {
                     isPlaying = isPlayingNow
                     if (isPlayingNow) {
                         status = "Playing"
+                        registerNoisyAudioReceiver()
                         if (visualizerEnabled) {
                             startVisualizerPump()
                         }
@@ -16621,6 +17094,7 @@ private class JellyfinPlayer(private val context: Context) {
                         }
                     } else if (status != "Buffering" && status != "Ended") {
                         status = "Paused"
+                        unregisterNoisyAudioReceiver()
                     }
                     publishPlaybackState(track)
                 }
@@ -16640,6 +17114,7 @@ private class JellyfinPlayer(private val context: Context) {
                     if (retryWithTranscodedStream(player, generation, track, transcoded, allowTranscodedFallback)) {
                         return
                     }
+                    unregisterNoisyAudioReceiver()
                     abandonAudioFocus()
                     stopVisualizerPump()
                     releaseEqualizer()
@@ -16667,6 +17142,7 @@ private class JellyfinPlayer(private val context: Context) {
     }
 
     private fun finishCurrentTrack(track: MusicTrack) {
+        unregisterNoisyAudioReceiver()
         stopVisualizerPump()
         isPlaying = false
         status = "Ended"
@@ -16687,6 +17163,9 @@ private class JellyfinPlayer(private val context: Context) {
                     .getOrDefault(false)
             }
             if (!handled && currentTrack?.id == track.id && status == "Ended") {
+                handled = continueFromFallbackQueue(track)
+            }
+            if (!handled && currentTrack?.id == track.id && status == "Ended") {
                 abandonAudioFocus()
                 reportCurrentPlaybackStopped()
                 publishPlaybackState(track)
@@ -16697,6 +17176,42 @@ private class JellyfinPlayer(private val context: Context) {
         } else {
             mainHandler.post(dispatchEnd)
         }
+    }
+
+    private fun continueFromFallbackQueue(endedTrack: MusicTrack): Boolean {
+        val activeSession = currentSession ?: return false
+        if (fallbackRepeatCurrentTrack) {
+            PlaybackDiagnostics.record("Background repeat handoff", endedTrack.title)
+            startPlayback(
+                track = endedTrack,
+                session = activeSession,
+                transcoded = loadStreamingQualitySettings(context).startsTranscoded,
+                allowTranscodedFallback = loadStreamingQualitySettings(context).tryDirectPlayFirst,
+                bypassOfflineFile = false,
+                reportStopped = true,
+                startPositionMs = 0L
+            )
+            return true
+        }
+        if (fallbackStopAfterCurrentTrack) {
+            return false
+        }
+        val fallbackQueue = fallbackPlaybackQueue
+            .ifEmpty { listOf(endedTrack) }
+            .queueStartingAt(endedTrack)
+        val nextTrack = fallbackQueue.nextTrackAfter(endedTrack) ?: return false
+        fallbackPlaybackQueue = fallbackQueue.queueStartingAt(nextTrack)
+        PlaybackDiagnostics.record("Background next handoff", "${endedTrack.title} -> ${nextTrack.title}")
+        startPlayback(
+            track = nextTrack,
+            session = activeSession,
+            transcoded = loadStreamingQualitySettings(context).startsTranscoded,
+            allowTranscodedFallback = loadStreamingQualitySettings(context).tryDirectPlayFirst,
+            bypassOfflineFile = false,
+            reportStopped = true,
+            startPositionMs = 0L
+        )
+        return true
     }
 
     private fun PlaybackException.readablePlaybackMessage(): String =
@@ -17013,6 +17528,7 @@ private class JellyfinPlayer(private val context: Context) {
         activePlayer.runCatching {
             if (isPlaying) pause()
         }
+        unregisterNoisyAudioReceiver()
         stopVisualizerPump()
         if (isPlaying) {
             isPlaying = false
@@ -17022,8 +17538,49 @@ private class JellyfinPlayer(private val context: Context) {
         }
     }
 
+    private fun pauseForAudioRouteDisconnect() {
+        if (!isPlaying) {
+            unregisterNoisyAudioReceiver()
+            return
+        }
+        PlaybackDiagnostics.record("Audio route disconnected", currentTrack?.title ?: "Playback paused")
+        mediaPlayer?.runCatching { pause() }
+        unregisterNoisyAudioReceiver()
+        stopVisualizerPump()
+        abandonAudioFocus()
+        isPlaying = false
+        status = "Paused"
+        publishPlaybackState()
+        reportCurrentPlaybackProgress(force = true, isPaused = true)
+    }
+
+    private fun registerNoisyAudioReceiver() {
+        if (noisyReceiverRegistered) return
+        runCatching {
+            val filter = IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(noisyAudioReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("DEPRECATION")
+                context.registerReceiver(noisyAudioReceiver, filter)
+            }
+            noisyReceiverRegistered = true
+        }.onFailure {
+            PlaybackDiagnostics.record("Audio route receiver failed", it.readableMessage())
+        }
+    }
+
+    private fun unregisterNoisyAudioReceiver() {
+        if (!noisyReceiverRegistered) return
+        runCatching {
+            context.unregisterReceiver(noisyAudioReceiver)
+        }
+        noisyReceiverRegistered = false
+    }
+
     private fun preparePlayerForReplacement() {
         cancelDeferredStreamingSeek()
+        unregisterNoisyAudioReceiver()
         stopVisualizerPump()
         releaseEqualizer()
         mediaPlayer?.runCatching {
@@ -17040,6 +17597,7 @@ private class JellyfinPlayer(private val context: Context) {
 
     private fun releasePlayer() {
         cancelDeferredStreamingSeek()
+        unregisterNoisyAudioReceiver()
         stopVisualizerPump()
         releaseEqualizer()
         abandonAudioFocus()
@@ -17189,6 +17747,11 @@ private class JellyfinPlayer(private val context: Context) {
     }
 }
 
+private enum class AudioLibraryQueryMode {
+    ItemType,
+    MediaType
+}
+
 private class JellyfinRepository(private val context: Context) {
     private val deviceId: String =
         Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "android"
@@ -17221,25 +17784,86 @@ private class JellyfinRepository(private val context: Context) {
         session: JellyfinSession,
         onPartial: ((List<MusicTrack>) -> Unit)? = null
     ): List<MusicTrack> {
-        val pageSize = 250
+        val tracksById = linkedMapOf<String, MusicTrack>()
+        var firstFailure: Throwable? = null
+
+        fun mergeTracks(nextTracks: List<MusicTrack>) {
+            var changed = false
+            nextTracks.forEach { track ->
+                if (!tracksById.containsKey(track.id)) {
+                    tracksById[track.id] = track
+                    changed = true
+                }
+            }
+            if (changed) {
+                onPartial?.invoke(tracksById.values.sortedWith(MusicTrackSort))
+            }
+        }
+
+        val parentScopes: List<String?> = (listOf<String?>(null) +
+            runCatching { fetchLibraryViewIds(session) }.getOrDefault(emptyList()))
+            .distinct()
+        parentScopes.forEach { parentId ->
+            AudioLibraryQueryMode.entries.forEach { queryMode ->
+                runCatching {
+                    fetchTracksFromScope(session, parentId, queryMode) { scopeTracks ->
+                        mergeTracks(scopeTracks)
+                    }
+                }
+                    .onSuccess(::mergeTracks)
+                    .onFailure { failure ->
+                        firstFailure = firstFailure ?: failure
+                        PlaybackDiagnostics.record(
+                            "Library sync scope failed",
+                            failure.readableMessage()
+                        )
+                    }
+                }
+        }
+
+        if (tracksById.isEmpty()) {
+            firstFailure?.let { failure -> throw failure }
+        }
+        return tracksById.values.sortedWith(MusicTrackSort)
+    }
+
+    private fun fetchLibraryViewIds(session: JellyfinSession): List<String> {
+        val response = JSONObject(
+            request(
+                url = "${session.serverUrl}/Users/${encode(session.userId)}/Views?IncludeExternalContent=false",
+                method = "GET",
+                body = null,
+                session = session,
+                readTimeoutMs = LIBRARY_READ_TIMEOUT_MS
+            )
+        )
+        val items = response.optJSONArray("Items") ?: return emptyList()
+        return buildList {
+            for (index in 0 until items.length()) {
+                val item = items.optJSONObject(index) ?: continue
+                val id = item.optString("Id").takeIf { it.isNotBlank() } ?: continue
+                add(id)
+            }
+        }.distinct()
+    }
+
+    private fun fetchTracksFromScope(
+        session: JellyfinSession,
+        parentId: String?,
+        queryMode: AudioLibraryQueryMode,
+        onPartial: ((List<MusicTrack>) -> Unit)? = null
+    ): List<MusicTrack> {
+        val pageSize = 1000
         var expectedTrackCount: Int? = null
         return buildList {
             var startIndex = 0
             val seenTrackIds = mutableSetOf<String>()
-            while (true) {
-                val url = buildString {
-                    append(session.serverUrl)
-                    append("/Users/")
-                    append(encode(session.userId))
-                    append("/Items?Recursive=true")
-                    append("&IncludeItemTypes=Audio")
-                    append("&Fields=Album,AlbumId,AlbumPrimaryImageTag,Artists,DateCreated,ImageTags,PrimaryImageItemId,RunTimeTicks")
-                    append("&StartIndex=$startIndex")
-                    append("&Limit=$pageSize")
-                }
+            var pageCount = 0
+            while (pageCount < 250) {
+                pageCount += 1
                 val response = JSONObject(
                     request(
-                        url = url,
+                        url = trackPageUrl(session, parentId, queryMode, startIndex, pageSize),
                         method = "GET",
                         body = null,
                         session = session,
@@ -17258,51 +17882,80 @@ private class JellyfinRepository(private val context: Context) {
                 var addedTracks = 0
                 for (index in 0 until items.length()) {
                     val item = items.optJSONObject(index) ?: continue
-                    val id = item.optString("Id")
-                    if (id.isBlank()) continue
+                    val id = item.optString("Id").takeIf { it.isNotBlank() } ?: continue
                     if (!seenTrackIds.add(id)) continue
-                    val artist = item.optJSONArray("Artists").joinOrFallback(item.optString("AlbumArtist", "Unknown artist"))
-                    val imageTags = item.optJSONObject("ImageTags")
-                    val primaryImageTag = imageTags?.optString("Primary").orEmpty()
-                    val primaryImageItemId = item.optString("PrimaryImageItemId")
-                    val albumId = item.optString("AlbumId")
-                    val albumImageTag = item.optString("AlbumPrimaryImageTag")
-                    val imageItemId = when {
-                        primaryImageTag.isNotBlank() -> id
-                        primaryImageItemId.isNotBlank() -> primaryImageItemId
-                        albumId.isNotBlank() && albumImageTag.isNotBlank() -> albumId
-                        else -> null
-                    }
-                    val imageTag = when {
-                        primaryImageTag.isNotBlank() -> primaryImageTag
-                        albumImageTag.isNotBlank() -> albumImageTag
-                        else -> null
-                    }
-                    add(
-                        MusicTrack(
-                            id = id,
-                            title = item.optString("Name", "Untitled"),
-                            artist = artist,
-                            album = item.optString("Album", "Unknown album").ifBlank { "Unknown album" },
-                            durationMs = item.optLong("RunTimeTicks", 0L) / 10_000L,
-                            dateAddedMs = parseJellyfinDateMs(item.optString("DateCreated")),
-                            imageItemId = imageItemId,
-                            imageTag = imageTag,
-                            tint = tintFor(id)
-                        )
-                    )
+                    add(item.toMusicTrack(id))
                     addedTracks += 1
                 }
+
                 startIndex += items.length()
                 if (isNotEmpty()) {
                     onPartial?.invoke(toList().sortedWith(MusicTrackSort))
                 }
-                if (items.length() < pageSize || addedTracks == 0) {
-                    throwIfLibraryReturnedTooFew(expectedTrackCount, seenTrackIds.size)
+
+                if (addedTracks == 0) {
                     break
                 }
             }
+            if (pageCount >= 250) {
+                throw IOException("Library sync stopped after ${pageCount * pageSize} scanned items. Narrow the library or try again.")
+            }
         }.sortedWith(MusicTrackSort)
+    }
+
+    private fun trackPageUrl(
+        session: JellyfinSession,
+        parentId: String?,
+        queryMode: AudioLibraryQueryMode,
+        startIndex: Int,
+        pageSize: Int
+    ): String = buildString {
+        append(session.serverUrl)
+        append("/Users/")
+        append(encode(session.userId))
+        append("/Items?Recursive=true")
+        parentId?.let { append("&ParentId=${encode(it)}") }
+        when (queryMode) {
+            AudioLibraryQueryMode.ItemType -> append("&IncludeItemTypes=Audio")
+            AudioLibraryQueryMode.MediaType -> append("&MediaTypes=Audio")
+        }
+        append("&Fields=Album,AlbumId,AlbumPrimaryImageTag,Artists,DateCreated,ImageTags,PrimaryImageItemId,RunTimeTicks")
+        append("&SortBy=SortName")
+        append("&SortOrder=Ascending")
+        append("&EnableTotalRecordCount=false")
+        append("&StartIndex=$startIndex")
+        append("&Limit=$pageSize")
+    }
+
+    private fun JSONObject.toMusicTrack(id: String): MusicTrack {
+        val artist = optJSONArray("Artists").joinOrFallback(optString("AlbumArtist", "Unknown artist"))
+        val imageTags = optJSONObject("ImageTags")
+        val primaryImageTag = imageTags?.optString("Primary").orEmpty()
+        val primaryImageItemId = optString("PrimaryImageItemId")
+        val albumId = optString("AlbumId")
+        val albumImageTag = optString("AlbumPrimaryImageTag")
+        val imageItemId = when {
+            primaryImageTag.isNotBlank() -> id
+            primaryImageItemId.isNotBlank() -> primaryImageItemId
+            albumId.isNotBlank() && albumImageTag.isNotBlank() -> albumId
+            else -> null
+        }
+        val imageTag = when {
+            primaryImageTag.isNotBlank() -> primaryImageTag
+            albumImageTag.isNotBlank() -> albumImageTag
+            else -> null
+        }
+        return MusicTrack(
+            id = id,
+            title = optString("Name", "Untitled"),
+            artist = artist,
+            album = optString("Album", "Unknown album").ifBlank { "Unknown album" },
+            durationMs = optLong("RunTimeTicks", 0L) / 10_000L,
+            dateAddedMs = parseJellyfinDateMs(optString("DateCreated")),
+            imageItemId = imageItemId,
+            imageTag = imageTag,
+            tint = tintFor(id)
+        )
     }
 
     private fun request(
@@ -19804,16 +20457,33 @@ private fun cachedAutoAlbumArt(context: Context, imageUrl: String?, maxEdge: Int
     return normalized
 }
 
+private fun autoAlbumArtUriString(context: Context, imageUrl: String): String? {
+    val key = stableCacheKey(imageUrl)
+    val file = albumArtCacheFileForKey(context, key)
+    if (!file.isFile) return null
+    return Uri.Builder()
+        .scheme("content")
+        .authority("${context.packageName}$ALBUM_ART_PROVIDER_AUTHORITY_SUFFIX")
+        .appendPath(key)
+        .build()
+        .toString()
+}
+
+private fun albumArtCacheFileForKey(context: Context, key: String): File =
+    File(File(context.cacheDir, ALBUM_ART_CACHE_DIR), "$key.img")
+
 private fun autoCustomAction(
     action: String,
     title: String,
     iconRes: Int,
-    commandIcon: Int
+    commandIcon: Int,
+    selected: Boolean = false
 ): PlaybackState.CustomAction =
     PlaybackState.CustomAction.Builder(action, title, iconRes)
         .setExtras(
             Bundle().apply {
                 putInt(AUTO_COMMAND_BUTTON_ICON_COMPAT, commandIcon)
+                putBoolean(AUTO_COMMAND_BUTTON_SELECTED, selected)
             }
         )
         .build()
@@ -19855,7 +20525,8 @@ private fun MusicTrack.toAutoDescription(
     session: JellyfinSession?,
     artwork: Bitmap?,
     imageSize: Int,
-    imageQuality: Int
+    imageQuality: Int,
+    preferCachedContentUri: Boolean = false
 ): MediaDescription =
     MediaDescription.Builder()
         .setMediaId("$AUTO_TRACK_PREFIX$id")
@@ -19863,11 +20534,24 @@ private fun MusicTrack.toAutoDescription(
         .setSubtitle(notificationSubtitle())
         .apply {
             imageUrl(session, size = imageSize, quality = imageQuality)?.let { imageUrl ->
-                setIconUri(Uri.parse(imageUrl))
+                val artUri = if (preferCachedContentUri) {
+                    autoAlbumArtUriString(context, imageUrl) ?: imageUrl
+                } else {
+                    autoAlbumArtUriString(context, imageUrl) ?: imageUrl
+                }
+                setIconUri(Uri.parse(artUri))
+                setExtras(autoArtworkExtras(artUri))
                 (artwork ?: cachedAutoAlbumArt(context, imageUrl, imageSize))?.let { setIconBitmap(it) }
             }
         }
         .build()
+
+private fun autoArtworkExtras(imageUrl: String): Bundle =
+    Bundle().apply {
+        putString(MediaMetadata.METADATA_KEY_ART_URI, imageUrl)
+        putString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI, imageUrl)
+        putString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI, imageUrl)
+    }
 
 private fun MusicTrack.autoQueueId(): Long =
     runCatching {
@@ -19889,7 +20573,9 @@ private fun LibraryGroup.toAutoGroupItem(
                 tracks.firstOrNull()
                     ?.imageUrl(session, size = AUTO_BROWSE_ART_SIZE, quality = 78)
                     ?.let { imageUrl ->
-                        setIconUri(Uri.parse(imageUrl))
+                        val artUri = autoAlbumArtUriString(context, imageUrl) ?: imageUrl
+                        setIconUri(Uri.parse(artUri))
+                        setExtras(autoArtworkExtras(artUri))
                         cachedAutoAlbumArt(context, imageUrl, AUTO_BROWSE_ART_SIZE)?.let { setIconBitmap(it) }
                     }
             }
