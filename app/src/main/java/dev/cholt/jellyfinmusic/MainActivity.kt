@@ -542,6 +542,7 @@ private const val EQUALIZER_BAND_COUNT = 5
 private const val DEFAULT_CONNECT_TIMEOUT_MS = 8_000
 private const val DEFAULT_READ_TIMEOUT_MS = 15_000
 private const val LIBRARY_READ_TIMEOUT_MS = 45_000
+private const val RECENTLY_PLAYED_MIN_MS = 50_000L
 private val EXPANDED_LAYOUT_MIN_WIDTH = 700.dp
 private val TABLET_SHEET_MAX_WIDTH = 720.dp
 private const val EQUALIZER_MIN_DB = -12f
@@ -3134,10 +3135,28 @@ private fun JellyfinMusicApp() {
         searchFieldFocused = false
     }
 
-    fun rememberPlaybackSelection(track: MusicTrack, activeSession: JellyfinSession) {
+    fun rememberRecentlyPlayed(track: MusicTrack, activeSession: JellyfinSession) {
+        if (track.id == recentTrackIds.firstOrNull()) return
         val nextRecentTrackIds = (listOf(track.id) + recentTrackIds.filterNot { it == track.id }).take(80)
         recentTrackIds = nextRecentTrackIds
         saveRecentTrackIds(context, activeSession, nextRecentTrackIds)
+    }
+
+    fun rememberRecentlyPlayedIfEligible(track: MusicTrack, activeSession: JellyfinSession) {
+        val snapshot = player.playbackSnapshot
+        val listenedMs = snapshot
+            .takeIf { it.track?.id == track.id }
+            ?.positionMs
+            ?: track.durationMs.takeIf { it > 0L }?.let { duration ->
+                (duration * player.progress.coerceIn(0f, 1f)).toLong()
+            }
+            ?: 0L
+        if (listenedMs >= RECENTLY_PLAYED_MIN_MS) {
+            rememberRecentlyPlayed(track, activeSession)
+        }
+    }
+
+    fun rememberQueueHistorySelection(track: MusicTrack, activeSession: JellyfinSession) {
         val nextQueueHistoryTrackIds =
             (listOf(track.id) + queueHistoryTrackIds.filterNot { it == track.id }).take(200)
         queueHistoryTrackIds = nextQueueHistoryTrackIds
@@ -3154,8 +3173,14 @@ private fun JellyfinMusicApp() {
         if (openPlayer) {
             showNowPlayingPlayer()
         }
+        player.currentTrack
+            ?.takeIf { it.id != track.id }
+            ?.let { previousTrack ->
+                player.syncProgress()
+                rememberRecentlyPlayedIfEligible(previousTrack, activeSession)
+            }
         player.play(track, activeSession)
-        rememberPlaybackSelection(track, activeSession)
+        rememberQueueHistorySelection(track, activeSession)
     }
 
     fun shuffledPlaybackQueue(source: List<MusicTrack>): List<MusicTrack> =
@@ -3454,7 +3479,7 @@ private fun JellyfinMusicApp() {
             playQueue = queue
             player.play(firstTrack, activeSession)
             showNowPlayingPlayer()
-            rememberPlaybackSelection(firstTrack, activeSession)
+            rememberQueueHistorySelection(firstTrack, activeSession)
             statusText = "Song Radio started"
         }
     }
@@ -3546,6 +3571,12 @@ private fun JellyfinMusicApp() {
                 onNext = { playAdjacent(1, openPlayer = false) },
                 onSeekToFraction = { player.seekToFraction(it) },
                 onStop = {
+                    val activeTrack = player.currentTrack
+                    val activeSession = session
+                    if (activeTrack != null && activeSession != null) {
+                        player.syncProgress()
+                        rememberRecentlyPlayedIfEligible(activeTrack, activeSession)
+                    }
                     player.dispose()
                     PlaybackControllerHolder.clear(player)
                     showPlayer = false
@@ -3587,6 +3618,9 @@ private fun JellyfinMusicApp() {
                 val remainingQueue = queueForEnded
                     .drop(1)
                     .filterNot { it.id == endedTrack.id }
+                if (endedTrack.durationMs >= RECENTLY_PLAYED_MIN_MS) {
+                    rememberRecentlyPlayed(endedTrack, activeSession)
+                }
                 val nextTrack = remainingQueue.firstOrNull()
                 if (nextTrack != null) {
                     playTrackFromQueue(nextTrack, remainingQueue, activeSession, openPlayer = false)
@@ -3670,6 +3704,20 @@ private fun JellyfinMusicApp() {
             player.syncProgress()
             delay(if (player.isPlaying) 2_500 else 1_000)
         }
+    }
+
+    LaunchedEffect(
+        player.currentTrack?.id,
+        player.progress,
+        player.playbackSnapshot.positionMs,
+        player.isPlaying,
+        session?.serverUrl,
+        session?.userId
+    ) {
+        val activeTrack = player.currentTrack ?: return@LaunchedEffect
+        val activeSession = session ?: return@LaunchedEffect
+        if (!player.isPlaying) return@LaunchedEffect
+        rememberRecentlyPlayedIfEligible(activeTrack, activeSession)
     }
 
     LaunchedEffect(
@@ -4573,29 +4621,28 @@ private fun JellyfinMusicApp() {
                                             }
                                         } else {
                                             items(
-                                                likedTracks.chunked(2),
-                                                key = { row -> row.joinToString(separator = "|") { it.id } }
-                                            ) { rowTracks ->
-                                                Row(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                                ) {
-                                                    rowTracks.forEach { track ->
-                                                        LibraryTrackGridCard(
-                                                            track = track,
-                                                            session = connectedSession,
-                                                            isCurrent = player.currentTrack?.id == track.id,
-                                                            isDownloaded = track.id in offlineDownloads,
-                                                            onClick = {
-                                                                playTrack(track, openPlayer = true, source = likedTracks)
-                                                            },
-                                                            modifier = Modifier.weight(1f)
-                                                        )
-                                                    }
-                                                    if (rowTracks.size == 1) {
-                                                        Spacer(Modifier.weight(1f))
-                                                    }
-                                                }
+                                                likedTracks,
+                                                key = { it.id }
+                                            ) { track ->
+                                                LibraryTrackListRow(
+                                                    track = track,
+                                                    session = connectedSession,
+                                                    isCurrent = player.currentTrack?.id == track.id,
+                                                    isLiked = true,
+                                                    isDownloaded = track.id in offlineDownloads,
+                                                    downloadProgress = downloadProgressById[track.id],
+                                                    onToggleLiked = { toggleLiked(track) },
+                                                    onToggleDownload = { toggleOfflineDownload(track) },
+                                                    onClick = { playTrack(track, openPlayer = true, source = likedTracks) },
+                                                    onGoToAlbum = { openLibraryDetail(LibraryDetail(LibraryCollectionType.Album, track.album)) },
+                                                    onGoToArtist = { openLibraryDetail(LibraryDetail(LibraryCollectionType.Artist, track.artist)) },
+                                                    onPlayNext = { playTrackNext(track) },
+                                                    onStartRadio = { startSongRadioFrom(likedTracks, track) },
+                                                    playlists = localPlaylists,
+                                                    onAddToPlaylist = { playlist -> addTrackToPlaylist(playlist, track) },
+                                                    compact = libraryDensitySettings.compactRows,
+                                                    artSize = libraryDensitySettings.artSize
+                                                )
                                             }
                                         }
                                     }
@@ -4610,7 +4657,7 @@ private fun JellyfinMusicApp() {
                                             }
                                         } else {
                                             items(
-                                                favoriteAlbumGroups.chunked(2),
+                                                favoriteAlbumGroups.chunked(3),
                                                 key = { row -> row.joinToString(separator = "|") { it.key } }
                                             ) { rowGroups ->
                                                 Row(
@@ -4633,6 +4680,9 @@ private fun JellyfinMusicApp() {
                                                         )
                                                     }
                                                     if (rowGroups.size == 1) {
+                                                        Spacer(Modifier.weight(1f))
+                                                    }
+                                                    if (rowGroups.size == 2) {
                                                         Spacer(Modifier.weight(1f))
                                                     }
                                                 }
@@ -6868,13 +6918,13 @@ private fun HomePageSettingsCard(
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
             SettingsSwitchRow(
                 title = "Recently played",
-                description = if (settings.showRecentlyPlayed) "Shows your recent tracks" else "Hides recent listening",
+                description = if (settings.showRecentlyPlayed) "Shows tracks after 50 seconds of listening" else "Hides recent listening",
                 checked = settings.showRecentlyPlayed,
                 onCheckedChange = { enabled -> onSettingsChange(settings.copy(showRecentlyPlayed = enabled)) }
             )
             SettingsSwitchRow(
                 title = "Trending",
-                description = if (settings.showTrending) "Shows a ranked shelf from recent plays, likes, and fresh adds" else "Hides trending picks",
+                description = if (settings.showTrending) "Shows likes, fresh adds, related picks, and daily variety" else "Hides trending picks",
                 checked = settings.showTrending,
                 onCheckedChange = { enabled -> onSettingsChange(settings.copy(showTrending = enabled)) }
             )
@@ -8759,38 +8809,90 @@ private fun AnimatedBackgroundSettingPreview(
     enabled: Boolean,
     modifier: Modifier = Modifier
 ) {
-    val phase = if (enabled) {
+    val drift = if (enabled) {
         val transition = rememberInfiniteTransition(label = "animated-background-preview")
-        val animatedPhase by transition.animateFloat(
+        val animatedDrift by transition.animateFloat(
             initialValue = 0f,
-            targetValue = (PI * 2).toFloat(),
+            targetValue = 1f,
             animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 3200, easing = LinearEasing),
+                animation = tween(durationMillis = 5200, easing = LinearEasing),
                 repeatMode = RepeatMode.Restart
             ),
-            label = "animated-background-preview-phase"
+            label = "animated-background-preview-drift"
         )
-        animatedPhase
+        animatedDrift
     } else {
-        0.7f
+        0.28f
     }
     Canvas(modifier = modifier) {
+        val corner = 11.dp.toPx()
         drawRoundRect(
             brush = Brush.verticalGradient(
                 colors = listOf(
-                    Color(0xFF060B18),
-                    Color(0xFF03050C),
-                    blendColors(color, Color.Black, 0.86f)
+                    Color(0xFF071124),
+                    Color(0xFF020611),
+                    blendColors(color, Color.Black, 0.78f)
                 )
             ),
-            cornerRadius = CornerRadius(10.dp.toPx(), 10.dp.toPx())
+            cornerRadius = CornerRadius(corner, corner)
         )
-        drawDriftingStars(
-            phase = phase,
-            starCount = 22,
-            flowScale = 0.46f,
-            baseAlpha = if (enabled) 0.9f else 0.42f,
-            accentColor = color
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    color.copy(alpha = if (enabled) 0.4f else 0.2f),
+                    Color.Transparent
+                ),
+                center = Offset(size.width * 0.72f, size.height * 0.24f),
+                radius = size.minDimension * 0.78f
+            ),
+            radius = size.minDimension * 0.78f,
+            center = Offset(size.width * 0.72f, size.height * 0.24f)
+        )
+        val stars = listOf(
+            Offset(0.16f, 0.22f) to 1.25f,
+            Offset(0.34f, 0.14f) to 0.72f,
+            Offset(0.58f, 0.18f) to 0.92f,
+            Offset(0.78f, 0.32f) to 1.38f,
+            Offset(0.22f, 0.5f) to 0.82f,
+            Offset(0.48f, 0.44f) to 1.1f,
+            Offset(0.67f, 0.57f) to 0.68f,
+            Offset(0.88f, 0.68f) to 0.9f,
+            Offset(0.38f, 0.76f) to 1.28f,
+            Offset(0.12f, 0.82f) to 0.7f
+        )
+        val travel = size.minDimension * 0.12f * drift
+        stars.forEachIndexed { index, (anchor, radiusDp) ->
+            val center = Offset(
+                x = anchor.x * size.width - travel * (0.35f + index % 3 * 0.08f),
+                y = anchor.y * size.height + travel * (0.58f + index % 4 * 0.05f)
+            )
+            val radius = radiusDp.dp.toPx()
+            if (enabled && index % 4 == 0) {
+                drawLine(
+                    color = Color.White.copy(alpha = 0.16f),
+                    start = center + Offset(radius * 1.8f, -radius * 2.4f),
+                    end = center + Offset(radius * 5.2f, -radius * 7.4f),
+                    strokeWidth = 1.1.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+            }
+            drawCircle(
+                color = Color.White.copy(alpha = if (enabled) 0.9f else 0.52f),
+                radius = radius,
+                center = center
+            )
+            if (index % 3 == 0) {
+                drawCircle(
+                    color = color.copy(alpha = if (enabled) 0.24f else 0.1f),
+                    radius = radius * 2.6f,
+                    center = center
+                )
+            }
+        }
+        drawRoundRect(
+            color = Color.White.copy(alpha = if (enabled) 0.16f else 0.08f),
+            cornerRadius = CornerRadius(corner, corner),
+            style = Stroke(width = 1.dp.toPx())
         )
     }
 }
@@ -15906,6 +16008,7 @@ private class JellyfinPlayer(private val context: Context) {
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val notificationController = PlaybackNotificationController(context)
     private var mediaPlayer: ExoPlayer? = null
+    private var activePlayerListener: Player.Listener? = null
     private var activePlayerPrepared = false
     private var equalizer: Equalizer? = null
     private var equalizerAudioSessionId = 0
@@ -16008,7 +16111,7 @@ private class JellyfinPlayer(private val context: Context) {
         val streamStartsAtOffset = requestedStartPositionMs != null && offlineFileForStart == null
         val playbackTranscoded = transcoded || streamStartsAtOffset
         val mediaSourceStartPositionMs = if (streamStartsAtOffset) 0L else (requestedStartPositionMs ?: 0L)
-        releasePlayerForReplacement()
+        preparePlayerForReplacement()
         streamStartOffsetMs = if (streamStartsAtOffset) requestedStartPositionMs ?: 0L else 0L
         currentSession = session
         currentTrack = track
@@ -16039,8 +16142,7 @@ private class JellyfinPlayer(private val context: Context) {
             return
         }
 
-        val nextPlayer = createExoPlayer()
-        mediaPlayer = nextPlayer
+        val nextPlayer = mediaPlayer ?: createExoPlayer().also { mediaPlayer = it }
         activePlayerPrepared = false
         configureActivePlayer(
             player = nextPlayer,
@@ -16406,8 +16508,10 @@ private class JellyfinPlayer(private val context: Context) {
         transcoded: Boolean,
         allowTranscodedFallback: Boolean
     ) {
-        player.addListener(
-            object : Player.Listener {
+        activePlayerListener?.let { listener ->
+            runCatching { player.removeListener(listener) }
+        }
+        val listener = object : Player.Listener {
                 private var startReported = false
 
                 override fun onPlaybackStateChanged(playbackState: Int) {
@@ -16487,6 +16591,10 @@ private class JellyfinPlayer(private val context: Context) {
                     releaseEqualizer()
                     isPlaying = false
                     if (mediaPlayer === player) {
+                        activePlayerListener?.let { listener ->
+                            runCatching { player.removeListener(listener) }
+                        }
+                        activePlayerListener = null
                         mediaPlayer = null
                         activePlayerPrepared = false
                     }
@@ -16500,7 +16608,8 @@ private class JellyfinPlayer(private val context: Context) {
                     releaseExoPlayer(player)
                 }
             }
-        )
+        activePlayerListener = listener
+        player.addListener(listener)
     }
 
     private fun finishCurrentTrack(track: MusicTrack) {
@@ -16859,12 +16968,13 @@ private class JellyfinPlayer(private val context: Context) {
         }
     }
 
-    private fun releasePlayerForReplacement() {
+    private fun preparePlayerForReplacement() {
         cancelDeferredStreamingSeek()
         stopVisualizerPump()
         releaseEqualizer()
-        releaseExoPlayer(mediaPlayer)
-        mediaPlayer = null
+        mediaPlayer?.runCatching {
+            playWhenReady = false
+        }
         activePlayerPrepared = false
         isPlaying = false
         pendingSeekTargetMs = null
@@ -16879,6 +16989,12 @@ private class JellyfinPlayer(private val context: Context) {
         stopVisualizerPump()
         releaseEqualizer()
         abandonAudioFocus()
+        mediaPlayer?.let { activePlayer ->
+            activePlayerListener?.let { listener ->
+                runCatching { activePlayer.removeListener(listener) }
+            }
+        }
+        activePlayerListener = null
         releaseExoPlayer(mediaPlayer)
         mediaPlayer = null
         activePlayerPrepared = false
@@ -19070,43 +19186,63 @@ private fun List<MusicTrack>.trendingTracks(
 ): List<MusicTrack> {
     val libraryTracks = distinctBy { it.id }
     if (libraryTracks.size <= 1) return libraryTracks
-    val recentRank = recentTrackIds.distinct().take(80).withIndex().associate { it.value to it.index }
-    val now = System.currentTimeMillis()
-    val scoredTracks = libraryTracks.map { track ->
-        var score = 0f
-        if (track.id == activeTrack?.id) {
-            score += 42f
+    val veryRecentIds = (
+        recentTrackIds.distinct().take(12) +
+            listOfNotNull(activeTrack?.id)
+        ).toSet()
+    val candidateTracks = libraryTracks
+        .filterNot { it.id in veryRecentIds }
+        .ifEmpty {
+            libraryTracks
+                .filterNot { it.id == activeTrack?.id }
+                .ifEmpty { libraryTracks }
         }
-        recentRank[track.id]?.let { index ->
-            score += (58f - index * 1.35f).coerceAtLeast(6f)
+    val olderRecentRank = recentTrackIds
+        .distinct()
+        .drop(12)
+        .take(80)
+        .withIndex()
+        .associate { it.value to it.index }
+    val now = System.currentTimeMillis()
+    val seed = todayHomeSeed()
+    val scoredTracks = candidateTracks.map { track ->
+        var score = 0f
+        val active = activeTrack
+        if (active != null) {
+            if (track.artist.equals(active.artist, ignoreCase = true)) {
+                score += 18f
+            }
+            if (track.album.equals(active.album, ignoreCase = true)) {
+                score += 10f
+            }
+        }
+        olderRecentRank[track.id]?.let { index ->
+            score += (8f - index * 0.12f).coerceAtLeast(1f)
         }
         if (track.id in likedTrackIds) {
-            score += 30f
+            score += 34f
         }
         if (track.dateAddedMs > 0L) {
             val ageDays = ((now - track.dateAddedMs).coerceAtLeast(0L) / 86_400_000L).toInt()
             score += when {
-                ageDays <= 3 -> 28f
-                ageDays <= 14 -> 20f
-                ageDays <= 45 -> 13f
-                ageDays <= 180 -> 5f
+                ageDays <= 3 -> 30f
+                ageDays <= 14 -> 22f
+                ageDays <= 45 -> 15f
+                ageDays <= 180 -> 7f
                 else -> 0f
             }
         }
+        score += ((abs((track.id.hashCode().toLong() xor seed) % 1_000L)).toFloat() / 1_000f) * 10f
         track to score
     }
-    val hasTrendSignals = scoredTracks.any { it.second > 0f }
-    return if (hasTrendSignals) {
-        scoredTracks
-            .sortedWith(
-                compareByDescending<Pair<MusicTrack, Float>> { it.second }
-                    .thenByDescending { it.first.dateAddedMs }
-                    .thenBy { it.first.title.lowercase(Locale.getDefault()) }
-            )
-            .map { it.first }
-    } else {
-        libraryTracks.homeMix(seed = todayHomeSeed() + 771L)
-    }
+    return scoredTracks
+        .sortedWith(
+            compareByDescending<Pair<MusicTrack, Float>> { it.second }
+                .thenByDescending { it.first.dateAddedMs }
+                .thenBy { it.first.artist.lowercase(Locale.getDefault()) }
+                .thenBy { it.first.title.lowercase(Locale.getDefault()) }
+        )
+        .map { it.first }
 }
 
 private fun List<MusicTrack>.randomizedPlaybackQueue(): List<MusicTrack> {
