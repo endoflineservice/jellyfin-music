@@ -4,6 +4,31 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+import java.util.Properties
+
+val releaseKeystorePropertiesFile = rootProject.file("keystore.properties")
+val releaseKeystoreProperties = Properties().apply {
+    if (releaseKeystorePropertiesFile.isFile) {
+        releaseKeystorePropertiesFile.inputStream().use(::load)
+    }
+}
+
+fun releaseSigningValue(name: String): String? =
+    releaseKeystoreProperties.getProperty(name)
+        ?: providers.gradleProperty(name).orNull
+        ?: System.getenv(name)
+
+val releaseStoreFilePath = releaseSigningValue("JELLYFIN_MUSIC_UPLOAD_STORE_FILE")
+val releaseStorePassword = releaseSigningValue("JELLYFIN_MUSIC_UPLOAD_STORE_PASSWORD")
+val releaseKeyAlias = releaseSigningValue("JELLYFIN_MUSIC_UPLOAD_KEY_ALIAS")
+val releaseKeyPassword = releaseSigningValue("JELLYFIN_MUSIC_UPLOAD_KEY_PASSWORD")
+val hasReleaseSigning = listOf(
+    releaseStoreFilePath,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword
+).all { !it.isNullOrBlank() }
+
 android {
     namespace = "dev.cholt.jellyfinmusic"
     compileSdk = 36
@@ -16,9 +41,22 @@ android {
         versionName = "1.1.7"
     }
 
+    signingConfigs {
+        create("release") {
+            if (hasReleaseSigning) {
+                storeFile = file(releaseStoreFilePath!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("debug")
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = false
             isShrinkResources = false
         }
@@ -50,4 +88,26 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.10.1")
     implementation("com.android.billingclient:billing:9.1.0")
     implementation("ir.mahozad.multiplatform:wavy-slider:2.2.0")
+}
+
+tasks.register("printPlayReleaseSigningStatus") {
+    doLast {
+        if (hasReleaseSigning) {
+            println("Play release signing is configured for $releaseStoreFilePath")
+        } else {
+            println("Play release signing is not configured. Release APK/AAB outputs will be unsigned until keystore.properties or matching environment variables are provided.")
+        }
+    }
+}
+
+tasks.register("verifyPlayReleaseSigning") {
+    doLast {
+        check(hasReleaseSigning) {
+            "Play release signing is not configured. Copy keystore.properties.example to keystore.properties or provide the JELLYFIN_MUSIC_UPLOAD_* environment variables."
+        }
+        check(file(releaseStoreFilePath!!).isFile) {
+            "Play release keystore was configured but not found: $releaseStoreFilePath"
+        }
+        println("Play release signing is ready for $releaseStoreFilePath")
+    }
 }

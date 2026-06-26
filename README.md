@@ -62,10 +62,31 @@ The debug APK is written to:
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
+## Play Store Build
+
+Release builds no longer use the debug signing key. To create a Play-ready App Bundle, copy `keystore.properties.example` to `keystore.properties`, fill in your upload key values, then run:
+
+```bash
+./gradlew verifyPlayReleaseSigning bundleRelease
+```
+
+The App Bundle is written to:
+
+```text
+app/build/outputs/bundle/release/app-release.aab
+```
+
+Play Store checklist drafts live in:
+
+```text
+docs/play-store-readiness.md
+docs/privacy-policy.md
+```
+
 The current shareable release APK, icon images, and release screenshots are tracked under:
 
 ```text
-release-assets/0.1.5-v9/
+release-assets/1.1.7-v12/
 ```
 
 ## Contributing

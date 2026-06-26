@@ -742,7 +742,7 @@ private class SupportPurchaseController(context: Context) : PurchasesUpdatedList
         private set
     var supportPrice by mutableStateOf("$3")
         private set
-    var message by mutableStateOf("Checking Google Play")
+    var message by mutableStateOf("Checking support option")
         private set
 
     val canPurchase: Boolean
@@ -752,7 +752,7 @@ private class SupportPurchaseController(context: Context) : PurchasesUpdatedList
         if (billingClient != null) return
         update {
             isLoading = true
-            message = "Checking Google Play"
+            message = "Checking support option"
         }
         val client = BillingClient.newBuilder(appContext)
             .enablePendingPurchases(
@@ -770,7 +770,7 @@ private class SupportPurchaseController(context: Context) : PurchasesUpdatedList
                     querySupportProduct(client)
                     queryExistingPurchases(client)
                 } else {
-                    updateUnavailable(billingResult)
+                    updateUnavailable()
                 }
             }
 
@@ -778,7 +778,7 @@ private class SupportPurchaseController(context: Context) : PurchasesUpdatedList
                 update {
                     isLoading = false
                     supportProductDetails = null
-                    message = "Google Play disconnected"
+                    message = "Support option unavailable right now"
                 }
             }
         })
@@ -799,7 +799,7 @@ private class SupportPurchaseController(context: Context) : PurchasesUpdatedList
         val client = billingClient
         val details = supportProductDetails
         if (activeActivity == null) {
-            update { message = "Open the app directly to purchase" }
+            update { message = "Open the app directly to use Google Play checkout" }
             return
         }
         if (client == null || !client.isReady || details == null) {
@@ -820,7 +820,7 @@ private class SupportPurchaseController(context: Context) : PurchasesUpdatedList
             .build()
         val result = client.launchBillingFlow(activeActivity, flowParams)
         if (result.responseCode != BillingClient.BillingResponseCode.OK) {
-            updatePurchaseMessage(result, fallback = "Could not open Play Store purchase")
+            updatePurchaseMessage("Could not open Google Play checkout")
         }
     }
 
@@ -830,7 +830,7 @@ private class SupportPurchaseController(context: Context) : PurchasesUpdatedList
                 val supportPurchases = purchases.orEmpty()
                     .filter { SUPPORT_PURCHASE_PRODUCT_ID in it.products }
                 if (supportPurchases.isEmpty()) {
-                    update { message = "Purchase not found" }
+                    update { message = "Purchase could not be completed" }
                 } else {
                     supportPurchases.forEach(::handlePurchase)
                 }
@@ -839,7 +839,7 @@ private class SupportPurchaseController(context: Context) : PurchasesUpdatedList
                 isLoading = false
                 message = "Purchase canceled"
             }
-            else -> updatePurchaseMessage(billingResult, fallback = "Purchase unavailable")
+            else -> updatePurchaseMessage("Purchase unavailable right now")
         }
     }
 
@@ -853,7 +853,7 @@ private class SupportPurchaseController(context: Context) : PurchasesUpdatedList
             .build()
         client.queryProductDetailsAsync(params) { billingResult, productDetailsResult ->
             if (billingResult.responseCode != BillingClient.BillingResponseCode.OK) {
-                updateUnavailable(billingResult)
+                updateUnavailable()
                 return@queryProductDetailsAsync
             }
             val details = productDetailsResult.productDetailsList
@@ -868,9 +868,9 @@ private class SupportPurchaseController(context: Context) : PurchasesUpdatedList
                     ?.takeIf { it.isNotBlank() }
                     ?: "$3"
                 message = when {
-                    isPurchased -> "Already supported. Thank you."
-                    details != null -> "One-time Play Store purchase"
-                    else -> "Create support_3_usd in Play Console"
+                    isPurchased -> "Thanks for supporting future updates"
+                    details != null -> "Secure checkout by Google Play"
+                    else -> "Support option unavailable right now"
                 }
             }
         }
@@ -894,7 +894,7 @@ private class SupportPurchaseController(context: Context) : PurchasesUpdatedList
                 update {
                     isLoading = false
                     isPurchased = true
-                    message = "Thanks for supporting the app"
+                    message = "Thanks for supporting future updates"
                 }
                 if (!purchase.isAcknowledged) {
                     val params = AcknowledgePurchaseParams.newBuilder()
@@ -904,38 +904,34 @@ private class SupportPurchaseController(context: Context) : PurchasesUpdatedList
                         if (result.responseCode == BillingClient.BillingResponseCode.OK) {
                             update {
                                 isPurchased = true
-                                message = "Thanks for supporting the app"
+                                message = "Thanks for supporting future updates"
                             }
                         } else {
-                            updatePurchaseMessage(result, fallback = "Support saved, acknowledgement pending")
+                            updatePurchaseMessage("Support saved")
                         }
                     }
                 }
             }
             Purchase.PurchaseState.PENDING -> update {
                 isLoading = false
-                message = "Purchase pending"
+                message = "Google Play purchase pending"
             }
             else -> Unit
         }
     }
 
-    private fun updateUnavailable(billingResult: BillingResult) {
+    private fun updateUnavailable() {
         update {
             isLoading = false
             supportProductDetails = null
-            message = billingResult.debugMessage
-                .takeIf { it.isNotBlank() }
-                ?: "Google Play purchase unavailable"
+            message = "Support option unavailable right now"
         }
     }
 
-    private fun updatePurchaseMessage(billingResult: BillingResult, fallback: String) {
+    private fun updatePurchaseMessage(fallback: String) {
         update {
             isLoading = false
-            message = billingResult.debugMessage
-                .takeIf { it.isNotBlank() }
-                ?: fallback
+            message = fallback
         }
     }
 
@@ -968,6 +964,39 @@ private data class PlaybackActionHandlers(
     val onRepeat: () -> Unit,
     val onDownload: () -> Unit
 )
+
+private data class PlaybackQueueState(
+    val queue: List<MusicTrack> = emptyList(),
+    val shuffleEnabled: Boolean = false,
+    val repeatEnabled: Boolean = false,
+    val stopAfterCurrentTrack: Boolean = false,
+    val updatedAtMs: Long = SystemClock.elapsedRealtime()
+)
+
+private object PlaybackQueueMirror {
+    @Volatile
+    private var state = PlaybackQueueState()
+
+    fun update(
+        queue: List<MusicTrack>,
+        shuffleEnabled: Boolean,
+        repeatEnabled: Boolean,
+        stopAfterCurrentTrack: Boolean
+    ) {
+        state = PlaybackQueueState(
+            queue = queue.distinctBy { it.id },
+            shuffleEnabled = shuffleEnabled,
+            repeatEnabled = repeatEnabled,
+            stopAfterCurrentTrack = stopAfterCurrentTrack
+        )
+    }
+
+    fun snapshot(): PlaybackQueueState = state
+
+    fun clear() {
+        state = PlaybackQueueState()
+    }
+}
 
 private data class PlaybackDiagnosticEvent(
     val timeMs: Long,
@@ -1114,6 +1143,7 @@ class PlaybackForegroundService : Service() {
     private val notificationManager by lazy { getSystemService(NotificationManager::class.java) }
     private var latestNotification: Notification? = null
     private var isInForeground = false
+    private var removeNotificationOnDestroy = true
 
     override fun onCreate() {
         super.onCreate()
@@ -1139,7 +1169,13 @@ class PlaybackForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        removeForegroundNotification()
+        if (removeNotificationOnDestroy) {
+            removeForegroundNotification()
+        } else {
+            latestNotification = null
+            pendingNotification = null
+            isInForeground = false
+        }
         if (instance === this) {
             instance = null
         }
@@ -1149,10 +1185,10 @@ class PlaybackForegroundService : Service() {
     fun publish(notification: Notification, keepForeground: Boolean) {
         latestNotification = notification
         if (keepForeground) {
+            removeNotificationOnDestroy = true
             startAsForeground(notification)
         } else {
-            removeForegroundNotification()
-            stopSelf()
+            detachForegroundNotification(notification)
         }
     }
 
@@ -1169,7 +1205,25 @@ class PlaybackForegroundService : Service() {
         isInForeground = true
     }
 
+    private fun detachForegroundNotification(notification: Notification) {
+        latestNotification = null
+        pendingNotification = null
+        if (isInForeground) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_DETACH)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(false)
+            }
+            isInForeground = false
+        }
+        notificationManager.notify(PLAYBACK_NOTIFICATION_ID, notification)
+        removeNotificationOnDestroy = false
+        stopSelf()
+    }
+
     private fun removeForegroundNotification() {
+        removeNotificationOnDestroy = true
         latestNotification = null
         pendingNotification = null
         if (isInForeground) {
@@ -1248,8 +1302,13 @@ class PlaybackForegroundService : Service() {
                 pendingNotification = null
             }
             return runCatching {
-                activeInstance?.publish(notification, keepForeground)
-                activeInstance != null
+                if (activeInstance != null) {
+                    activeInstance.publish(notification, keepForeground)
+                } else if (!keepForeground) {
+                    appContext.getSystemService(NotificationManager::class.java)
+                        ?.notify(PLAYBACK_NOTIFICATION_ID, notification)
+                }
+                activeInstance != null || !keepForeground
             }.getOrElse {
                 PlaybackDiagnostics.record(
                     "Notification update failed",
@@ -1265,7 +1324,10 @@ class PlaybackForegroundService : Service() {
             instance?.removeForegroundNotification()
             instance?.stopSelf()
             appContext.getSystemService(NotificationManager::class.java)
-                ?.cancel(PLAYBACK_NOTIFICATION_ID)
+                ?.run {
+                    cancel(PLAYBACK_NOTIFICATION_ID)
+                    cancelAll()
+                }
             appContext.stopService(
                 Intent(appContext, PlaybackForegroundService::class.java)
                     .setAction(PLAYBACK_SERVICE_ACTION_STOP)
@@ -1275,6 +1337,15 @@ class PlaybackForegroundService : Service() {
 }
 
 class AutoMediaBrowserService : MediaBrowserService() {
+    companion object {
+        @Volatile
+        private var activeInstance: AutoMediaBrowserService? = null
+
+        fun syncFromPhonePlayback() {
+            activeInstance?.requestPhonePlaybackSync()
+        }
+    }
+
     private val serviceHandler = Handler(Looper.getMainLooper())
     private lateinit var autoSession: MediaSession
     private var autoQueue: List<MusicTrack> = emptyList()
@@ -1300,6 +1371,7 @@ class AutoMediaBrowserService : MediaBrowserService() {
 
     override fun onCreate() {
         super.onCreate()
+        activeInstance = this
         autoSession = MediaSession(applicationContext, "Jellyfin Music Auto").apply {
             setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS or MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS)
             setCallback(object : MediaSession.Callback() {
@@ -1368,7 +1440,28 @@ class AutoMediaBrowserService : MediaBrowserService() {
         stopStatePump()
         clearAutoSessionState()
         autoSession.release()
+        if (activeInstance === this) {
+            activeInstance = null
+        }
         super.onDestroy()
+    }
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        if (autoPlayer().currentTrack == null) {
+            autoPlaybackSessionActive = false
+            stopStatePump()
+            clearAutoSessionState()
+        }
+        return super.onUnbind(intent)
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        if (autoPlayer().currentTrack == null) {
+            autoPlaybackSessionActive = false
+            stopStatePump()
+            clearAutoSessionState()
+        }
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onGetRoot(clientPackageName: String, clientUid: Int, rootHints: Bundle?): BrowserRoot {
@@ -1571,10 +1664,14 @@ class AutoMediaBrowserService : MediaBrowserService() {
     private fun playFirstOrResume() {
         val player = autoPlayer()
         val current = player.currentTrack
-        if (current != null && !player.isPlaying && player.status != "Ended") {
+        if (current != null && player.status != "Ended") {
             autoPlaybackSessionActive = true
+            syncAutoQueueFromMirror(current)
+            updateAutoPlayerFallbackQueue()
             startStatePump()
-            player.toggle()
+            if (!player.isPlaying) {
+                player.toggle()
+            }
             publishAutoSessionState()
             return
         }
@@ -1652,20 +1749,15 @@ class AutoMediaBrowserService : MediaBrowserService() {
         if (queue.isEmpty()) return
         val nextIndex = when {
             offset > 0 && autoRepeatEnabled -> 0
-            offset > 0 && autoShuffleEnabled && queue.size > 1 -> Random.nextInt(1, queue.size)
             else -> (offset + queue.size) % queue.size
         }
         playTrackFromQueue(queue, queue[nextIndex], session)
     }
 
     private fun mirrorAutoTransportState(action: String?) {
-        when (action) {
-            PLAYBACK_ACTION_SHUFFLE -> {
-                autoShuffleEnabled = !autoShuffleEnabled
-            }
-            PLAYBACK_ACTION_REPEAT -> {
-                autoRepeatEnabled = !autoRepeatEnabled
-            }
+        val activeTrack = autoPlayer().currentTrack
+        if (activeTrack != null) {
+            syncAutoQueueFromMirror(activeTrack)
         }
         updateAutoPlayerFallbackQueue()
     }
@@ -1678,10 +1770,12 @@ class AutoMediaBrowserService : MediaBrowserService() {
                     reshuffleAutoQueueAfterCurrent()
                 }
                 updateAutoPlayerFallbackQueue()
+                updateAutoQueueMirror()
             }
             PLAYBACK_ACTION_REPEAT -> {
                 autoRepeatEnabled = !autoRepeatEnabled
                 updateAutoPlayerFallbackQueue()
+                updateAutoQueueMirror()
             }
             PLAYBACK_ACTION_FAVORITE -> {
                 val (session, _) = loadAutoTracks()
@@ -1727,6 +1821,7 @@ class AutoMediaBrowserService : MediaBrowserService() {
         )
         autoShuffleEnabled = false
         updateAutoPlayerFallbackQueue()
+        updateAutoQueueMirror()
     }
 
     private fun playTrackFromQueue(
@@ -1739,16 +1834,38 @@ class AutoMediaBrowserService : MediaBrowserService() {
         startStatePump()
         autoQueue = queue.queueStartingAt(track).ifEmpty { listOf(track) }
         updateAutoPlayerFallbackQueue()
+        updateAutoQueueMirror()
         autoPlayer().play(track, activeSession)
         publishAutoSessionState()
     }
 
     private fun updateAutoPlayerFallbackQueue() {
+        val queueForPlayer = autoQueue.ifEmpty {
+            autoPlayer().currentTrack?.let(::listOf).orEmpty()
+        }
         autoPlayer().setPlaybackQueue(
-            queue = autoQueue,
+            queue = queueForPlayer,
             repeatCurrentTrack = autoRepeatEnabled,
             stopAfterCurrentTrack = false
         )
+    }
+
+    private fun updateAutoQueueMirror() {
+        PlaybackQueueMirror.update(
+            queue = autoQueue,
+            shuffleEnabled = autoShuffleEnabled,
+            repeatEnabled = autoRepeatEnabled,
+            stopAfterCurrentTrack = false
+        )
+    }
+
+    private fun syncAutoQueueFromMirror(activeTrack: MusicTrack) {
+        val mirroredState = PlaybackQueueMirror.snapshot()
+        if (mirroredState.queue.any { it.id == activeTrack.id }) {
+            autoQueue = mirroredState.queue.queueStartingAt(activeTrack)
+            autoShuffleEnabled = mirroredState.shuffleEnabled
+            autoRepeatEnabled = mirroredState.repeatEnabled
+        }
     }
 
     private fun loadAutoTracks(): Pair<JellyfinSession?, List<MusicTrack>> {
@@ -1761,11 +1878,36 @@ class AutoMediaBrowserService : MediaBrowserService() {
 
     private fun mirrorExistingPlaybackForAuto() {
         serviceHandler.post {
-            if (autoPlayer().currentTrack != null) {
+            val activeTrack = autoPlayer().currentTrack
+            if (activeTrack != null) {
+                val mirroredState = PlaybackQueueMirror.snapshot()
+                val cachedTracks = loadAutoTracks().second
+                val mirroredQueue = mirroredState.queue
+                    .takeIf { queue -> queue.any { it.id == activeTrack.id } }
+                    ?.queueStartingAt(activeTrack)
+                    .orEmpty()
+                autoQueue = mirroredQueue
+                    .ifEmpty {
+                        autoQueue
+                        .takeIf { queue -> queue.any { it.id == activeTrack.id } }
+                        ?.queueStartingAt(activeTrack)
+                        .orEmpty()
+                    }
+                    .ifEmpty { cachedTracks.queueStartingAt(activeTrack) }
+                    .ifEmpty { listOf(activeTrack) }
+                autoShuffleEnabled = mirroredState.shuffleEnabled
+                autoRepeatEnabled = mirroredState.repeatEnabled
+                updateAutoPlayerFallbackQueue()
                 autoPlaybackSessionActive = true
                 startStatePump()
                 publishAutoSessionState()
             }
+        }
+    }
+
+    private fun requestPhonePlaybackSync() {
+        serviceHandler.post {
+            mirrorExistingPlaybackForAuto()
         }
     }
 
@@ -1784,6 +1926,7 @@ class AutoMediaBrowserService : MediaBrowserService() {
             clearAutoSessionState()
             return
         }
+        syncAutoQueueFromMirror(track)
         val imageUrl = track.imageUrl(snapshot.session, size = AUTO_NOW_PLAYING_ART_SIZE, quality = 82)
         if (autoAlbumArtTrackId != null && autoAlbumArtTrackId != track.id) {
             autoAlbumArt = null
@@ -2042,6 +2185,7 @@ private class PlaybackNotificationController(context: Context) {
 
     init {
         createPlaybackChannel()
+        notificationManager.cancelAll()
     }
 
     fun update(snapshot: PlaybackSnapshot) {
@@ -2091,6 +2235,7 @@ private class PlaybackNotificationController(context: Context) {
         mediaSession.isActive = false
         PlaybackForegroundService.stop(appContext)
         notificationManager.cancel(PLAYBACK_NOTIFICATION_ID)
+        notificationManager.cancelAll()
     }
 
     fun release() {
@@ -2318,7 +2463,7 @@ private class PlaybackNotificationController(context: Context) {
 
     private fun publishPlaybackNotification(snapshot: PlaybackSnapshot, notification: Notification) {
         val keepForeground = snapshot.isPlaying || snapshot.isBuffering
-        if (!keepForeground) {
+        if (!snapshot.hasTrack || snapshot.isEnded) {
             PlaybackForegroundService.stop(appContext)
             notificationManager.cancel(PLAYBACK_NOTIFICATION_ID)
             return
@@ -3310,6 +3455,20 @@ private fun JellyfinMusicApp() {
         }
     }
 
+    fun syncPlaybackQueueState(queue: List<MusicTrack> = playQueue) {
+        player.setPlaybackQueue(
+            queue = queue,
+            repeatCurrentTrack = repeatEnabled,
+            stopAfterCurrentTrack = playbackBehaviorSettings.stopAfterCurrent
+        )
+        PlaybackQueueMirror.update(
+            queue = queue,
+            shuffleEnabled = shuffleEnabled,
+            repeatEnabled = repeatEnabled,
+            stopAfterCurrentTrack = playbackBehaviorSettings.stopAfterCurrent
+        )
+    }
+
     LaunchedEffect(
         session?.serverUrl,
         session?.userId,
@@ -3336,11 +3495,7 @@ private fun JellyfinMusicApp() {
             }
         if (restoredQueue.isNotEmpty()) {
             playQueue = restoredQueue
-            player.setPlaybackQueue(
-                queue = restoredQueue,
-                repeatCurrentTrack = repeatEnabled,
-                stopAfterCurrentTrack = playbackBehaviorSettings.stopAfterCurrent
-            )
+            syncPlaybackQueueState(restoredQueue)
         }
         lastPlaybackState?.let { playbackState ->
             if (restoredTrack != null) {
@@ -3356,12 +3511,8 @@ private fun JellyfinMusicApp() {
         }
     }
 
-    LaunchedEffect(playQueue, repeatEnabled, playbackBehaviorSettings.stopAfterCurrent) {
-        player.setPlaybackQueue(
-            queue = playQueue,
-            repeatCurrentTrack = repeatEnabled,
-            stopAfterCurrentTrack = playbackBehaviorSettings.stopAfterCurrent
-        )
+    LaunchedEffect(playQueue, shuffleEnabled, repeatEnabled, playbackBehaviorSettings.stopAfterCurrent) {
+        syncPlaybackQueueState(playQueue)
     }
 
     fun runTask(task: () -> Unit) {
@@ -3458,6 +3609,7 @@ private fun JellyfinMusicApp() {
 
     fun signOut() {
         player.release()
+        PlaybackQueueMirror.clear()
         clearSavedSession(context)
         session = null
         tracks = emptyList()
@@ -3555,11 +3707,7 @@ private fun JellyfinMusicApp() {
     ) {
         val nextQueue = queue.queueStartingAt(track).ifEmpty { listOf(track) }
         playQueue = nextQueue
-        player.setPlaybackQueue(
-            queue = nextQueue,
-            repeatCurrentTrack = repeatEnabled,
-            stopAfterCurrentTrack = playbackBehaviorSettings.stopAfterCurrent
-        )
+        syncPlaybackQueueState(nextQueue)
         if (openPlayer) {
             showNowPlayingPlayer()
         }
@@ -3645,16 +3793,19 @@ private fun JellyfinMusicApp() {
             fromIndex = fromIndex,
             toIndex = toIndex.coerceIn(1, playQueue.lastIndex)
         )
+        syncPlaybackQueueState()
     }
 
     fun removeQueueTrack(index: Int) {
         if (index <= 0 || index !in playQueue.indices) return
         playQueue = playQueue.toMutableList().apply { removeAt(index) }
+        syncPlaybackQueueState()
     }
 
     fun clearQueueAfterCurrent() {
         val activeTrack = player.currentTrack
         playQueue = activeTrack?.let { listOf(it) } ?: emptyList()
+        syncPlaybackQueueState()
         statusText = "Queue cleared"
     }
 
@@ -3664,6 +3815,7 @@ private fun JellyfinMusicApp() {
         if (baseQueue.size <= 2) return
         val shuffledRest = shuffledPlaybackQueue(baseQueue.drop(1))
         playQueue = listOf(activeTrack) + shuffledRest
+        syncPlaybackQueueState()
         statusText = if (queueBehaviorSettings.smartShuffleEnabled) "Smart queue reshuffled" else "Queue reshuffled"
     }
 
@@ -3674,7 +3826,10 @@ private fun JellyfinMusicApp() {
         } else {
             playQueue.ifEmpty { tracks }
         }
-        playQueue = baseQueue.withTrackPlayNext(track, activeTrack)
+        val nextQueue = baseQueue.withTrackPlayNext(track, activeTrack)
+        playQueue = nextQueue
+        syncPlaybackQueueState(nextQueue)
+        statusText = "Playing next: ${track.title}"
     }
 
     fun toggleLiked(track: MusicTrack) {
@@ -6800,7 +6955,7 @@ private fun SupportPurchaseCard() {
             ) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
                     Icon(
-                        imageVector = PlayerIconVectors.FavoriteFilled,
+                        imageVector = PlayerIconVectors.CoffeeCup,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(24.dp)
@@ -6812,7 +6967,7 @@ private fun SupportPurchaseCard() {
                 verticalArrangement = Arrangement.spacedBy(3.dp)
             ) {
                 Text(
-                    text = "Buy me a coffee",
+                    text = "Support Jellyfin Music",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -6820,7 +6975,7 @@ private fun SupportPurchaseCard() {
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = "One-time ${controller.supportPrice} Play Store support purchase",
+                    text = "Make an optional one-time ${controller.supportPrice} purchase to support future updates.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.78f),
                     maxLines = 2,
@@ -6851,7 +7006,7 @@ private fun SupportPurchaseCard() {
                         controller.isPurchased -> "Supported"
                         controller.isLoading -> "Checking"
                         controller.supportProductDetails == null -> "Retry"
-                        else -> "Support ${controller.supportPrice}"
+                        else -> "Support"
                     },
                     maxLines = 1
                 )
@@ -14470,6 +14625,43 @@ private object PlayerIconVectors {
         }
     }.build()
 
+    val CoffeeCup: ImageVector = ImageVector.Builder(
+        name = "CoffeeCup",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(
+            fill = null,
+            stroke = stroke,
+            strokeLineWidth = 1.95f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round
+        ) {
+            moveTo(5f, 8f)
+            horizontalLineTo(16f)
+            verticalLineTo(13.4f)
+            curveTo(16f, 16.5f, 13.7f, 19f, 10.6f, 19f)
+            horizontalLineTo(10.4f)
+            curveTo(7.3f, 19f, 5f, 16.5f, 5f, 13.4f)
+            close()
+            moveTo(16f, 9.5f)
+            horizontalLineTo(17.5f)
+            curveTo(19.15f, 9.5f, 20.4f, 10.75f, 20.4f, 12.3f)
+            curveTo(20.4f, 13.85f, 19.15f, 15.1f, 17.5f, 15.1f)
+            horizontalLineTo(16f)
+            moveTo(4f, 21f)
+            horizontalLineTo(18f)
+            moveTo(8.2f, 4.2f)
+            curveTo(7.55f, 5f, 7.55f, 5.8f, 8.2f, 6.6f)
+            moveTo(11.1f, 3.6f)
+            curveTo(10.45f, 4.45f, 10.45f, 5.35f, 11.1f, 6.2f)
+            moveTo(14f, 4.2f)
+            curveTo(13.35f, 5f, 13.35f, 5.8f, 14f, 6.6f)
+        }
+    }.build()
+
     val Download: ImageVector = ImageVector.Builder(
         name = "Download",
         defaultWidth = 24.dp,
@@ -16576,7 +16768,10 @@ private class JellyfinPlayer(private val context: Context) {
         stopAfterCurrentTrack: Boolean
     ) {
         val activeTrack = currentTrack
-        fallbackPlaybackQueue = activeTrack?.let { queue.queueStartingAt(it) } ?: queue
+        fallbackPlaybackQueue = activeTrack
+            ?.takeIf { active -> queue.any { it.id == active.id } }
+            ?.let { queue.queueStartingAt(it) }
+            ?: queue
         fallbackRepeatCurrentTrack = repeatCurrentTrack
         fallbackStopAfterCurrentTrack = stopAfterCurrentTrack
     }
@@ -17092,6 +17287,11 @@ private class JellyfinPlayer(private val context: Context) {
                         } else {
                             reportCurrentPlaybackProgress(force = true, isPaused = false)
                         }
+                    } else if (player.playbackState == Player.STATE_ENDED) {
+                        status = "Ended"
+                        unregisterNoisyAudioReceiver()
+                        stopVisualizerPump()
+                        return
                     } else if (status != "Buffering" && status != "Ended") {
                         status = "Paused"
                         unregisterNoisyAudioReceiver()
@@ -17412,6 +17612,7 @@ private class JellyfinPlayer(private val context: Context) {
         persistResumeState(snapshot)
         saveWidgetState(context, snapshot)
         notificationController.update(snapshot)
+        AutoMediaBrowserService.syncFromPhonePlayback()
     }
 
     private fun publishContinuousPlaybackState(track: MusicTrack) {
@@ -17786,6 +17987,7 @@ private class JellyfinRepository(private val context: Context) {
     ): List<MusicTrack> {
         val tracksById = linkedMapOf<String, MusicTrack>()
         var firstFailure: Throwable? = null
+        var incompleteFailure: Throwable? = null
 
         fun mergeTracks(nextTracks: List<MusicTrack>) {
             var changed = false
@@ -17813,6 +18015,9 @@ private class JellyfinRepository(private val context: Context) {
                     .onSuccess(::mergeTracks)
                     .onFailure { failure ->
                         firstFailure = firstFailure ?: failure
+                        if (failure is LibrarySyncIncompleteException) {
+                            incompleteFailure = incompleteFailure ?: failure
+                        }
                         PlaybackDiagnostics.record(
                             "Library sync scope failed",
                             failure.readableMessage()
@@ -17821,6 +18026,7 @@ private class JellyfinRepository(private val context: Context) {
                 }
         }
 
+        incompleteFailure?.let { failure -> throw failure }
         if (tracksById.isEmpty()) {
             firstFailure?.let { failure -> throw failure }
         }
@@ -17859,6 +18065,7 @@ private class JellyfinRepository(private val context: Context) {
             var startIndex = 0
             val seenTrackIds = mutableSetOf<String>()
             var pageCount = 0
+            var previousPageIds = emptyList<String>()
             while (pageCount < 250) {
                 pageCount += 1
                 val response = JSONObject(
@@ -17879,13 +18086,27 @@ private class JellyfinRepository(private val context: Context) {
                     break
                 }
 
-                var addedTracks = 0
+                val pageIds = buildList {
+                    for (index in 0 until items.length()) {
+                        val id = items.optJSONObject(index)
+                            ?.optString("Id")
+                            ?.takeIf { it.isNotBlank() }
+                            ?: continue
+                        add(id)
+                    }
+                }
+                if (pageIds.isNotEmpty() && pageIds == previousPageIds) {
+                    throw LibrarySyncIncompleteException(
+                        "Jellyfin repeated the same library page at song ${startIndex + 1}. Synced ${seenTrackIds.size}${expectedTrackCount?.let { " of $it" }.orEmpty()} songs."
+                    )
+                }
+                previousPageIds = pageIds
+
                 for (index in 0 until items.length()) {
                     val item = items.optJSONObject(index) ?: continue
                     val id = item.optString("Id").takeIf { it.isNotBlank() } ?: continue
                     if (!seenTrackIds.add(id)) continue
                     add(item.toMusicTrack(id))
-                    addedTracks += 1
                 }
 
                 startIndex += items.length()
@@ -17893,12 +18114,17 @@ private class JellyfinRepository(private val context: Context) {
                     onPartial?.invoke(toList().sortedWith(MusicTrackSort))
                 }
 
-                if (addedTracks == 0) {
+                if (expectedTrackCount != null && startIndex >= expectedTrackCount!!) {
+                    throwIfLibraryReturnedTooFew(expectedTrackCount, seenTrackIds.size)
+                    break
+                }
+                if (items.length() < pageSize) {
+                    throwIfLibraryReturnedTooFew(expectedTrackCount, seenTrackIds.size)
                     break
                 }
             }
             if (pageCount >= 250) {
-                throw IOException("Library sync stopped after ${pageCount * pageSize} scanned items. Narrow the library or try again.")
+                throw LibrarySyncIncompleteException("Library sync stopped after ${pageCount * pageSize} scanned items. Narrow the library or try again.")
             }
         }.sortedWith(MusicTrackSort)
     }
@@ -17922,7 +18148,7 @@ private class JellyfinRepository(private val context: Context) {
         append("&Fields=Album,AlbumId,AlbumPrimaryImageTag,Artists,DateCreated,ImageTags,PrimaryImageItemId,RunTimeTicks")
         append("&SortBy=SortName")
         append("&SortOrder=Ascending")
-        append("&EnableTotalRecordCount=false")
+        append("&EnableTotalRecordCount=true")
         append("&StartIndex=$startIndex")
         append("&Limit=$pageSize")
     }
@@ -18010,9 +18236,11 @@ private class JellyfinRepository(private val context: Context) {
 private fun throwIfLibraryReturnedTooFew(expectedCount: Int?, actualCount: Int) {
     val expected = expectedCount ?: return
     if (expected > actualCount) {
-        throw IOException("Library sync incomplete: Jellyfin reported $expected songs but returned $actualCount.")
+        throw LibrarySyncIncompleteException("Library sync incomplete: Jellyfin reported $expected songs but returned $actualCount.")
     }
 }
+
+private class LibrarySyncIncompleteException(message: String) : IOException(message)
 
 private class JellyfinHttpException(
     val code: Int,
